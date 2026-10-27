@@ -111,7 +111,10 @@ sg::Verdict OnPryPre(const sg::Call& call) {
     auto* s = g_session.load(std::memory_order_acquire);
     if (!s || !s->running() || !s->connected()) return sg::Verdict::Run;  // SP: nothing to mirror
     if (!call.object || !IsPlank(call.object)) return sg::Verdict::Run;
-    if (!coop::net_pump::IsInAnnouncedWorld(call.object)) return sg::Verdict::Run;
+    // A client's call on an object of a world it has not announced ready is that world's load. The world
+    // announce is a client's edge: the host's own world is the session's, and its pries always count.
+    if (s->role() == coop::net::Role::Client && !coop::net_pump::IsInAnnouncedWorld(call.object))
+        return sg::Verdict::Run;
     if (!Stuck(call.object)) return sg::Verdict::Run;  // already free: nothing to send
     ++g_pliesSeen;
     const uint64_t until = NowMs() + kPlankWatchMs;
@@ -308,6 +311,11 @@ void OnContainerBreakIntent(coop::net::Session& session, const coop::net::Contai
     if (session.role() != coop::net::Role::Host) return;
     if (senderSlot < 1 || senderSlot >= coop::net::kMaxPeers) return;
     Slot& sl = g_slots[senderSlot];
+    // Run at once, in the drain: the client's own destroy of the container follows its break on the same
+    // lane (session_lanes.h pins both to Bulk), and a break left for the next tick would find the container
+    // that destroy already removed. Only a sender with no body here yet, or one with breaks still queued
+    // ahead of this one, waits in the queue.
+    if (sl.queue.size() == 0 && ExecuteBreak(session, payload, senderSlot)) return;
     auto copy = payload;
     if (!sl.queue.Push(std::move(copy), kMaxPendingBreaks)) {
         const uint64_t now = NowMs();

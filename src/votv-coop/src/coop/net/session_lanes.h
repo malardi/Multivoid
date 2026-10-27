@@ -63,6 +63,9 @@ inline Lane LaneForKind(ReliableKind k) {
     // destroy overtaking its spawn under backpressure leaves a phantom actor.
     case ReliableKind::PropSpawn:      return Lane::Bulk;
     case ReliableKind::PropDestroy:    return Lane::Bulk;
+    // A client's container break is sent from the break verb, ahead of the destroy the game runs after it; on
+    // PropDestroy's lane the host meets the break first and runs it while the container still stands.
+    case ReliableKind::ContainerBreakIntent: return Lane::Bulk;
     // A prop's save record shares PropSpawn's lane on purpose: same FIFO, so a record can never
     // overtake the birth it belongs to. The intent rides it too, so a client's authored record
     // cannot pass the destroy or spawn that produced it.
