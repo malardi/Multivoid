@@ -13,6 +13,12 @@
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/core/script_gate.h"   // SetPassThrough: solo rules inside a dimension
+#include "ue_wrap/core/script_fingerprint.h"  // the [BP-DUMP] of the gameplay mode
+#include "ue_wrap/core/paths.h"
+#include "coop/config/config.h"
+#include "coop/config/config_registry.h"
+#include <cstdio>
+#include <windows.h>
 #include "ue_wrap/core/types.h"
 #include "ue_wrap/world/world_singleton.h"  // GameInstance: the travel state the entry writes
 #include "ue_wrap/engine/world_identity.h"   // CurrentWorld, Generation: this peer's arrival
@@ -279,7 +285,39 @@ void OnDisconnect() {
     // InDimension stays as it is: the world this peer is in does not change when the session ends.
 }
 
+namespace {
+// [devkeys] The gameplay mode's whole Blueprint, as the mod's decoder reads it, written once per process to
+// coop_logs\bp_<function>.txt: the dimension work reads the game's own logic there (b274: a client's labyrinth
+// spawns prop_C endlessly from ExecuteUbergraph_mainGamemode@12796, the host's does not).
+void DumpGamemodeOnce() {
+    static bool sDone = false;
+    if (sDone) return;
+    static const bool sOn = coop::config::ResolveFlag(coop::config_registry::rows::devkeys);
+    if (!sOn) { sDone = true; return; }
+    void* gm = ue_wrap::world_singleton::Gamemode();
+    if (!gm) return;
+    sDone = true;
+    const std::wstring dir = ue_wrap::paths::ExeDir() + L"\\coop_logs";
+    ::CreateDirectoryW(dir.c_str(), nullptr);
+    void* cls = R::ClassOf(gm);
+    const wchar_t* const kFns[] = {L"ExecuteUbergraph_mainGamemode", L"ReceiveBeginPlay", L"loadObjects", L"loadData"};
+    for (const wchar_t* name : kFns) {
+        void* fn = R::FindFunction(cls, name);
+        if (!fn) { UE_LOGI("[BP-DUMP] %ls: not found", name); continue; }
+        const auto r = ue_wrap::script_fingerprint::Of(fn);
+        const std::wstring path = dir + L"\\bp_" + name + L".txt";
+        if (FILE* f = _wfopen(path.c_str(), L"wb")) {
+            std::fwrite(r.text.data(), 1, r.text.size(), f);
+            std::fclose(f);
+        }
+        UE_LOGI("[BP-DUMP] %ls: %zu bytes written (ok=%d%s%s)", name, r.text.size(), r.ok ? 1 : 0,
+                r.problem.empty() ? "" : ", problem: ", r.problem.c_str());
+    }
+}
+}  // namespace
+
 void Tick() {
+    DumpGamemodeOnce();
     void* world = ue_wrap::world_identity::CurrentWorld();
     const uint32_t gen = ue_wrap::world_identity::Generation();
     if (!world || gen == g_seenGen) return;
