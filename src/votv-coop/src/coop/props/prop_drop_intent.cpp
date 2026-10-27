@@ -133,13 +133,22 @@ std::wstring WireToWide(const uint8_t len, const char* data, size_t cap) {
 // [DIMENSION-SPAWNS] census: inside a dimension every finished spawn is counted by class and the top
 // classes logged every 2 s (both roles), so a level that keeps building names what it builds. Read
 // on the game thread only, from inside the spawn: it is written while the game thread is in its frame.
-void CensusSpawn(void* actor) {
+void CensusSpawn(void* actor, void* author) {
     static std::vector<std::pair<std::wstring, int>> sCounts;
     static int sTotal = 0, sWindows = 0;
     static std::chrono::steady_clock::time_point sWindowStart{};
     const auto now = std::chrono::steady_clock::now();
     if (sWindowStart.time_since_epoch().count() == 0) sWindowStart = now;
-    const std::wstring cls = R::ClassNameOf(actor);
+    const std::wstring cls = R::ClassNameOf(actor) + L"<-" + (author ? R::ClassNameOf(author) : std::wstring(L"?"));
+    static int sNamed = 0;
+    if (sNamed < 40) {
+        ++sNamed;
+        ue_wrap::FVector l{};
+        E::TryGetActorLocation(actor, l);
+        UE_LOGI("[DIMENSION-SPAWNS] #%d '%ls' (%ls) at (%.0f,%.0f,%.0f) by %ls '%ls'", sNamed,
+                R::ToString(R::NameOf(actor)).c_str(), R::ClassNameOf(actor).c_str(), l.X, l.Y, l.Z,
+                author ? R::ClassNameOf(author).c_str() : L"?", author ? R::ToString(R::NameOf(author)).c_str() : L"?");
+    }
     bool found = false;
     for (auto& c : sCounts) if (c.first == cls) { ++c.second; found = true; break; }
     if (!found && sCounts.size() < 256) sCounts.emplace_back(cls, 1);
@@ -159,9 +168,10 @@ void CensusSpawn(void* actor) {
     sWindowStart = now;
 }
 
-void OnClientFinishSpawn(void* /*context*/, void* /*srcObj*/, void* result) {
+void OnClientFinishSpawn(void* /*context*/, void* srcObj, void* result) {
     if (!GT::IsGameThread()) return;
-    if (coop::dimension_travel::InDimension() && result && R::IsLive(result)) CensusSpawn(result);
+    if (coop::dimension_travel::InDimension() && result && R::IsLive(result))
+        CensusSpawn(result, srcObj && R::IsLive(srcObj) ? srcObj : nullptr);
     // The probe's birth record comes before the session gates: the menu world's births after a quit
     // happen with no session, and they are what the pause-quit drill measures.
     if (coop::dev::prop_birth_key_probe::IsEnabled() && result && R::IsLive(result) &&
