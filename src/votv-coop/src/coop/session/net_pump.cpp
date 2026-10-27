@@ -581,7 +581,9 @@ void Tick(coop::net::Session& session) {
                 // fallback that keeps a death survivable for our layer; the arm decision and this
                 // one are the same decision at the same instant. g_localDeathHandled stays unset on
                 // the armed path: it is shared with the host-close arm above.
-                if (!coop::death_revive::ArmedForThisDeath()) {
+                // In a dimension a death is the way home: the game's own death travel runs, and
+                // run_end_travel turns its menu travel into the gameplay map, the session kept.
+                if (!coop::death_revive::ArmedForThisDeath() && !coop::dimension_travel::InDimension()) {
                     g_localDeathHandled = true;
                     UE_LOGW("net: LOCAL PLAYER DIED -- tearing down coop state synchronously + fleeing "
                             "to the main menu (role=%s; permadeath-rejoinable)",

@@ -155,6 +155,7 @@ bool FireTable(Entry* table, std::uint64_t key, const Call& base, bool post) {
         Entry& e = table[i];
         if (!e.enabled.load(std::memory_order_acquire) || !e.resolved.load(std::memory_order_acquire)) continue;
         if (OtherOwner(e, base.function, owner)) continue;
+        if (PassThrough() && e.tag != PassThroughKeepTag()) continue;  // a dimension: solo rules
         Call call = base;
         call.tag = e.tag;
         void* ip = nullptr;
@@ -447,6 +448,21 @@ void Release(const char* who) {
 }
 
 bool IsEnabled() { return g_enabled.load(std::memory_order_acquire); }
+
+namespace {
+std::atomic<bool> g_passThrough{false};
+std::atomic<int>  g_passKeepTag{0};
+}  // namespace
+
+void SetPassThrough(bool on, int keepTag) {
+    g_passKeepTag.store(keepTag, std::memory_order_relaxed);
+    const bool was = g_passThrough.exchange(on, std::memory_order_acq_rel);
+    if (was != on)
+        UE_LOGI("script_gate: pass-through %s (kept tag 0x%08X)", on ? "ON -- the game's calls run as solo" : "OFF",
+                static_cast<unsigned>(keepTag));
+}
+bool PassThrough() { return g_passThrough.load(std::memory_order_acquire); }
+int  PassThroughKeepTag() { return g_passKeepTag.load(std::memory_order_relaxed); }
 
 Active CurrentThreadCall() {
     Active a{};

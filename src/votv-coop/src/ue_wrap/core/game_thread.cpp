@@ -12,6 +12,7 @@
 
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/reflection.h"
+#include "ue_wrap/core/script_gate.h"  // PassThrough: no refusal in a dimension
 #include "ue_wrap/core/sdk_profile.h"
 #include "ue_wrap/engine/spawn_gate.h"
 
@@ -325,6 +326,7 @@ namespace detail {
 // ends when every live entry was found, so an N-entry table pays N loads instead of the table
 // size. The empty-table and Bloom rejects already ran inline in the detour.
 bool FireInterceptorsMatched(void* self, void* function, void* params) {
+    if (script_gate::PassThrough()) return false;  // a dimension: nothing refused, solo rules
     const int active = g_interceptorActive.load(std::memory_order_acquire);
     int found = 0;
     for (int i = 0; i < kMaxInterceptors && found < active; ++i) {

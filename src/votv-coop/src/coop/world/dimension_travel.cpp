@@ -10,6 +10,8 @@
 #include "ue_wrap/core/fname_utils.h"
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/reflection.h"
+#include "ue_wrap/core/script_gate.h"   // SetPassThrough: solo rules inside a dimension
+#include "coop/player/run_end_travel.h" // LoadLevelWatchTag: the one watch kept there
 
 #include <atomic>
 #include <cwctype>
@@ -75,6 +77,9 @@ void OnLocalTravel(const std::wstring& level, bool own) {
     const bool was = g_inDimension.exchange(toDimension, std::memory_order_relaxed);
     g_level = toDimension ? level : std::wstring();
     s->SetWorldTrafficPaused(toDimension);
+    // Solo rules inside the level: no seam refuses the game's calls there (a client refused the
+    // labyrinth's own spawns and its script never returned), but the travel watch stays, the way home.
+    ue_wrap::script_gate::SetPassThrough(toDimension, coop::player::run_end_travel::LoadLevelWatchTag());
     UE_LOGI("[DIMENSION] this peer travels to '%ls' -- %s%s", level.c_str(),
             toDimension ? "a dimension: the session goes on there" : "the gameplay map",
             was && !toDimension ? " (back from a dimension)" : "");
@@ -114,6 +119,7 @@ void OnWorldTravel(const coop::net::WorldTravelPayload& p) {
 
 void OnSessionStart() {
     if (auto* s = g_session.load(std::memory_order_acquire)) s->SetWorldTrafficPaused(false);
+    ue_wrap::script_gate::SetPassThrough(false, 0);
     g_inDimension.store(false, std::memory_order_relaxed);
     g_level.clear();
 }
@@ -123,6 +129,7 @@ void OnDisconnect() {
         UE_LOGI("[DIMENSION] session end -- travels sent=%llu followed=%llu",
                 static_cast<unsigned long long>(g_sent), static_cast<unsigned long long>(g_followed));
     g_sent = g_followed = 0;
+    ue_wrap::script_gate::SetPassThrough(false, 0);  // no session: the gate's own holder is gone anyway
     // InDimension stays as it is: the world this peer is in does not change when the session ends.
 }
 

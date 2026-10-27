@@ -66,6 +66,9 @@ Judgement JudgeMenuTravel(void* author);
 // read the same in `cancelled` alone, which is what made the field log ambiguous in the first
 // place.
 bool WatchInstalled();
+// The script-gate tag of the lib_C::loadLevel watch: a dimension's pass-through keeps it (the way home
+// and the clients' following both ride it).
+int LoadLevelWatchTag();
 unsigned long long TravelsSeen();
 unsigned long long MenuTravelsSeen();
 unsigned long long TravelsCancelled();

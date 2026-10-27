@@ -150,6 +150,16 @@ private:
 };
 bool IsEnabled();
 
+// Pass-through: while set, every refusal seam the mod holds -- the script gate's watches, the
+// ProcessEvent interceptors, the pre-native Func hooks -- lets the game's own calls run as in a solo
+// game, except the script-gate watches carrying `keepTag` (0 keeps none). Posts and observers still
+// fire: they watch, they never refuse. A dimension (coop/world/dimension_travel) is a level each peer
+// builds for itself, and a seam refusing a call there (an NPC spawn the client leaves to the host)
+// can wedge the level's own script. Any thread.
+void SetPassThrough(bool on, int keepTag);
+bool PassThrough();
+int  PassThroughKeepTag();
+
 // The calling thread's innermost watched body, for a consumer's own downstream seams (a finish
 // spawn, a destroy) firing inside the body. `name` is the registered name of a name watch, null
 // for an exact watch; gate on `function` or `name`, never on `active` alone, which is true for

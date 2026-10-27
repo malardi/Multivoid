@@ -315,4 +315,6 @@ unsigned long long TravelsSeen() { return g_seen.load(std::memory_order_relaxed)
 unsigned long long MenuTravelsSeen() { return g_menuSeen.load(std::memory_order_relaxed); }
 unsigned long long TravelsCancelled() { return g_cancelled.load(std::memory_order_relaxed); }
 
+int LoadLevelWatchTag() { return kLoadLevelTag; }
+
 }  // namespace coop::player::run_end_travel

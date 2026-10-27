@@ -212,6 +212,11 @@ void __fastcall PreThunk(void* context, void* stack, void* result) {
     } else {
         parms = static_cast<const uint8_t*>(ReadPtr(stack, P::off::FFrame_Locals));
     }
+    if (script_gate::PassThrough()) {  // a dimension: the original runs unasked, solo rules
+        if (entry) code = entry;
+        s.original(context, stack, result);
+        return;
+    }
     void* srcObj = ReadPtr(stack, P::off::FFrame_Object);
     Verdict verdict = Verdict::Run;
     t_inCb = true;
