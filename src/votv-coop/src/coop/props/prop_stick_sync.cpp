@@ -9,6 +9,7 @@
 #include "coop/player/local_streams.h"  // CurrentHoldGen, the hold a stick ends
 #include "coop/props/prop_element_tracker.h"
 #include "coop/props/prop_key_index.h"  // a key on the wire to a live actor
+#include "coop/props/pry_break_sync.h"  // a pried plank's release
 #include "coop/props/remote_prop.h"
 #include "ue_wrap/engine/engine.h"
 #include "ue_wrap/engine/engine_physics.h"
@@ -484,6 +485,9 @@ void OnStickState(const coop::net::PropStickStatePayload& payload, uint8_t sende
                 unstick ? "UNSTICK" : "STICK", keyW.c_str(), payload.elementId, senderPeerSlot);
         return;
     }
+    // A pried plank carries no wall-attach component: its pry is crowbarOpen on the plank itself, and its
+    // release is the plank's own Static and frozen going off. pry_break_sync owns that apply.
+    if (unstick && coop::pry_break_sync::TryApplyPlankFree(prop, payload, keyW, senderPeerSlot)) return;
     void* comp = WallAttachCompOf(prop);  // the component, checked against the index's class
     if (!comp) {
         UE_LOGW("prop_stick_sync: %s target %p carries no wall-attach component -- dropped",

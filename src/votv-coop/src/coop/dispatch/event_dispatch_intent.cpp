@@ -20,6 +20,7 @@
 #include "coop/interactables/atv_authority.h"  // CLIENT->HOST an ATV seat or takeover request, judged by the host
 #include "coop/interactables/camera_toggle_intent.h"  // CLIENT->HOST use of a security camera, or its laptop light button
 #include "coop/interactables/door_verb_intent.h"  // CLIENT->HOST press, hit or pry of a base door
+#include "coop/props/pry_break_sync.h"  // CLIENT->HOST a container's break, run by the host
 #include "coop/interactables/sleepingbag_sync.h"  // CLIENT->HOST fold/unfold; HOST runs the source Blueprint
 #include "coop/interactables/keypad_verbs.h"  // CLIENT->HOST digit, submit, cancel, keycard, reset
 #include "coop/interactables/laptop_tab.h"  // CLIENT->HOST the PC user's tab
@@ -85,6 +86,35 @@ bool HandleIntentEvent(net::Session& session,
         }
         coop::door_verb_intent::OnDoorVerbIntent(session, p,
                                                  static_cast<uint8_t>(msg.senderPeerSlot));
+        break;
+    }
+    case net::ReliableKind::ContainerBreakIntent: {
+        // CLIENT->HOST: a client's copy of a container reached its break verb, refused there; the host
+        // runs the same verb on its own copy. The resolve, the reach and the rate live in the module;
+        // the format lives here. coop::pry_break_sync::OnContainerBreakIntent.
+        if (session.role() != net::Role::Host) {
+            UE_LOGW("event_feed: ContainerBreakIntent received on a client -- dropping");
+            break;
+        }
+        if (msg.senderPeerSlot < 1 || msg.senderPeerSlot >= net::kMaxPeers) {
+            UE_LOGW("event_feed: ContainerBreakIntent from invalid senderPeerSlot=%d -- dropping",
+                    msg.senderPeerSlot);
+            break;
+        }
+        if (msg.payloadLen < sizeof(net::ContainerBreakIntentPayload)) {
+            UE_LOGW("event_feed: ContainerBreakIntent payload too short (%zu < %zu)",
+                    static_cast<size_t>(msg.payloadLen), sizeof(net::ContainerBreakIntentPayload));
+            break;
+        }
+        net::ContainerBreakIntentPayload p{};
+        std::memcpy(&p, msg.payload, sizeof(p));
+        if (p.verb > net::container_break::kBrokenFire) {
+            UE_LOGW("event_feed: ContainerBreakIntent verb=%u out of range -- dropping",
+                    static_cast<unsigned>(p.verb));
+            break;
+        }
+        coop::pry_break_sync::OnContainerBreakIntent(session, p,
+                                                    static_cast<uint8_t>(msg.senderPeerSlot));
         break;
     }
     case net::ReliableKind::SleepingbagIntent: {

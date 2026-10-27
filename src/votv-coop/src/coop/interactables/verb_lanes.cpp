@@ -13,6 +13,7 @@
 #include "coop/interactables/toggle_verbs.h"
 #include "coop/items/point_sack_intent.h"
 #include "coop/net/session.h"
+#include "coop/props/pry_break_sync.h"
 
 #include "ue_wrap/core/walk_timer.h"  // per-lane [WALK-TIME] attribution (diagnostic)
 
@@ -29,6 +30,7 @@ void Install(coop::net::Session& session) {
     coop::keypad_verbs::Install(&session);       // a keypad's verbs: the host sends each, a client's own entries run on the host
     coop::desk_verb_intent::Install(&session);   // a client's press on the desk's save family is run by the host
     coop::point_sack_intent::Install(&session);  // a client's opened point sack is paid by the host
+    coop::pry_break_sync::Install(&session);     // a pried plank goes free everywhere; a client's container break is run by the host
 }
 
 void Tick(coop::net::Session& session) {
@@ -42,6 +44,7 @@ void Tick(coop::net::Session& session) {
     coop::point_sack_intent::Tick();    // settle the point sack watch
     coop::keypad_verbs::Tick(session);  // settle the keypad watches; HOST: run queued keypad intents
     { ue_wrap::ScopedWalkTimer _w{"sync:desk_verb"}; coop::desk_verb_intent::Tick(session); }  // settle its seams; HOST: run one queued desk press a tick a client
+    { ue_wrap::ScopedWalkTimer _w{"sync:pry_break"}; coop::pry_break_sync::Tick(session); }  // send the planks a pry freed; HOST: run queued container breaks
 }
 
 void OnDisconnect() {
@@ -55,6 +58,7 @@ void OnDisconnect() {
     coop::keypad_verbs::OnDisconnect();
     coop::desk_verb_intent::OnDisconnect();
     coop::point_sack_intent::OnDisconnect();
+    coop::pry_break_sync::OnDisconnect();
 }
 
 }  // namespace coop::verb_lanes

@@ -1,0 +1,364 @@
+// coop/props/pry_break_sync.cpp -- see coop/props/pry_break_sync.h.
+
+#include "coop/props/pry_break_sync.h"
+
+#include "coop/element/element.h"
+#include "coop/element/intent_authority.h"
+#include "coop/net/intent_bucket.h"
+#include "coop/net/intent_queue.h"
+#include "coop/net/protocol.h"
+#include "coop/net/session.h"
+#include "coop/net/wire_key_util.h"
+#include "coop/player/roster_ledger.h"  // PerSlotState
+#include "coop/props/prop_element_tracker.h"
+#include "coop/props/prop_key_index.h"
+#include "coop/props/remote_prop.h"
+#include "coop/session/net_pump.h"  // IsInAnnouncedWorld: a client's own world load runs natively
+
+#include "ue_wrap/actors/prop.h"
+#include "ue_wrap/actors/prop_flags.h"
+#include "ue_wrap/core/log.h"
+#include "ue_wrap/core/object_index.h"
+#include "ue_wrap/core/reflection.h"
+#include "ue_wrap/core/script_gate.h"
+#include "ue_wrap/core/types.h"
+#include "ue_wrap/engine/engine.h"
+#include "ue_wrap/engine/engine_attach.h"
+#include "ue_wrap/engine/engine_physics.h"
+#include "ue_wrap/facts/function_row.h"
+
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <string>
+
+namespace coop::pry_break_sync {
+namespace {
+
+namespace R  = ue_wrap::reflection;
+namespace E  = ue_wrap::engine;
+namespace PR = ue_wrap::prop;
+namespace sg = ue_wrap::script_gate;
+namespace CB = coop::net::container_break;
+
+// Every class's function of these names fires the watch, so each callback gates on its class first:
+// crowbarOpen is also a door's (door_verb_intent owns those), broken() also a bomb barrel's (the
+// explosion lane owns those).
+UE_FACT_FN(kRowCrowbarOpen, "pry_break_sync", nullptr, L"crowbarOpen", AnyClass);
+UE_FACT_FN(kRowBroken, "pry_break_sync", nullptr, L"broken", AnyClass);
+UE_FACT_FN(kRowBrokenFire, "pry_break_sync", nullptr, L"broken_fire", AnyClass);
+
+constexpr int kTagPry        = 0x50425059;  // 'PBPY'
+constexpr int kTagBroken     = 0x50424252;  // 'PBBR'
+constexpr int kTagBrokenFire = 0x50424246;  // 'PBBF'
+
+struct Watch { const ue_wrap::facts::Function* row; int tag; sg::PreFn pre; const char* what; };
+enum class Reg : uint8_t { Pending, Registered, Refused };
+
+// A plank's pry runs the crowbar's animation before the plank lets go, so its release is looked for over
+// a window rather than at the call: every tick until its Static and frozen are both off, or until this.
+constexpr uint64_t kPlankWatchMs = 10000;
+constexpr int      kMaxPlanks    = 16;
+
+// A container breaks where it is hit, or where it lands when thrown, so its reach is wider than a press:
+// the authority adds the container's bounds and the puppet's lag allowance to it.
+constexpr float kBreakReachUU = 1500.0f;
+constexpr coop::net::IntentBudget kBreakBudget{4.0f, 4.0f};
+constexpr size_t   kMaxPendingBreaks = 8;
+constexpr uint64_t kRefusalSayMs     = 10000;
+
+std::atomic<coop::net::Session*> g_session{nullptr};
+
+void* g_plankClass     = nullptr;  // prop_pryablePlank_C
+void* g_containerClass = nullptr;  // prop_container_C
+
+struct PendingPlank {
+    void*    prop = nullptr;
+    int32_t  idx = -1;
+    uint64_t untilMs = 0;
+};
+PendingPlank g_planks[kMaxPlanks];
+int g_plankCount = 0;
+
+struct Slot {
+    coop::net::IntentQueue<coop::net::ContainerBreakIntentPayload> queue;
+    uint64_t nextSayMs = 0;
+    bool     waitSaid  = false;
+};
+coop::roster_ledger::PerSlotState<Slot> g_slots;
+
+uint64_t g_pliesSeen = 0, g_planksSent = 0, g_planksApplied = 0, g_plankTimeouts = 0;
+uint64_t g_breaksSent = 0, g_breaksRan = 0, g_breaksDenied = 0, g_breaksNative = 0;
+
+uint64_t NowMs() {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+bool IsA(void* obj, void*& cls, const wchar_t* name) {
+    if (!obj) return false;
+    if (!cls) cls = ue_wrap::object_index::ClassByName(name);
+    void* oc = R::ClassOf(obj);
+    return cls && oc && R::IsDescendantOfAny(oc, &cls, 1);
+}
+bool IsPlank(void* obj)     { return IsA(obj, g_plankClass, L"prop_pryablePlank_C"); }
+bool IsContainer(void* obj) { return IsA(obj, g_containerClass, L"prop_container_C"); }
+
+bool Stuck(void* prop) { return PR::IsStatic(prop) || PR::IsFrozen(prop); }
+
+// ---- planks: the prying peer sends the release ------------------------------------------------
+sg::Verdict OnPryPre(const sg::Call& call) {
+    auto* s = g_session.load(std::memory_order_acquire);
+    if (!s || !s->running() || !s->connected()) return sg::Verdict::Run;  // SP: nothing to mirror
+    if (!call.object || !IsPlank(call.object)) return sg::Verdict::Run;
+    if (!coop::net_pump::IsInAnnouncedWorld(call.object)) return sg::Verdict::Run;
+    if (!Stuck(call.object)) return sg::Verdict::Run;  // already free: nothing to send
+    ++g_pliesSeen;
+    const uint64_t until = NowMs() + kPlankWatchMs;
+    for (int i = 0; i < g_plankCount; ++i) {
+        if (g_planks[i].prop == call.object) { g_planks[i].untilMs = until; return sg::Verdict::Run; }
+    }
+    if (g_plankCount >= kMaxPlanks) {
+        UE_LOGW("[PRY] pending planks full (%d) -- this pry runs here alone", kMaxPlanks);
+        return sg::Verdict::Run;
+    }
+    g_planks[g_plankCount++] = PendingPlank{call.object, R::InternalIndexOf(call.object), until};
+    UE_LOGI("[PRY] a crowbar pries plank %p key='%ls' -- its release is watched", call.object,
+            PR::GetInteractableKeyString(call.object).c_str());
+    return sg::Verdict::Run;
+}
+
+void SendPlankRelease(coop::net::Session& s, void* prop) {
+    coop::net::PropStickStatePayload p{};
+    const std::wstring keyW = PR::GetInteractableKeyString(prop);
+    if (!keyW.empty() && keyW != L"None") coop::net::WireKeyFromString(keyW, p.key);
+    const coop::element::ElementId eid = coop::prop_element_tracker::GetPropElementIdForActor(prop);
+    p.elementId = (eid == coop::element::kInvalidId) ? 0u : static_cast<uint32_t>(eid);
+    if (p.key.len == 0 && p.elementId == 0) {
+        UE_LOGW("[PRY] plank %p has neither key nor eid -- its release is not sent", prop);
+        return;
+    }
+    ue_wrap::FVector loc{};
+    ue_wrap::FRotator rot{};
+    if (!E::TryGetActorLocation(prop, loc) || !E::TryGetActorRotation(prop, rot)) {
+        UE_LOGW("[PRY] plank key='%ls' has no readable pose -- its release is not sent", keyW.c_str());
+        return;
+    }
+    p.locX = loc.X; p.locY = loc.Y; p.locZ = loc.Z;
+    p.rotPitch = rot.Pitch; p.rotYaw = rot.Yaw; p.rotRoll = rot.Roll;
+    p.flags = 0;    // the unstick
+    p.holdGen = 0;  // an unstick ends no hold
+    const PR::VelocityState v = PR::GetPhysicsVelocity(prop);
+    if (v.ok) {
+        p.linVelX = v.linearCmS.X;   p.linVelY = v.linearCmS.Y;   p.linVelZ = v.linearCmS.Z;
+        p.angVelX = v.angularDegS.X; p.angVelY = v.angularDegS.Y; p.angVelZ = v.angularDegS.Z;
+    }
+    if (!s.SendReliable(coop::net::ReliableKind::PropStickState, &p, sizeof(p))) {
+        UE_LOGW("[PRY] the release of plank key='%ls' was not sent (the session refused it)", keyW.c_str());
+        return;
+    }
+    ++g_planksSent;
+    UE_LOGI("[PRY] plank key='%ls' eid=%u let go here -- release sent, pose=(%.0f,%.0f,%.0f)", keyW.c_str(),
+            p.elementId, p.locX, p.locY, p.locZ);
+}
+
+void TickPlanks(coop::net::Session& s) {
+    if (g_plankCount == 0) return;
+    const uint64_t now = NowMs();
+    int w = 0;
+    for (int i = 0; i < g_plankCount; ++i) {
+        PendingPlank pp = g_planks[i];
+        if (!pp.prop || !R::IsLiveByIndex(pp.prop, pp.idx)) continue;  // gone since the pry
+        if (!Stuck(pp.prop)) {
+            if (s.connected()) SendPlankRelease(s, pp.prop);
+            continue;
+        }
+        if (now >= pp.untilMs) {
+            ++g_plankTimeouts;  // the pry did not free it (a pry the game refused, or one still going)
+            continue;
+        }
+        g_planks[w++] = pp;
+    }
+    g_plankCount = w;
+}
+
+// ---- containers: a client asks the host -------------------------------------------------------
+sg::Verdict OnBreakPre(const sg::Call& call) {
+    auto* s = g_session.load(std::memory_order_acquire);
+    if (!s || !s->connected() || s->role() != coop::net::Role::Client) return sg::Verdict::Run;
+    if (!call.object || !IsContainer(call.object)) return sg::Verdict::Run;
+    // A call on an object of a world this client has not announced ready is that world's load: native.
+    if (!coop::net_pump::IsInAnnouncedWorld(call.object)) return sg::Verdict::Run;
+    const std::wstring key = PR::GetInteractableKeyString(call.object);
+    if (key.empty() || key == L"None") {
+        ++g_breaksNative;
+        UE_LOGW("[CRATE] container %p has no key the host could resolve -- its break runs here alone", call.object);
+        return sg::Verdict::Run;
+    }
+    coop::net::ContainerBreakIntentPayload p{};
+    coop::net::WireKeyFromString(key, p.key);
+    p.verb = (call.tag == kTagBrokenFire) ? CB::kBrokenFire : CB::kBroken;
+    if (!s->SendReliable(coop::net::ReliableKind::ContainerBreakIntent, &p, sizeof(p))) {
+        UE_LOGW("[CRATE] the break of key='%ls' was not sent (the session refused it); it stays whole as the "
+                "host has it", key.c_str());
+        return sg::Verdict::Cancel;
+    }
+    ++g_breaksSent;
+    UE_LOGI("[CRATE] CLIENT SENT a %s of key='%ls' (#%llu)", p.verb == CB::kBrokenFire ? "fire break" : "break",
+            key.c_str(), static_cast<unsigned long long>(g_breaksSent));
+    return sg::Verdict::Cancel;
+}
+
+// False keeps the break at its sender's queue head (no body to measure its reach from yet).
+bool ExecuteBreak(coop::net::Session& s, const coop::net::ContainerBreakIntentPayload& p, uint8_t slot) {
+    const std::wstring key = coop::net::StringFromWireKey(p.key);
+    void* box = key.empty() ? nullptr : coop::prop_key_index::Find(key);
+    if (!box || !IsContainer(box)) {
+        ++g_breaksDenied;
+        UE_LOGI("[CRATE] DENY slot=%u key='%ls' -- %s", static_cast<unsigned>(slot), key.c_str(),
+                box ? "that prop is not a container" : "no container holds that key here (already broken?)");
+        return true;
+    }
+    const coop::element::IntentSubject subject =
+        coop::element::IntentTarget::ForClientIntent(s, slot, kBreakReachUU).Authorize(box);
+    if (subject.outcome == coop::element::IntentOutcome::NoBody) {
+        if (!g_slots[slot].waitSaid) {
+            g_slots[slot].waitSaid = true;
+            UE_LOGI("[CRATE] slot %u's breaks wait: the host has no body for it yet", static_cast<unsigned>(slot));
+        }
+        return false;
+    }
+    if (!subject) {
+        ++g_breaksDenied;
+        UE_LOGI("[CRATE] DENY slot=%u key='%ls' -- %s (%.0f uu of %.0f)", static_cast<unsigned>(slot), key.c_str(),
+                coop::element::OutcomeName(subject.outcome), subject.distUU, subject.reachUU);
+        return true;
+    }
+    const wchar_t* verb = (p.verb == CB::kBrokenFire) ? L"broken_fire" : L"broken";
+    void* fn = R::FindDispatchFunctionCached(R::ClassOf(box), verb);
+    const bool ran = fn && R::CallFunction(box, fn, nullptr);
+    if (ran) ++g_breaksRan; else ++g_breaksDenied;
+    UE_LOGI("[CRATE] host ran slot %u's %ls on key='%ls': %s", static_cast<unsigned>(slot), verb, key.c_str(),
+            ran ? "ran" : "the verb did not resolve or run");
+    return true;
+}
+
+// ---- watches ---------------------------------------------------------------------------------
+const Watch kWatches[] = {
+    { &kRowCrowbarOpen, kTagPry,        &OnPryPre,   "crowbarOpen" },
+    { &kRowBroken,      kTagBroken,     &OnBreakPre, "broken" },
+    { &kRowBrokenFire,  kTagBrokenFire, &OnBreakPre, "broken_fire" },
+};
+constexpr int kWatchCount = static_cast<int>(sizeof(kWatches) / sizeof(kWatches[0]));
+Reg  g_reg[kWatchCount] = {};
+bool g_settled = false;
+
+void RegisterWatches() {
+    for (int i = 0; i < kWatchCount; ++i) {
+        if (g_reg[i] != Reg::Pending) continue;
+        if (sg::WatchName(*kWatches[i].row, kWatches[i].tag, kWatches[i].pre, nullptr)) {
+            g_reg[i] = Reg::Registered;
+            continue;
+        }
+        g_reg[i] = Reg::Refused;
+        UE_LOGE("[PRY-BREAK] the script-body gate refused the watch on '%s' -- it runs only where it is used",
+                kWatches[i].what);
+    }
+}
+
+}  // namespace
+
+void Install(coop::net::Session* session) {
+    g_session.store(session, std::memory_order_release);
+    RegisterWatches();
+}
+
+void Tick(coop::net::Session& session) {
+    sg::ResolvePendingNames();
+    if (!g_settled) {
+        int live = 0, pending = 0;
+        for (int i = 0; i < kWatchCount; ++i) {
+            if (g_reg[i] == Reg::Pending) ++pending;
+            else if (g_reg[i] == Reg::Registered && sg::NameWatchLive(*kWatches[i].row, kWatches[i].tag)) ++live;
+        }
+        if (live == kWatchCount) {
+            g_settled = true;
+            UE_LOGI("[PRY-BREAK] the plank pry and container break gates are live");
+        } else if (pending == 0 && sg::PendingNameCount() == 0) {
+            g_settled = true;
+            UE_LOGE("[PRY-BREAK] %d of %d gates are dead -- those verbs run only where they are used",
+                    kWatchCount - live, kWatchCount);
+        }
+    }
+    if (!session.running()) return;
+    TickPlanks(session);
+    if (session.role() != coop::net::Role::Host) return;
+    for (uint8_t slot = 1; slot < coop::net::kMaxPeers; ++slot) {
+        Slot& sl = g_slots[slot];
+        sl.queue.Serve(kBreakBudget, NowMs, [&](const coop::net::ContainerBreakIntentPayload& p) {
+            if (!ExecuteBreak(session, p, slot)) return coop::net::Served::Wait;
+            sl.waitSaid = false;
+            return coop::net::Served::Done;
+        });
+    }
+}
+
+void OnContainerBreakIntent(coop::net::Session& session, const coop::net::ContainerBreakIntentPayload& payload,
+                            uint8_t senderSlot) {
+    if (session.role() != coop::net::Role::Host) return;
+    if (senderSlot < 1 || senderSlot >= coop::net::kMaxPeers) return;
+    Slot& sl = g_slots[senderSlot];
+    auto copy = payload;
+    if (!sl.queue.Push(std::move(copy), kMaxPendingBreaks)) {
+        const uint64_t now = NowMs();
+        if (now >= sl.nextSayMs) {
+            sl.nextSayMs = now + kRefusalSayMs;
+            UE_LOGW("[CRATE] slot %u queue full (%zu) -- refusing its breaks until it drains",
+                    static_cast<unsigned>(senderSlot), sl.queue.size());
+        }
+        ++g_breaksDenied;
+    }
+}
+
+bool TryApplyPlankFree(void* prop, const coop::net::PropStickStatePayload& p, const std::wstring& keyW,
+                       uint8_t senderPeerSlot) {
+    if (!IsPlank(prop)) return false;
+    const bool wasStuck = Stuck(prop);
+    if (wasStuck) {
+        // The game's own setter, whose init() derives physics and collision from the flags, as a load does.
+        if (!PR::CallSetPropProps(prop, /*isStatic=*/false, /*frozen=*/false, /*sleeping=*/false)) {
+            PR::WriteStatic(prop, false);
+            PR::WriteFrozen(prop, false);
+        }
+        E::SetActorSimulatePhysics(prop, true);
+    }
+    const bool owned = coop::remote_prop::IsOwnedHere(prop);
+    if (!owned) {
+        E::SetActorLocation(prop, ue_wrap::FVector{p.locX, p.locY, p.locZ});
+        E::SetActorRotation(prop, ue_wrap::FRotator{p.rotPitch, p.rotYaw, p.rotRoll});
+        if (void* mesh = PR::GetStaticMesh(prop)) {
+            E::SetComponentLinearVelocity(mesh, p.linVelX, p.linVelY, p.linVelZ);
+            E::SetComponentAngularVelocity(mesh, p.angVelX, p.angVelY, p.angVelZ);
+        }
+    }
+    ++g_planksApplied;
+    UE_LOGI("[PRY] plank key='%ls' eid=%u let go here (was %s; %s; slot %u)", keyW.c_str(), p.elementId,
+            wasStuck ? "nailed" : "already free", owned ? "another hold moves it" : "from the sender's pose",
+            senderPeerSlot);
+    return true;
+}
+
+void OnDisconnect() {
+    if (g_pliesSeen || g_planksSent || g_planksApplied || g_breaksSent || g_breaksRan || g_breaksDenied)
+        UE_LOGI("[PRY-BREAK] session end -- pries=%llu planks sent=%llu applied=%llu timed out=%llu; breaks "
+                "sent=%llu ran=%llu denied=%llu native=%llu",
+                static_cast<unsigned long long>(g_pliesSeen), static_cast<unsigned long long>(g_planksSent),
+                static_cast<unsigned long long>(g_planksApplied), static_cast<unsigned long long>(g_plankTimeouts),
+                static_cast<unsigned long long>(g_breaksSent), static_cast<unsigned long long>(g_breaksRan),
+                static_cast<unsigned long long>(g_breaksDenied), static_cast<unsigned long long>(g_breaksNative));
+    g_plankCount = 0;
+    g_pliesSeen = g_planksSent = g_planksApplied = g_plankTimeouts = 0;
+    g_breaksSent = g_breaksRan = g_breaksDenied = g_breaksNative = 0;
+}
+
+}  // namespace coop::pry_break_sync

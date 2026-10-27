@@ -30,7 +30,7 @@ inline constexpr uint32_t kMagic = 0x564D5450u;
 // This file is past the 1500-line hard cap and stays there: it is the single-feature exception the
 // rule names. One wire format, whose enum, payload structs and static_asserts are read together;
 // splitting it would put a kind's number in one file and its bytes in another.
-inline constexpr uint16_t kProtocolVersion = 249;
+inline constexpr uint16_t kProtocolVersion = 250;
 
 // Default LAN port (overridable via multivoid.ini "net.port=").
 inline constexpr uint16_t kDefaultPort = 47621;
@@ -1127,6 +1127,12 @@ enum class ReliableKind : uint8_t {
     // edge; never relayed; not pre-world; a copy landing before the joiner's world is ready waits for it.
     // AtvSetCompletePayload.
     AtvSetComplete = 199,
+    // CLIENT->HOST: this client's copy of a container (a crate, a box, a barrel) reached its broken() or
+    // broken_fire(), which on a client is refused at the body: the spill would be client-born props the
+    // host never sees. The host runs the same verb on its own copy, whose loot and destroy reach every peer
+    // on the host's own spawn and destroy lanes. Never relayed; not pre-world. Late join: none, a break is
+    // an act. ContainerBreakIntentPayload.
+    ContainerBreakIntent = 200,
 };
 
 #pragma pack(push, 1)
@@ -1797,6 +1803,18 @@ struct DoorVerbIntentPayload {
 static_assert(sizeof(DoorVerbIntentPayload) == 40, "DoorVerbIntentPayload must be 40 bytes");
 static_assert(sizeof(DoorVerbIntentPayload) <= 256 - 20 - 8,
               "DoorVerbIntentPayload must fit one datagram");
+
+// A container break intent (ContainerBreakIntent): the container by its prop key, and which of its two
+// break verbs the client's copy reached.
+namespace container_break { constexpr uint8_t kBroken = 0; constexpr uint8_t kBrokenFire = 1; }
+struct ContainerBreakIntentPayload {
+    WireKey  key;        // 32 -- the container's prop key
+    uint8_t  verb;       // 1  -- container_break::kBroken (broken) or kBrokenFire (broken_fire)
+    uint8_t  _pad[3];    // 3  -- zero
+};
+static_assert(sizeof(ContainerBreakIntentPayload) == 36, "ContainerBreakIntentPayload must be 36 bytes");
+static_assert(sizeof(ContainerBreakIntentPayload) <= 256 - 20 - 8,
+              "ContainerBreakIntentPayload must fit one datagram");
 
 namespace sleepingbag_intent {
 constexpr uint8_t kUnwrap = 1;
