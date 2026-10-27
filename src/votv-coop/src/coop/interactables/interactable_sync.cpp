@@ -338,6 +338,10 @@ std::wstring ApplianceKey(void* a) { return g_appliance.KeyForActor(a); }
 std::wstring GarageKey(void* g) { return g_garage.KeyForActor(g); }
 std::wstring DoorBoxKey(void* box) { return g_doorBox.KeyForActor(box); }
 std::wstring ContainerKey(void* swinger) { return g_container.KeyForActor(swinger); }
+void* ResolveContainer(const std::wstring& key) {
+    if (key.empty() || !ue_wrap::swinger::EnsureResolved()) return nullptr;
+    return g_container.ActorForKey(key);
+}
 std::wstring OvenKey(void* oven) { return g_oven.KeyForActor(oven); }
 
 std::wstring LightSwitchKey(void* sw) { return g_light.KeyForActor(sw); }

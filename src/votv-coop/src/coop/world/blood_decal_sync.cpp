@@ -7,6 +7,7 @@
 #include "coop/session/net_pump.h"  // IsInAnnouncedWorld
 
 #include "ue_wrap/core/log.h"
+#include "ue_wrap/devices/grime.h"  // ReadType, ReadProcess, WriteProcessAndApply
 #include "ue_wrap/core/object_index.h"
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/core/script_gate.h"
@@ -99,8 +100,8 @@ void OnBeginPlayPost(const sg::Call& call) {
     if (p.type < 0 || p.type > 64) p.type = 0;
     p.drip = drip ? 1 : 0;
     if (!s->SendReliable(coop::net::ReliableKind::BloodDecal, &p, sizeof(p))) return;
-    if (++g_sent == 1)
-        UE_LOGI("[BLOOD] the first splat went out: pos=(%.0f,%.0f,%.0f) type=%d drip=%u", loc.X, loc.Y, loc.Z, p.type,
+    if (++g_sent <= 3)
+        UE_LOGI("[BLOOD] a splat went out: pos=(%.0f,%.0f,%.0f) type=%d drip=%u", loc.X, loc.Y, loc.Z, p.type,
                 static_cast<unsigned>(p.drip));
 }
 
@@ -151,7 +152,20 @@ void OnBloodDecal(const coop::net::BloodDecalPayload& p) {
     E::SetActorLocation(a, ue_wrap::FVector{p.locX, p.locY, p.locZ});
     E::SetActorRotation(a, ue_wrap::FRotator{p.rotPitch, p.rotYaw, p.rotRoll});
     E::SetActorScale3D(a, ue_wrap::FVector{p.sclX, p.sclY, p.sclZ});  // FinishSpawning re-applied the spawn transform
-    if (++g_spawned == 1) UE_LOGI("[BLOOD] the first peer splat spawned here at (%.0f,%.0f,%.0f)", p.locX, p.locY, p.locZ);
+    // The decal's BeginPlay rolls its own Type when the class asks for a random one, so the sender's Type is
+    // written again after it and the material re-made from it. The Type is half of the key grime_sync cleans
+    // by (with the quantised position): a copy of another Type would never take the sender's sponge.
+    int32_t got = -1;
+    ue_wrap::grime::ReadType(a, got);
+    if (g_typeOff >= 0 && got != p.type) {
+        *reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(a) + g_typeOff) = p.type;
+        if (void* fn = R::FindDispatchFunctionCached(R::ClassOf(a), L"SetMaterial")) R::CallFunction(a, fn, nullptr);
+        float proc = 1.f;
+        if (ue_wrap::grime::ReadProcess(a, proc)) ue_wrap::grime::WriteProcessAndApply(a, proc);
+    }
+    if (++g_spawned <= 3)
+        UE_LOGI("[BLOOD] a peer splat spawned here at (%.0f,%.0f,%.0f) type=%d (BeginPlay had rolled %d)", p.locX,
+                p.locY, p.locZ, p.type, got);
 }
 
 void OnDisconnect() {

@@ -518,6 +518,7 @@ set(VOTVCOOP_SOURCES
     src/coop/interactables/door_state_verbs.cpp
     src/coop/interactables/lightgroup_verbs.cpp
     src/coop/interactables/verb_lanes.cpp
+    src/coop/interactables/swinger_pose_sync.cpp
     src/coop/interactables/desk_verb_intent.cpp
     src/coop/interactables/desk_verb_effects.cpp
     src/coop/interactables/toggle_verbs.cpp

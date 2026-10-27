@@ -73,6 +73,8 @@ std::wstring ApplianceKey(void* a);
 std::wstring GarageKey(void* g);
 std::wstring DoorBoxKey(void* box);
 std::wstring ContainerKey(void* swinger);
+// The container lane's lid for a key, or null. Game thread.
+void* ResolveContainer(const std::wstring& key);
 std::wstring OvenKey(void* oven);
 
 // The light switch lane's key for `sw`, or "" when the lane does not index it in the current world.

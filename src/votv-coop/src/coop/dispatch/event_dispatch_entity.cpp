@@ -6,6 +6,7 @@
 
 #include "event_dispatch.h"  // co-located private header (src tree, not include/)
 #include "coop/world/blood_decal_sync.h"
+#include "coop/interactables/swinger_pose_sync.h"
 
 #include "coop/element/player.h"
 #include "coop/element/registry.h"
@@ -46,6 +47,26 @@ bool HandleEntityEvent(net::Session& session,
                        void* localPlayer) {
     (void)session;
     switch (msg.kind) {
+    case net::ReliableKind::SwingerPose: {
+        // A peer swings a lid by hand; swinger_pose_sync puts this copy where it is. Bounds checked first.
+        if (msg.payloadLen < sizeof(net::SwingerPosePayload)) {
+            UE_LOGW("event_feed: SwingerPose payload too short (%zu < %zu)",
+                    static_cast<size_t>(msg.payloadLen), sizeof(net::SwingerPosePayload));
+            break;
+        }
+        net::SwingerPosePayload p{};
+        std::memcpy(&p, msg.payload, sizeof(p));
+        const float vals[6] = {p.locX, p.locY, p.locZ, p.rotPitch, p.rotYaw, p.rotRoll};
+        bool bad = p.key.len == 0 || p.key.len > 31;
+        for (float v : vals) if (!std::isfinite(v)) bad = true;
+        if (std::fabs(p.locX) > 1.0e6f || std::fabs(p.locY) > 1.0e6f || std::fabs(p.locZ) > 1.0e6f) bad = true;
+        if (bad) {
+            UE_LOGW("event_feed: SwingerPose fields out of bounds -- dropping");
+            break;
+        }
+        coop::swinger_pose_sync::OnSwingerPose(p);
+        break;
+    }
     case net::ReliableKind::BloodDecal: {
         // A peer's blood splat; blood_decal_sync spawns the same decal here. Bounds checked before any
         // engine write.

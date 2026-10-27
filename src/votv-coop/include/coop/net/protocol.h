@@ -30,7 +30,7 @@ inline constexpr uint32_t kMagic = 0x564D5450u;
 // This file is past the 1500-line hard cap and stays there: it is the single-feature exception the
 // rule names. One wire format, whose enum, payload structs and static_asserts are read together;
 // splitting it would put a kind's number in one file and its bytes in another.
-inline constexpr uint16_t kProtocolVersion = 256;
+inline constexpr uint16_t kProtocolVersion = 257;
 
 // Default LAN port (overridable via multivoid.ini "net.port=").
 inline constexpr uint16_t kDefaultPort = 47621;
@@ -1138,6 +1138,12 @@ enum class ReliableKind : uint8_t {
     // seen by all and sits at one world position, which grime_sync's cleaning keys on. Not pre-world.
     // Late join: none (the host's save carries the host's decals). BloodDecalPayload.
     BloodDecal = 201,
+    // ANY PEER, relayed by the host: the pose of a hinged lid (a swinger: a fridge, microwave, safe or
+    // cabinet door) this peer's player is swinging by hand, while it is held and as it settles after.
+    // The lid is physical, so an open/close edge (ContainerState) replays as the game's own kick and
+    // moved the far copy a little or not at all; the pose puts it where the swinging peer's is. Not
+    // pre-world. Late join: none (ContainerState's snapshot carries open or closed). SwingerPosePayload.
+    SwingerPose = 202,
 };
 
 #pragma pack(push, 1)
@@ -1833,6 +1839,15 @@ struct BloodDecalPayload {
 };
 static_assert(sizeof(BloodDecalPayload) == 44, "BloodDecalPayload must be 44 bytes");
 static_assert(sizeof(BloodDecalPayload) <= 256 - 20 - 8, "BloodDecalPayload must fit one datagram");
+
+// A swinging lid's pose (SwingerPose): the lid by the container lane's key, its world transform.
+struct SwingerPosePayload {
+    WireKey key;                       // 32 -- interactable_sync::ContainerKey of the lid
+    float   locX, locY, locZ;          // 12
+    float   rotPitch, rotYaw, rotRoll; // 12
+};
+static_assert(sizeof(SwingerPosePayload) == 56, "SwingerPosePayload must be 56 bytes");
+static_assert(sizeof(SwingerPosePayload) <= 256 - 20 - 8, "SwingerPosePayload must fit one datagram");
 
 namespace sleepingbag_intent {
 constexpr uint8_t kUnwrap = 1;

@@ -274,6 +274,7 @@ constexpr bool IsClientRelayableReliableKind(ReliableKind k) {
     case ReliableKind::PropRelease:
     case ReliableKind::PropStickState:    // a client's wall-attachable stick
     case ReliableKind::BloodDecal:        // a client's blood splat, seen by every peer
+    case ReliableKind::SwingerPose:       // a lid a client swings by hand
     // DoorState is not relayable: the host authors it, and a client's own door verbs reach the host
     // as DoorVerbIntent, an intent addressed to the host alone. PowerControlState likewise: a press
     // reaches the host alone and the host authors the canonical.

@@ -10,6 +10,7 @@
 #include "coop/interactables/eraser_press_intent.h"
 #include "coop/interactables/keypad_verbs.h"
 #include "coop/interactables/lightgroup_verbs.h"
+#include "coop/interactables/swinger_pose_sync.h"
 #include "coop/interactables/toggle_verbs.h"
 #include "coop/items/point_sack_intent.h"
 #include "coop/net/session.h"
@@ -54,6 +55,7 @@ void Tick(coop::net::Session& session) {
     coop::blood_decal_sync::Tick();     // settle the blood watch
     coop::walker_mirror::Install(&session);  // retry a watch not taken yet (idempotent)
     coop::walker_mirror::Tick(session);  // HOST: the walking mannequins' poses to the clients
+    coop::swinger_pose_sync::Tick(session);  // a lid this peer swings by hand: its pose to the others
 }
 
 void OnDisconnect() {
@@ -71,6 +73,7 @@ void OnDisconnect() {
     coop::open_container_sync::OnDisconnect();
     coop::blood_decal_sync::OnDisconnect();
     coop::walker_mirror::OnDisconnect();
+    coop::swinger_pose_sync::OnDisconnect();
 }
 
 }  // namespace coop::verb_lanes

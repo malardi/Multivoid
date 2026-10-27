@@ -2,6 +2,8 @@
 
 #include "coop/creatures/walker_mirror.h"
 
+#include "coop/config/config.h"
+#include "coop/config/config_registry.h"
 #include "coop/element/element.h"
 #include "coop/net/protocol.h"
 #include "coop/net/session.h"
@@ -14,6 +16,7 @@
 #include "ue_wrap/core/object_index.h"
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/core/script_gate.h"
+#include "ue_wrap/core/script_fingerprint.h"  // the walker brain dump (devkeys)
 #include "ue_wrap/core/types.h"
 #include "ue_wrap/engine/engine.h"
 #include "ue_wrap/facts/function_row.h"
@@ -21,6 +24,8 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <sstream>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -114,6 +119,31 @@ void SendWalker(coop::net::Session& s, void* w) {
     if (++g_sent == 1) UE_LOGI("[WALKER] HOST streams its walking mannequin eid=%u to the clients", key);
 }
 
+// [devkeys] The walker's Blueprint, once a process, as the canonical text the fingerprint renders: the
+// chase target and the look test are read from it to make the walker chase the nearest player. Every line
+// goes to the log under [WALKER-BP]. Only with the developer switch on; inert otherwise.
+bool g_dumped = false;
+void DumpBrainOnce() {
+    if (g_dumped || !g_cls) return;
+    static const bool s_on = coop::config::ResolveFlag(coop::config_registry::rows::devkeys);
+    if (!s_on) { g_dumped = true; return; }
+    g_dumped = true;
+    const wchar_t* const kFns[] = {L"ExecuteUbergraph_prop_wMannequin", L"ReceiveTick", L"upd", L"pickUpWeapon",
+                                   L"dropWeapon", L"setWeapon", L"timer_jump", L"timer_saw", L"timer_damage"};
+    for (const wchar_t* name : kFns) {
+        void* fn = R::FindFunction(g_cls, name);
+        if (!fn) { UE_LOGI("[WALKER-BP] %ls: not found", name); continue; }
+        const auto r = ue_wrap::script_fingerprint::Of(fn);
+        UE_LOGI("[WALKER-BP] ==== %ls ok=%d lines follow%s%s", name, r.ok ? 1 : 0, r.problem.empty() ? "" : " problem=",
+                r.problem.c_str());
+        std::istringstream in(r.text);
+        std::string line;
+        int n = 0;
+        while (std::getline(in, line) && n < 4000) UE_LOGI("[WALKER-BP] %04d %s", n++, line.c_str());
+    }
+    UE_LOGI("[WALKER-BP] ==== end");
+}
+
 }  // namespace
 
 void Install(coop::net::Session* session) {
@@ -141,6 +171,7 @@ void Tick(coop::net::Session& session) {
     if (!session.AnyWorldReadyPeer()) return;
     if (!g_cls) g_cls = OI::ClassByName(L"prop_wMannequin_C");
     if (!g_cls) return;
+    DumpBrainOnce();
     std::vector<void*> walkers;
     OI::ForEachInstance(g_cls, &Collect, &walkers);
     for (void* w : walkers) SendWalker(session, w);
