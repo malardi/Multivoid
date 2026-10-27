@@ -48,6 +48,10 @@ void OnPeerLevel(int slot, const coop::net::PeerLevelPayload& p);
 bool PoseAccepted(int slot);                   // false: that peer stands on another level than this one
 bool PeerLevelKnown(int slot);                 // the peer has said its level at least once
 
+// The census's seam (prop_drop_intent): a spawn finished by the gameplay mode's script. Its carried-equipment
+// walk is read there, and a client's runaway array emptied in a dimension.
+void OnGamemodeSpawn(void* gamemode);
+
 // Session start and end reset the state.
 void OnSessionStart();
 void OnDisconnect();

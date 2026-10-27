@@ -197,29 +197,34 @@ bool g_gmWatch = false, g_gmLive = false;
 
 struct NameArray { R::FName* data; int32_t num; int32_t max; };
 
-ue_wrap::script_gate::Verdict OnGamemodeBeginPlayPre(const ue_wrap::script_gate::Call& call) {
-    void* gm = call.object;
-    if (!gm) return ue_wrap::script_gate::Verdict::Run;
+uint32_t g_carryCheckedGen = 0;
+
+void CheckCarried(void* gm, const char* where) {
+    if (!gm) return;
     const int32_t slotOff = R::FindPropertyOffset(R::ClassOf(gm), L"saveSlot");
     void* slot = slotOff >= 0 ? *reinterpret_cast<void**>(static_cast<uint8_t*>(gm) + slotOff) : nullptr;
     if (!slot) {
-        UE_LOGI("[DIMENSION] gamemode BeginPlay: no saveSlot (off=%d)", slotOff);
-        return ue_wrap::script_gate::Verdict::Run;
+        UE_LOGI("[DIMENSION] %s: no saveSlot (off=%d)", where, slotOff);
+        return;
     }
     const int32_t eqOff = R::FindPropertyOffset(R::ClassOf(slot), L"beginEquipment");
-    if (eqOff < 0) return ue_wrap::script_gate::Verdict::Run;
+    if (eqOff < 0) return;
     auto* arr = reinterpret_cast<NameArray*>(static_cast<uint8_t*>(slot) + eqOff);
     std::wstring first;
     for (int32_t i = 0; i < arr->num && i < 8 && arr->data; ++i) first += R::ToString(arr->data[i]) + L" ";
     auto* s = g_session.load(std::memory_order_acquire);
     const bool client = s && s->running() && s->role() == coop::net::Role::Client;
-    UE_LOGI("[DIMENSION] gamemode BeginPlay: saveSlot.beginEquipment holds %d (first: %ls)%s", arr->num, first.c_str(),
+    UE_LOGI("[DIMENSION] %s: saveSlot.beginEquipment holds %d (first: %ls)%s", where, arr->num, first.c_str(),
             InDimension() ? " -- in a dimension" : "");
     if (client && InDimension() && arr->num > static_cast<int32_t>(kMaxCarried)) {
         UE_LOGW("[DIMENSION] a client's carried equipment of %d entries is no kit -- emptied before the level spawns it",
                 arr->num);
-        arr->num = 0;  // the storage stays; the array is empty, as the gamemode's own clear leaves it
+        arr->num = 0;  // the storage stays; the loop re-reads the length every pass and ends
     }
+}
+
+ue_wrap::script_gate::Verdict OnGamemodeBeginPlayPre(const ue_wrap::script_gate::Call& call) {
+    CheckCarried(call.object, "gamemode BeginPlay");
     return ue_wrap::script_gate::Verdict::Run;
 }
 
@@ -417,5 +422,14 @@ void DropPuppetOf(int slot) {
     coop::puppet_drive::DestroySlot(slot);
 }
 }  // namespace
+
+void OnGamemodeSpawn(void* gamemode) {
+    // The census sees the carried-equipment walk's first spawn: the array is read (and a client's emptied in a
+    // dimension) once per world, from inside the walk -- its loop re-reads the length every pass.
+    const uint32_t gen = ue_wrap::world_identity::Generation();
+    if (gen == g_carryCheckedGen) return;
+    g_carryCheckedGen = gen;
+    CheckCarried(gamemode, "the gamemode's first spawn of this world");
+}
 
 }  // namespace coop::dimension_travel

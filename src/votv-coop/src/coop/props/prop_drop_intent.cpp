@@ -173,8 +173,12 @@ void CensusSpawn(void* actor, void* author) {
 
 void OnClientFinishSpawn(void* /*context*/, void* srcObj, void* result) {
     if (!GT::IsGameThread()) return;
-    if (coop::dimension_travel::InDimension() && result && R::IsLive(result))
-        CensusSpawn(result, srcObj && R::IsLive(srcObj) ? srcObj : nullptr);
+    if (coop::dimension_travel::InDimension() && result && R::IsLive(result)) {
+        void* author = srcObj && R::IsLive(srcObj) ? srcObj : nullptr;
+        if (author && R::NameEquals(R::NameOf(R::ClassOf(author)), L"mainGamemode_C"))
+            coop::dimension_travel::OnGamemodeSpawn(author);
+        CensusSpawn(result, author);
+    }
     // The probe's birth record comes before the session gates: the menu world's births after a quit
     // happen with no session, and they are what the pause-quit drill measures.
     if (coop::dev::prop_birth_key_probe::IsEnabled() && result && R::IsLive(result) &&
