@@ -29,7 +29,8 @@ void Install(coop::net::Session* session);
 // run_end_travel's seam: this peer's lib_C::loadLevel(level) is about to run, `own` when this peer's player
 // authored it (not a puppet's graph). Marks the dimension state and, on the host, sends the travel.
 // `viaSubArea`: the call came from lib_C's "Load Level as Sub Area"; `clearSubArea`: loadLevel's own.
-void OnLocalTravel(const std::wstring& level, bool own, bool viaSubArea = false, bool clearSubArea = false);
+void OnLocalTravel(const std::wstring& level, bool own, bool viaSubArea = false, bool clearSubArea = false,
+                   const std::wstring& option = std::wstring());
 
 // True while this peer's world is a dimension it travelled into during this session. Game thread; any
 // thread reads a relaxed flag.

@@ -164,15 +164,23 @@ sg::Verdict OnLoadLevelPre(const sg::Call& call) {
         static int32_t sClearOff = -1;
         if (call.function != sClearFn) { sClearFn = call.function; sClearOff = R::FindParamOffset(call.function, L"clearSubArea"); }
         const bool clearSubArea = sClearOff >= 0 && call.locals[sClearOff] != 0;
+        static int32_t sOptOff = -1;
+        if (sClearFn == call.function && sOptOff == -1) sOptOff = R::FindParamOffset(call.function, L"option");
+        std::wstring option;
+        if (sOptOff >= 0) {
+            struct FStr { const wchar_t* data; int32_t num; int32_t max; };
+            const auto* fs = reinterpret_cast<const FStr*>(call.locals + sOptOff);
+            if (fs->data && fs->num > 1 && fs->num < 256) option.assign(fs->data, static_cast<size_t>(fs->num - 1));
+        }
         const std::wstring callerFn = call.callerFunction ? R::ToString(R::NameOf(call.callerFunction)) : std::wstring();
         const std::wstring callerCls = call.callerObject ? R::ClassNameOf(call.callerObject) : std::wstring();
         const bool viaSubArea = callerFn == L"Load Level as Sub Area";
-        UE_LOGI("[DIMENSION] loadLevel(\"%ls\") called from %ls::%ls (clearSubArea=%d)", R::ToString(level).c_str(),
-                callerCls.empty() ? L"?" : callerCls.c_str(), callerFn.empty() ? L"?" : callerFn.c_str(),
-                clearSubArea ? 1 : 0);
+        UE_LOGI("[DIMENSION] loadLevel(\"%ls\") called from %ls::%ls (clearSubArea=%d, option %zu chars)",
+                R::ToString(level).c_str(), callerCls.empty() ? L"?" : callerCls.c_str(),
+                callerFn.empty() ? L"?" : callerFn.c_str(), clearSubArea ? 1 : 0, option.size());
         coop::dimension_travel::OnLocalTravel(R::ToString(level),
                                               author && author == coop::players::Registry::Get().Local(),
-                                              viaSubArea, clearSubArea);
+                                              viaSubArea, clearSubArea, option);
         // A sub-level travel (sl_*, the map transitions). It is not this seam's to refuse -- and
         // it will still end the session for the peer that takes it, which is a separate open
         // question, so the trail is left deliberately.

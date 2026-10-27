@@ -145,6 +145,7 @@ void WriteToken(const std::wstring& token) {
 }
 
 bool g_lastViaSubArea = false, g_lastClear = false;
+std::wstring g_lastOption;  // the host's own loadLevel Option: the entry pass it carries
 
 void SendTravel(coop::net::Session& s, const std::wstring& level) {
     coop::net::WorldTravelPayload p{};
@@ -160,7 +161,7 @@ void SendTravel(coop::net::Session& s, const std::wstring& level) {
             p.flags |= F::kHaveGi;
             if (b[f.loadObjects]) p.flags |= F::kLoadObjects;
         }
-        p.tokenLen = PutAscii(p.token, ReadToken(gi));
+        p.tokenLen = PutAscii(p.token, !g_lastOption.empty() ? g_lastOption : ReadToken(gi));
     }
     if (s.SendReliable(coop::net::ReliableKind::WorldTravel, &p, sizeof(p))) {
         ++g_sent;
@@ -173,7 +174,11 @@ void SendTravel(coop::net::Session& s, const std::wstring& level) {
 
 // The host's own call, on this peer: lib_C's "Load Level as Sub Area"(level) when the host's travel came
 // through it, else lib_C::loadLevel(level, clearSubArea), authored by this peer's own player.
-bool CallTravel(const std::wstring& level, bool viaSubArea, bool clearSubArea) {
+// A UE4 FString parameter, pointing at the caller's own buffer for the call: the script copies it.
+struct ParamFString { const wchar_t* data; int32_t num; int32_t max; };
+
+bool CallTravel(const std::wstring& level, bool viaSubArea, bool clearSubArea, const std::wstring& option) {
+    const ParamFString opt{option.c_str(), static_cast<int32_t>(option.size() + 1), static_cast<int32_t>(option.size() + 1)};
     void* cdo = R::FindClassDefaultObject(L"lib_C");
     void* local = coop::players::Registry::Get().Local();
     if (!cdo || !local) return false;
@@ -183,6 +188,7 @@ bool CallTravel(const std::wstring& level, bool viaSubArea, bool clearSubArea) {
     if (fn) {
         ue_wrap::ParamFrame f(fn);
         if (!f.valid() || !f.Set<R::FName>(L"Level", name) || !f.Set<void*>(L"__WorldContext", local)) return false;
+        if (!option.empty()) f.SetRaw(L"Option", &opt, sizeof(opt));
         return ue_wrap::Call(cdo, f);
     }
     fn = R::FindFunction(R::ClassOf(cdo), L"loadLevel");
@@ -191,6 +197,9 @@ bool CallTravel(const std::wstring& level, bool viaSubArea, bool clearSubArea) {
     if (!f.valid() || !f.Set<R::FName>(L"level", name) || !f.Set<void*>(L"__WorldContext", local)) return false;
     const uint8_t clear = clearSubArea ? 1 : 0;
     f.SetRaw(L"clearSubArea", &clear, 1);
+    // loadLevel writes its Option into mainGameInstance.NewVar_1 -- the entry pass the next level's gamemode
+    // checks; the game's own travels pass the pass there (b279's dump), an empty Option wipes it.
+    if (!option.empty()) f.SetRaw(L"Option", &opt, sizeof(opt));
     return ue_wrap::Call(cdo, f);
 }
 
@@ -263,7 +272,7 @@ void Install(coop::net::Session* session) {
                                                     &OnGamemodeBeginPlayPre, nullptr);
 }
 
-void OnLocalTravel(const std::wstring& level, bool own, bool viaSubArea, bool clearSubArea) {
+void OnLocalTravel(const std::wstring& level, bool own, bool viaSubArea, bool clearSubArea, const std::wstring& option) {
     auto* s = g_session.load(std::memory_order_acquire);
     if (!s || !s->running() || !own) return;
     if (EqualsNoCase(level, kMenuLevel)) return;  // the menu is the run's end, judged by run_end_travel
@@ -284,6 +293,7 @@ void OnLocalTravel(const std::wstring& level, bool own, bool viaSubArea, bool cl
     g_myLevel.clear();
     SendPeerLevel(std::wstring());
     g_lastViaSubArea = viaSubArea;
+    g_lastOption = option;
     g_lastClear = clearSubArea;
     if (s->role() == coop::net::Role::Host && s->connected() && !g_following) SendTravel(*s, level);
 }
@@ -327,10 +337,11 @@ void OnWorldTravel(const coop::net::WorldTravelPayload& p) {
         }
     }
     // The entry pass: the host's, or the game's own constant when the host's had been spent already.
-    if (toDimension) WriteToken(token.empty() ? std::wstring(kEntryPass) : token);
+    const std::wstring pass = toDimension ? (token.empty() ? std::wstring(kEntryPass) : token) : std::wstring();
+    if (toDimension) WriteToken(pass);
     LogGi("before following the host");
     g_following = true;
-    const bool ok = CallTravel(level, (p.flags & F::kViaSubArea) != 0, (p.flags & F::kClearSubArea) != 0);
+    const bool ok = CallTravel(level, (p.flags & F::kViaSubArea) != 0, (p.flags & F::kClearSubArea) != 0, pass);
     g_following = false;
     ++g_followed;
     UE_LOGI("[DIMENSION] the host went to '%ls' (flags 0x%02X) -- this client follows: %s", level.c_str(),
