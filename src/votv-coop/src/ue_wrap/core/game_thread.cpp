@@ -17,6 +17,7 @@
 #include "ue_wrap/engine/spawn_gate.h"
 
 #include <windows.h>
+#include <tlhelp32.h>
 
 #include <atomic>
 #include <chrono>
@@ -497,6 +498,92 @@ void ClearAllObservers() {
     D::g_preObserverActive.store(0, std::memory_order_release);
     BloomClear(D::g_postBloom);
     BloomClear(D::g_preBloom);
+}
+
+
+namespace {
+// One thread's frames from its register snapshot. SEH-only (no C++ objects in the frame): the unwind
+// reads a live stack the thread may be moving on.
+int UnwindFrames(CONTEXT ctx, void** out, int max) {
+    int n = 0;
+    __try {
+        for (; n < max && ctx.Rip; ++n) {
+            out[n] = reinterpret_cast<void*>(ctx.Rip);
+            DWORD64 imageBase = 0;
+            PRUNTIME_FUNCTION fn = ::RtlLookupFunctionEntry(ctx.Rip, &imageBase, nullptr);
+            if (fn) {
+                void* handlerData = nullptr;
+                DWORD64 establisher = 0;
+                ::RtlVirtualUnwind(UNW_FLAG_NHANDLER, imageBase, ctx.Rip, fn, &ctx, &handlerData, &establisher, nullptr);
+            } else {
+                ctx.Rip = *reinterpret_cast<DWORD64*>(ctx.Rsp);  // a leaf: the return address is on top
+                ctx.Rsp += 8;
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    return n;
+}
+
+bool SnapshotThread(DWORD tid, CONTEXT& ctx) {
+    HANDLE h = ::OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, tid);
+    if (!h) return false;
+    bool ok = false;
+    if (::SuspendThread(h) != static_cast<DWORD>(-1)) {
+        ctx = CONTEXT{};
+        ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+        ok = ::GetThreadContext(h, &ctx) != 0;
+        ::ResumeThread(h);  // resumed before the unwind: a lock it holds is never ours to wait on
+    }
+    ::CloseHandle(h);
+    return ok;
+}
+
+bool InModule(void* ip, HMODULE mod) {
+    HMODULE m = nullptr;
+    return ip && ::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                      reinterpret_cast<LPCWSTR>(ip), &m) && m == mod;
+}
+
+void LogFrames(const char* who, DWORD tid, void** frames, int n) {
+    UE_LOGW("[GT-STACK] %s (thread %lu), %d frame(s):", who, tid, n);
+    for (int i = 0; i < n; ++i) UE_LOGW("[GT-STACK]   #%02d %s", i, D::FormatModuleRva(frames[i]));
+}
+}  // namespace
+
+void LogStacks(const char* why) {
+    const DWORD gt = static_cast<DWORD>(D::g_gameThreadId.load(std::memory_order_relaxed));
+    if (gt == 0 || gt == ::GetCurrentThreadId()) return;
+    UE_LOGW("[GT-STACK] %s -- the game thread's stack follows", why ? why : "a look");
+    constexpr int kMax = 48;
+    void* frames[kMax];
+    CONTEXT ctx{};
+    if (SnapshotThread(gt, ctx)) LogFrames("game thread", gt, frames, UnwindFrames(ctx, frames, kMax));
+    else UE_LOGW("[GT-STACK] the game thread's registers could not be read");
+
+    // The other threads standing in this mod's DLL: one side of a lock the game thread may wait on.
+    HMODULE self = nullptr;
+    ::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                         reinterpret_cast<LPCWSTR>(&LogStacks), &self);
+    HANDLE snap = ::CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE) return;
+    THREADENTRY32 te{};
+    te.dwSize = sizeof(te);
+    const DWORD pid = ::GetCurrentProcessId();
+    int shown = 0;
+    for (BOOL more = ::Thread32First(snap, &te); more && shown < 8; more = ::Thread32Next(snap, &te)) {
+        if (te.th32OwnerProcessID != pid || te.th32ThreadID == gt || te.th32ThreadID == ::GetCurrentThreadId()) continue;
+        CONTEXT c{};
+        if (!SnapshotThread(te.th32ThreadID, c)) continue;
+        void* f[kMax];
+        const int n = UnwindFrames(c, f, kMax);
+        bool ours = false;
+        for (int i = 0; i < n && i < 24 && !ours; ++i) ours = InModule(f[i], self);
+        if (!ours) continue;
+        ++shown;
+        LogFrames("a thread in the mod", te.th32ThreadID, f, n);
+    }
+    ::CloseHandle(snap);
 }
 
 int PostObserverCount() { return D::g_postObserverActive.load(std::memory_order_relaxed); }

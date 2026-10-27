@@ -141,6 +141,12 @@ void TickStallReport() {
             "the last walk finished: '%s'",
             static_cast<long long>(now - g_stallSinceMs), cur ? cur : "(none)",
             static_cast<long long>(cur ? inCur : 0), last ? last : "(none)");
+    // Where the thread stands, twice per stall at most: at the first report and the next one 30 s on
+    // (a loop moves between the two, a wait does not).
+    static unsigned long long sStackedFor = ~0ull;
+    static int sStacks = 0;
+    if (sStackedFor != g_stallSeenTasks) { sStackedFor = g_stallSeenTasks; sStacks = 0; }
+    if (sStacks++ < 2) ue_wrap::game_thread::LogStacks("[GT-STALL]");
 }
 }  // namespace
 

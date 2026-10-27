@@ -82,6 +82,12 @@ void SetPumpPrologue(void (*fn)());
 // The number of tasks the dispatcher has run (diagnostics and the self-test).
 unsigned long long TasksRun();
 
+// The stall reporter's look inside: the game thread's call stack, unwound from a snapshot of its
+// registers, written to the log as module+RVA frames, and the stacks of the other threads that stand
+// in this mod's DLL (a lock both sides wait on shows as one of those). Any thread but the game thread;
+// the game thread is suspended only for the register read.
+void LogStacks(const char* why);
+
 // The number of drains the dispatcher has begun. A task reads it to tell whether it runs in the same
 // drain as an earlier one: every task posted while a drain runs is run by that drain. Game thread.
 uint64_t DrainSerial();
