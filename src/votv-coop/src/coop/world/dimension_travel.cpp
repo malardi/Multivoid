@@ -80,6 +80,8 @@ void LogTransports(void* gi, const char* when) {
     UE_LOGI("[DIMENSION] %s: gameInstance transports inv=%d equipment=%d hold=%d", when, nums[0], nums[1], nums[2]);
 }
 
+std::wstring ReadToken(void* gi);
+
 void LogGi(const char* when) {
     void* gi = ue_wrap::world_singleton::GameInstance();
     if (!gi) { UE_LOGI("[DIMENSION] %s: no game instance", when); return; }
@@ -89,8 +91,8 @@ void LogGi(const char* when) {
     std::wstring sub = f.subArea >= 0 ? R::ToString(*reinterpret_cast<const R::FName*>(b + f.subArea)) : L"?";
     ue_wrap::FVector d{};
     if (f.locDist >= 0) d = *reinterpret_cast<const ue_wrap::FVector*>(b + f.locDist);
-    UE_LOGI("[DIMENSION] %s: gameInstance subArea='%ls' locationDistance=(%.0f,%.0f,%.0f) loadObjects=%d", when,
-            sub.c_str(), d.X, d.Y, d.Z, f.loadObjects >= 0 ? b[f.loadObjects] : -1);
+    UE_LOGI("[DIMENSION] %s: gameInstance subArea='%ls' locationDistance=(%.0f,%.0f,%.0f) loadObjects=%d NewVar_1='%ls' gi=%p", when,
+            sub.c_str(), d.X, d.Y, d.Z, f.loadObjects >= 0 ? b[f.loadObjects] : -1, ReadToken(gi).c_str(), gi);
 }
 
 template <size_t N>
@@ -358,7 +360,7 @@ namespace {
 // coop_logs\bp_<function>.txt: the dimension work reads the game's own logic there (b274: a client's labyrinth
 // spawns prop_C endlessly from ExecuteUbergraph_mainGamemode@12796, the host's does not).
 void DumpGamemodeOnce() {
-    static bool sDone = false;
+    static bool sDone = false;  // b279: the dump names more classes; once per process
     if (sDone) return;
     static const bool sOn = coop::config::ResolveFlag(coop::config_registry::rows::devkeys);
     if (!sOn) { sDone = true; return; }
@@ -367,10 +369,14 @@ void DumpGamemodeOnce() {
     sDone = true;
     const std::wstring dir = ue_wrap::paths::ExeDir() + L"\\coop_logs";
     ::CreateDirectoryW(dir.c_str(), nullptr);
-    void* cls = R::ClassOf(gm);
-    const wchar_t* const kFns[] = {L"ExecuteUbergraph_mainGamemode", L"ReceiveBeginPlay", L"loadObjects", L"loadData"};
-    for (const wchar_t* name : kFns) {
-        void* fn = R::FindFunction(cls, name);
+    struct Want { const wchar_t* cls; const wchar_t* fn; };
+    const Want kFns[] = {{L"mainGamemode_C", L"ExecuteUbergraph_mainGamemode"}, {L"lib_C", L"loadLevel"},
+                         {L"lib_C", L"Load Level as Sub Area"}, {L"lib_C", L"transition"},
+                         {L"mainPlayer_C", L"ExecuteUbergraph_mainPlayer"}, {L"mainGameInstance_C", L"keepPlayer"}};
+    for (const Want& w : kFns) {
+        const wchar_t* name = w.fn;
+        void* cls = R::FindClass(w.cls);
+        void* fn = cls ? R::FindFunction(cls, name) : nullptr;
         if (!fn) { UE_LOGI("[BP-DUMP] %ls: not found", name); continue; }
         const auto r = ue_wrap::script_fingerprint::Of(fn);
         const std::wstring path = dir + L"\\bp_" + name + L".txt";
@@ -449,6 +455,7 @@ void OnGamemodeSpawn(void* gamemode) {
     if (gen == g_carryCheckedGen) return;
     g_carryCheckedGen = gen;
     CheckCarried(gamemode, "the gamemode's first spawn of this world");
+    LogGi("the gamemode's first spawn of this world (the entry pass is checked one frame later)");
 }
 
 }  // namespace coop::dimension_travel
