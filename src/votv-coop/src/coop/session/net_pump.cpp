@@ -51,6 +51,7 @@
 #include "coop/items/broom_stroke.h"
 #include "coop/props/trash_morph_gate.h"
 #include "coop/items/player_inventory_sync.h"  // TakeJoinPlacement: where the join's appearance goes
+#include "coop/world/dimension_travel.h"  // InDimension: no join placement in a dimension
 #include "coop/session/teleport_client.h"  // the checkpoint join spawn (the client pawn-Set edge)
 #include "ue_wrap/core/types.h"
 
@@ -526,7 +527,11 @@ void Tick(coop::net::Session& session) {
         // returning player appears once at the spot their profile says they were standing on (a
         // drill's join_at_host leaves that one appearance at the host's); every other body of the
         // session, a respawn included, at the start point.
-        if (localNow && isConnected && !isHost) {
+        // In a dimension the body stays where that level's own travel put it: the start point and the
+        // profile's pose are places on the gameplay map, and in the labyrinth they are the void.
+        if (localNow && isConnected && !isHost && coop::dimension_travel::InDimension()) {
+            UE_LOGI("net_pump: CLIENT spawn -> left where the dimension put it (no join placement in a dimension)");
+        } else if (localNow && isConnected && !isHost) {
             namespace PIS = coop::player_inventory_sync;
             float x = 0, y = 0, z = 0, yaw = 0;
             switch (PIS::TakeJoinPlacement(x, y, z, yaw)) {

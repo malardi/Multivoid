@@ -18,6 +18,7 @@
 #include "coop/props/container_contents_sync.h"  // TakeObjInFlight -- mark a container-extraction birth
 #include "coop/props/container_birth.h"           // a thrown container's birth slice
 #include "coop/session/world_load_episode.h"  // InEpisode (quiet during the join loadObjects churn)
+#include "coop/world/dimension_travel.h"     // InDimension: a dimension's own props stay per peer
 #include "ue_wrap/core/call.h"                   // ParamFrame + Call (setKey on the host re-spawn)
 #include "ue_wrap/engine/engine.h"                 // BeginDeferredSpawn/FinishDeferredSpawn/SetActorScale3D
 #include "ue_wrap/core/fname_utils.h"            // StringToFName
@@ -137,6 +138,9 @@ void OnClientFinishSpawn(void* /*context*/, void* /*srcObj*/, void* result) {
     auto* s = LoadSession();
     if (!s || !s->connected()) return;
     if (s->role() != coop::net::Role::Client) return;      // host places broadcast via host_spawn_watcher
+    // A dimension's level builds its own props as the player walks it (the labyrinth lays ~100 a
+    // second), one set per peer: none of them is a player's place, and none goes to the host.
+    if (coop::dimension_travel::InDimension()) return;
     // Was a player's own spawn verb on the stack? Asked FIRST, because it is the one question only
     // this instant can answer -- the VM's calling frame is gone by the drain -- and because it is
     // what exempts a birth from the load gates below.
