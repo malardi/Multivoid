@@ -30,7 +30,7 @@ inline constexpr uint32_t kMagic = 0x564D5450u;
 // This file is past the 1500-line hard cap and stays there: it is the single-feature exception the
 // rule names. One wire format, whose enum, payload structs and static_asserts are read together;
 // splitting it would put a kind's number in one file and its bytes in another.
-inline constexpr uint16_t kProtocolVersion = 273;
+inline constexpr uint16_t kProtocolVersion = 274;
 
 // Default LAN port (overridable via multivoid.ini "net.port=").
 inline constexpr uint16_t kDefaultPort = 47621;
@@ -1155,6 +1155,10 @@ enum class ReliableKind : uint8_t {
     // would build toward it. Poses from a peer on another level are not applied. Not relayed; not
     // pre-world. PeerLevelPayload.
     PeerLevel = 204,
+    // CLIENT->HOST: a piece of the client's log (coop/comms/log_mirror), streamed from a thread of its own
+    // so the host's machine holds both peers' logs. Bulk lane; not relayed; a dimension lets it through.
+    // LogChunkPayload, sent at its used length.
+    LogChunk = 205,
 };
 
 #pragma pack(push, 1)
@@ -1889,6 +1893,15 @@ struct PeerLevelPayload {
     char    name[31];   // 31 -- the level name, not terminated
 };
 static_assert(sizeof(PeerLevelPayload) == 32, "PeerLevelPayload must be 32 bytes");
+
+// A piece of a client's log file (LogChunk), sent at offsetof(data) + len bytes.
+struct LogChunkPayload {
+    uint32_t offset;     // 4   -- where in the file the bytes start
+    uint8_t  file;       // 1   -- 0 multivoid.log, 1 UE4SS.log
+    uint8_t  len;        // 1   -- 1..222
+    char     data[222];  // 222
+};
+static_assert(sizeof(LogChunkPayload) == 228, "LogChunkPayload must fill one reliable payload");
 
 namespace sleepingbag_intent {
 constexpr uint8_t kUnwrap = 1;

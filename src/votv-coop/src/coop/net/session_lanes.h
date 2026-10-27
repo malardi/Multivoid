@@ -66,6 +66,7 @@ inline Lane LaneForKind(ReliableKind k) {
     // A client's container break is sent from the break verb, ahead of the destroy the game runs after it; on
     // PropDestroy's lane the host meets the break first and runs it while the container still stands.
     case ReliableKind::ContainerBreakIntent: return Lane::Bulk;
+    case ReliableKind::LogChunk:       return Lane::Bulk;
     // A prop's save record shares PropSpawn's lane on purpose: same FIFO, so a record can never
     // overtake the birth it belongs to. The intent rides it too, so a client's authored record
     // cannot pass the destroy or spawn that produced it.
@@ -366,6 +367,7 @@ inline bool IsDimensionSendableKind(ReliableKind k) {
     case ReliableKind::TeleportClient:
     case ReliableKind::WorldTravel:
     case ReliableKind::PeerLevel:
+    case ReliableKind::LogChunk:
         return true;
     default:
         return false;

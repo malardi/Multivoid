@@ -5,6 +5,7 @@
 // coop/dispatch/event_dispatch.h.
 
 #include "event_dispatch.h"  // co-located private header (src tree, not include/)
+#include "coop/comms/log_mirror.h"  // OnChunk: a client's log on the host's machine
 #include "coop/world/blood_decal_sync.h"
 #include "coop/world/dimension_travel.h"
 #include "coop/interactables/swinger_pose_sync.h"
@@ -62,6 +63,12 @@ bool HandleEntityEvent(net::Session& session,
         net::WorldTravelPayload p{};
         std::memcpy(&p, msg.payload, sizeof(p));
         coop::dimension_travel::OnWorldTravel(p);
+        break;
+    }
+    case net::ReliableKind::LogChunk: {
+        // A client's log, mirrored to the host's coop_logs folder. Host only; the sink checks the bounds.
+        if (session.role() == net::Role::Host)
+            coop::log_mirror::OnChunk(msg.senderPeerSlot, msg.payload, static_cast<size_t>(msg.payloadLen));
         break;
     }
     case net::ReliableKind::PeerLevel: {
