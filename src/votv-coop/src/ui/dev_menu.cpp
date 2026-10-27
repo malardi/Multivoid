@@ -235,10 +235,9 @@ const std::vector<Cat>& Tree() {
             { "Events",   { { &ui::dev_panes::RenderEvents, true } }, true },
         }, true },
         { L10N_MARK("Network"), {
-            // Stats is for EVERYONE (the overlay toggle + live session readout);
-            // Session stays a dev placeholder, hidden for regular players.
+            // Stats is for EVERYONE (the overlay toggle + live session readout). The empty dev
+            // "Session" placeholder is gone: an empty pane read as a broken one.
             { L10N_MARK("Stats"),    { { &RenderNetStats, false } }, false },
-            { "Session",  {}, true },
         }, false },
         { L10N_MARK("Administration"), {
             // HOST-role-gated (not dev): online/offline/banned player admin.

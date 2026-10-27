@@ -21,6 +21,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <unordered_map>
 #include <vector>
 
 namespace coop::blood_decal_sync {
@@ -81,7 +82,26 @@ bool IsBlood(void* obj, bool& drip) {
     return R::IsDescendantOfAny(cls, &g_bloodCls, 1);
 }
 
+// Every live splat's place, taken at its BeginPlay (and again after a peer copy is placed): by the
+// splat's end the engine has already torn its root down and the actor reads (0,0,0), so the end
+// is sent with the place remembered here.
+struct Placed { int32_t idx; ue_wrap::FVector loc; };
+std::unordered_map<void*, Placed> g_placed;
+
+void Remember(void* a) {
+    ue_wrap::FVector l{};
+    if (!a || !E::TryGetActorLocation(a, l)) return;
+    if (g_placed.size() > 20000) g_placed.clear();  // a guard; a run never lays this many
+    g_placed[a] = Placed{R::InternalIndexOf(a), l};
+}
+
+bool NearZero(const ue_wrap::FVector& l) { return std::fabs(l.X) < 1.f && std::fabs(l.Y) < 1.f && std::fabs(l.Z) < 1.f; }
+
 void OnBeginPlayPost(const sg::Call& call) {
+    {
+        bool d = false;
+        if (call.object && IsBlood(call.object, d)) Remember(call.object);  // every splat, the save's own too
+    }
     if (g_mirrorSpawning) return;  // a peer's decal, spawned here
     auto* s = g_session.load(std::memory_order_acquire);
     if (!s || !s->running() || !s->connected()) return;
@@ -119,6 +139,12 @@ std::vector<void*> g_erasedForPeer;
 uint64_t g_erasesSent = 0, g_erasesApplied = 0;
 
 void OnBloodEnd(const coop::element::death_seam::ActorEnd& end) {
+    ue_wrap::FVector remembered{};
+    bool haveRemembered = false;
+    if (auto it = g_placed.find(end.actor); it != g_placed.end()) {
+        if (it->second.idx == end.actorIndex) { remembered = it->second.loc; haveRemembered = true; }
+        g_placed.erase(it);
+    }
     if (end.streamedOut) return;
     for (size_t i = 0; i < g_erasedForPeer.size(); ++i) {
         if (g_erasedForPeer[i] == end.actor) { g_erasedForPeer.erase(g_erasedForPeer.begin() + i); return; }
@@ -130,7 +156,14 @@ void OnBloodEnd(const coop::element::death_seam::ActorEnd& end) {
     bool drip = false;
     if (!IsBlood(end.actor, drip)) return;
     ue_wrap::FVector loc{};
-    if (!E::TryGetActorLocation(end.actor, loc)) return;
+    if (!E::TryGetActorLocation(end.actor, loc) || NearZero(loc)) {
+        if (!haveRemembered) {
+            UE_LOGW("[BLOOD] a cleaned splat with no known place -- its erase is not sent");
+            return;
+        }
+        loc = remembered;
+    }
+    if (NearZero(loc)) return;
     coop::net::BloodDecalPayload p{};
     p.locX = loc.X; p.locY = loc.Y; p.locZ = loc.Z;
     p.sclX = p.sclY = p.sclZ = 1.f;
@@ -147,11 +180,17 @@ void EraseAt(const coop::net::BloodDecalPayload& p) {
     std::vector<void*> all;
     if (g_bloodCls) OI::ForEachInstance(g_bloodCls, &CollectBlood, &all);
     if (g_dripCls) OI::ForEachInstance(g_dripCls, &CollectBlood, &all);
+    if (NearZero(ue_wrap::FVector{p.locX, p.locY, p.locZ})) return;  // an older peer's placeless erase
     void* best = nullptr;
     float bestD2 = 8.f * 8.f;  // within 8 cm: the copy stands where the sender's stood
     for (void* a : all) {
         ue_wrap::FVector l{};
         if (!E::TryGetActorLocation(a, l)) continue;
+        if (NearZero(l)) {  // dying already: its root is gone; the remembered place says where it was
+            auto it = g_placed.find(a);
+            if (it == g_placed.end()) continue;
+            l = it->second.loc;
+        }
         const float dx = l.X - p.locX, dy = l.Y - p.locY, dz = l.Z - p.locZ;
         const float d2 = dx * dx + dy * dy + dz * dz;
         if (d2 < bestD2) { bestD2 = d2; best = a; }
@@ -215,6 +254,7 @@ void OnBloodDecal(const coop::net::BloodDecalPayload& p) {
     E::SetActorLocation(a, ue_wrap::FVector{p.locX, p.locY, p.locZ});
     E::SetActorRotation(a, ue_wrap::FRotator{p.rotPitch, p.rotYaw, p.rotRoll});
     E::SetActorScale3D(a, ue_wrap::FVector{p.sclX, p.sclY, p.sclZ});  // FinishSpawning re-applied the spawn transform
+    Remember(a);
     // The decal's BeginPlay rolls its own Type when the class asks for a random one, so the sender's Type is
     // written again after it and the material re-made from it. The Type is half of the key grime_sync cleans
     // by (with the quantised position): a copy of another Type would never take the sender's sponge.
@@ -239,6 +279,7 @@ void OnDisconnect() {
     g_sent = g_spawned = g_dropped = 0;
     g_erasesSent = g_erasesApplied = 0;
     g_erasedForPeer.clear();
+    // g_placed stays: the splats outlive the session, and a next session cleans them too.
 }
 
 }  // namespace coop::blood_decal_sync
