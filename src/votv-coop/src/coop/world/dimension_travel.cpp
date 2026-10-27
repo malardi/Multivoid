@@ -11,9 +11,12 @@
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/core/script_gate.h"   // SetPassThrough: solo rules inside a dimension
+#include "ue_wrap/core/types.h"
+#include "ue_wrap/world/world_singleton.h"  // GameInstance: the travel state the entry writes
 #include "coop/player/run_end_travel.h" // LoadLevelWatchTag: the one watch kept there
 
 #include <atomic>
+#include <cmath>
 #include <cwctype>
 #include <string>
 
@@ -38,30 +41,93 @@ bool EqualsNoCase(const std::wstring& a, const wchar_t* b) {
     return i == a.size() && b[i] == 0;
 }
 
+// mainGameInstance's travel state: the sub-area the run stands in, the entry's distance, and whether the
+// next level applies the save. Resolved by name once per game-instance class.
+struct GiFields { int32_t subArea = -2, locDist = -2, loadObjects = -2; };
+GiFields& Gi(void* gi) {
+    static GiFields f;
+    static void* sCls = nullptr;
+    void* cls = gi ? R::ClassOf(gi) : nullptr;
+    if (cls && cls != sCls) {
+        sCls = cls;
+        f.subArea = R::FindPropertyOffset(cls, L"subArea");
+        f.locDist = R::FindPropertyOffset(cls, L"locationDistance");
+        f.loadObjects = R::FindPropertyOffset(cls, L"loadObjects");
+    }
+    return f;
+}
+
+void LogGi(const char* when) {
+    void* gi = ue_wrap::world_singleton::GameInstance();
+    if (!gi) { UE_LOGI("[DIMENSION] %s: no game instance", when); return; }
+    const GiFields& f = Gi(gi);
+    const uint8_t* b = static_cast<const uint8_t*>(gi);
+    std::wstring sub = f.subArea >= 0 ? R::ToString(*reinterpret_cast<const R::FName*>(b + f.subArea)) : L"?";
+    ue_wrap::FVector d{};
+    if (f.locDist >= 0) d = *reinterpret_cast<const ue_wrap::FVector*>(b + f.locDist);
+    UE_LOGI("[DIMENSION] %s: gameInstance subArea='%ls' locationDistance=(%.0f,%.0f,%.0f) loadObjects=%d", when,
+            sub.c_str(), d.X, d.Y, d.Z, f.loadObjects >= 0 ? b[f.loadObjects] : -1);
+}
+
+template <size_t N>
+uint8_t PutAscii(char (&dst)[N], const std::wstring& src) {
+    uint8_t n = 0;
+    for (wchar_t c : src) {
+        if (n >= N) break;
+        dst[n++] = (c > 0 && c < 0x80) ? static_cast<char>(c) : '_';
+    }
+    return n;
+}
+
+bool g_lastViaSubArea = false, g_lastClear = false;
+
 void SendTravel(coop::net::Session& s, const std::wstring& level) {
     coop::net::WorldTravelPayload p{};
-    for (wchar_t c : level) {
-        if (p.len >= sizeof(p.name)) break;
-        p.name[p.len++] = (c > 0 && c < 0x80) ? static_cast<char>(c) : '_';
-    }
+    p.len = PutAscii(p.name, level);
     if (p.len == 0) return;
+    namespace F = coop::net::world_travel_flag;
+    if (g_lastViaSubArea) p.flags |= F::kViaSubArea;
+    if (g_lastClear) p.flags |= F::kClearSubArea;
+    if (void* gi = ue_wrap::world_singleton::GameInstance()) {
+        const GiFields& f = Gi(gi);
+        const uint8_t* b = static_cast<const uint8_t*>(gi);
+        if (f.subArea >= 0 && f.locDist >= 0 && f.loadObjects >= 0) {
+            p.flags |= F::kHaveGi;
+            if (b[f.loadObjects]) p.flags |= F::kLoadObjects;
+            p.subAreaLen = PutAscii(p.subArea, R::ToString(*reinterpret_cast<const R::FName*>(b + f.subArea)));
+            const auto& d = *reinterpret_cast<const ue_wrap::FVector*>(b + f.locDist);
+            p.locDist[0] = d.X; p.locDist[1] = d.Y; p.locDist[2] = d.Z;
+        }
+    }
     if (s.SendReliable(coop::net::ReliableKind::WorldTravel, &p, sizeof(p))) {
         ++g_sent;
-        UE_LOGI("[DIMENSION] HOST travels to '%ls' -- the clients are sent there too", level.c_str());
+        UE_LOGI("[DIMENSION] HOST travels to '%ls' (flags 0x%02X) -- the clients are sent there too", level.c_str(),
+                static_cast<unsigned>(p.flags));
     } else {
         UE_LOGW("[DIMENSION] HOST travels to '%ls' -- the travel could not be sent; the clients stay", level.c_str());
     }
 }
 
-// lib_C::loadLevel(level) on this peer, authored by its own player, through the game's own travel.
-bool CallLoadLevel(const std::wstring& level) {
+// The host's own call, on this peer: lib_C's "Load Level as Sub Area"(level) when the host's travel came
+// through it, else lib_C::loadLevel(level, clearSubArea), authored by this peer's own player.
+bool CallTravel(const std::wstring& level, bool viaSubArea, bool clearSubArea) {
     void* cdo = R::FindClassDefaultObject(L"lib_C");
-    void* fn = cdo ? R::FindFunction(R::ClassOf(cdo), L"loadLevel") : nullptr;
     void* local = coop::players::Registry::Get().Local();
-    if (!fn || !local) return false;
+    if (!cdo || !local) return false;
     const R::FName name = ue_wrap::fname_utils::StringToFName(level);
+    void* fn = viaSubArea ? R::FindFunction(R::ClassOf(cdo), L"Load Level as Sub Area") : nullptr;
+    if (viaSubArea && !fn) UE_LOGW("[DIMENSION] lib_C has no 'Load Level as Sub Area' here -- plain loadLevel");
+    if (fn) {
+        ue_wrap::ParamFrame f(fn);
+        if (!f.valid() || !f.Set<R::FName>(L"Level", name) || !f.Set<void*>(L"__WorldContext", local)) return false;
+        return ue_wrap::Call(cdo, f);
+    }
+    fn = R::FindFunction(R::ClassOf(cdo), L"loadLevel");
+    if (!fn) return false;
     ue_wrap::ParamFrame f(fn);
     if (!f.valid() || !f.Set<R::FName>(L"level", name) || !f.Set<void*>(L"__WorldContext", local)) return false;
+    const uint8_t clear = clearSubArea ? 1 : 0;
+    f.SetRaw(L"clearSubArea", &clear, 1);
     return ue_wrap::Call(cdo, f);
 }
 
@@ -69,7 +135,7 @@ bool CallLoadLevel(const std::wstring& level) {
 
 void Install(coop::net::Session* session) { g_session.store(session, std::memory_order_release); }
 
-void OnLocalTravel(const std::wstring& level, bool own) {
+void OnLocalTravel(const std::wstring& level, bool own, bool viaSubArea, bool clearSubArea) {
     auto* s = g_session.load(std::memory_order_acquire);
     if (!s || !s->running() || !own) return;
     if (EqualsNoCase(level, kMenuLevel)) return;  // the menu is the run's end, judged by run_end_travel
@@ -83,6 +149,9 @@ void OnLocalTravel(const std::wstring& level, bool own) {
     UE_LOGI("[DIMENSION] this peer travels to '%ls' -- %s%s", level.c_str(),
             toDimension ? "a dimension: the session goes on there" : "the gameplay map",
             was && !toDimension ? " (back from a dimension)" : "");
+    LogGi(toDimension ? "travel to a dimension" : "travel to the gameplay map");
+    g_lastViaSubArea = viaSubArea;
+    g_lastClear = clearSubArea;
     if (s->role() == coop::net::Role::Host && s->connected() && !g_following) SendTravel(*s, level);
 }
 
@@ -93,13 +162,19 @@ const wchar_t* ReturnLevel() { return kGameplayLevel; }
 void OnWorldTravel(const coop::net::WorldTravelPayload& p) {
     auto* s = g_session.load(std::memory_order_acquire);
     if (!s || !s->running() || s->role() != coop::net::Role::Client) return;
-    if (p.len == 0 || p.len > sizeof(p.name)) return;
+    if (p.len == 0 || p.len > sizeof(p.name) || p.subAreaLen > sizeof(p.subArea)) return;
+    auto isNameChar = [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+    };
     std::wstring level;
     for (uint8_t i = 0; i < p.len; ++i) {
-        const char c = p.name[i];
-        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
-        if (!ok) { UE_LOGW("[DIMENSION] a WorldTravel with a level name that is not a level name -- dropped"); return; }
-        level.push_back(static_cast<wchar_t>(c));
+        if (!isNameChar(p.name[i])) { UE_LOGW("[DIMENSION] a WorldTravel with a level name that is not a level name -- dropped"); return; }
+        level.push_back(static_cast<wchar_t>(p.name[i]));
+    }
+    std::wstring subArea;
+    for (uint8_t i = 0; i < p.subAreaLen; ++i) {
+        if (!isNameChar(p.subArea[i])) { subArea.clear(); break; }
+        subArea.push_back(static_cast<wchar_t>(p.subArea[i]));
     }
     if (EqualsNoCase(level, kMenuLevel)) return;  // never sent; a client is never sent to the menu by the host
     // An event the host fired may already have sent this client there (the labyrinth's trigger reaches both).
@@ -109,12 +184,27 @@ void OnWorldTravel(const coop::net::WorldTravelPayload& p) {
         UE_LOGI("[DIMENSION] the host went to '%ls'; this client is already there", level.c_str());
         return;
     }
+    namespace F = coop::net::world_travel_flag;
+    // The host's entry wrote its game instance's travel state before its travel; this one gets the same.
+    if ((p.flags & F::kHaveGi) != 0) {
+        if (void* gi = ue_wrap::world_singleton::GameInstance()) {
+            const GiFields& f = Gi(gi);
+            uint8_t* b = static_cast<uint8_t*>(gi);
+            if (f.subArea >= 0) *reinterpret_cast<R::FName*>(b + f.subArea) =
+                ue_wrap::fname_utils::StringToFName(subArea.empty() ? std::wstring(L"None") : subArea);
+            const bool finite = std::isfinite(p.locDist[0]) && std::isfinite(p.locDist[1]) && std::isfinite(p.locDist[2]);
+            if (f.locDist >= 0 && finite)
+                *reinterpret_cast<ue_wrap::FVector*>(b + f.locDist) = ue_wrap::FVector{p.locDist[0], p.locDist[1], p.locDist[2]};
+            if (f.loadObjects >= 0) b[f.loadObjects] = (p.flags & F::kLoadObjects) ? 1 : 0;
+        }
+    }
+    LogGi("before following the host");
     g_following = true;
-    const bool ok = CallLoadLevel(level);
+    const bool ok = CallTravel(level, (p.flags & F::kViaSubArea) != 0, (p.flags & F::kClearSubArea) != 0);
     g_following = false;
     ++g_followed;
-    UE_LOGI("[DIMENSION] the host went to '%ls' -- this client follows: %s", level.c_str(),
-            ok ? "travelling" : "the travel could not be started");
+    UE_LOGI("[DIMENSION] the host went to '%ls' (flags 0x%02X) -- this client follows: %s", level.c_str(),
+            static_cast<unsigned>(p.flags), ok ? "travelling" : "the travel could not be started");
 }
 
 void OnSessionStart() {

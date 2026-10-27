@@ -30,7 +30,7 @@ inline constexpr uint32_t kMagic = 0x564D5450u;
 // This file is past the 1500-line hard cap and stays there: it is the single-feature exception the
 // rule names. One wire format, whose enum, payload structs and static_asserts are read together;
 // splitting it would put a kind's number in one file and its bytes in another.
-inline constexpr uint16_t kProtocolVersion = 264;
+inline constexpr uint16_t kProtocolVersion = 265;
 
 // Default LAN port (overridable via multivoid.ini "net.port=").
 inline constexpr uint16_t kDefaultPort = 47621;
@@ -1856,10 +1856,24 @@ struct SwingerPosePayload {
 static_assert(sizeof(SwingerPosePayload) == 56, "SwingerPosePayload must be 56 bytes");
 static_assert(sizeof(SwingerPosePayload) <= 256 - 20 - 8, "SwingerPosePayload must fit one datagram");
 
-// A level travel (WorldTravel): the level's name as lib_C::loadLevel takes it, ASCII.
+// A level travel (WorldTravel): the level's name as lib_C::loadLevel takes it, ASCII, and how the host's
+// own travel was made, so a client's travel is the same call: through lib_C's "Load Level as Sub Area"
+// or straight to loadLevel with its clearSubArea, and the game instance's travel state the host's
+// entry wrote first (subArea, locationDistance, loadObjects).
+namespace world_travel_flag {
+constexpr uint8_t kViaSubArea   = 0x01;  // the host's loadLevel was called by "Load Level as Sub Area"
+constexpr uint8_t kClearSubArea = 0x02;  // loadLevel's clearSubArea
+constexpr uint8_t kLoadObjects  = 0x04;  // mainGameInstance.loadObjects
+constexpr uint8_t kHaveGi       = 0x08;  // the game-instance fields below were read
+}  // namespace world_travel_flag
 struct WorldTravelPayload {
-    uint8_t len;        // 1  -- 1..63
-    char    name[63];   // 63 -- the level name, not terminated
+    uint8_t len;          // 1  -- 1..31
+    char    name[31];     // 31 -- the level name, not terminated
+    uint8_t flags;        // 1  -- world_travel_flag
+    uint8_t subAreaLen;   // 1  -- 0..17
+    char    subArea[17];  // 17 -- mainGameInstance.subArea, not terminated
+    uint8_t pad;          // 1
+    float   locDist[3];   // 12 -- mainGameInstance.locationDistance
 };
 static_assert(sizeof(WorldTravelPayload) == 64, "WorldTravelPayload must be 64 bytes");
 

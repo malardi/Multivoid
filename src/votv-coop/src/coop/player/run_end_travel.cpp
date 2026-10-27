@@ -160,8 +160,19 @@ sg::Verdict OnLoadLevelPre(const sg::Call& call) {
     void* author = *reinterpret_cast<void* const*>(call.locals + sAuthorOff);
 
     if (!R::NameEquals(level, kMenuLevel)) {
+        static void*   sClearFn = nullptr;
+        static int32_t sClearOff = -1;
+        if (call.function != sClearFn) { sClearFn = call.function; sClearOff = R::FindParamOffset(call.function, L"clearSubArea"); }
+        const bool clearSubArea = sClearOff >= 0 && call.locals[sClearOff] != 0;
+        const std::wstring callerFn = call.callerFunction ? R::ToString(R::NameOf(call.callerFunction)) : std::wstring();
+        const std::wstring callerCls = call.callerObject ? R::ClassNameOf(call.callerObject) : std::wstring();
+        const bool viaSubArea = callerFn == L"Load Level as Sub Area";
+        UE_LOGI("[DIMENSION] loadLevel(\"%ls\") called from %ls::%ls (clearSubArea=%d)", R::ToString(level).c_str(),
+                callerCls.empty() ? L"?" : callerCls.c_str(), callerFn.empty() ? L"?" : callerFn.c_str(),
+                clearSubArea ? 1 : 0);
         coop::dimension_travel::OnLocalTravel(R::ToString(level),
-                                              author && author == coop::players::Registry::Get().Local());
+                                              author && author == coop::players::Registry::Get().Local(),
+                                              viaSubArea, clearSubArea);
         // A sub-level travel (sl_*, the map transitions). It is not this seam's to refuse -- and
         // it will still end the session for the peer that takes it, which is a separate open
         // question, so the trail is left deliberately.
