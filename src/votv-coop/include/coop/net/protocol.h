@@ -30,7 +30,7 @@ inline constexpr uint32_t kMagic = 0x564D5450u;
 // This file is past the 1500-line hard cap and stays there: it is the single-feature exception the
 // rule names. One wire format, whose enum, payload structs and static_asserts are read together;
 // splitting it would put a kind's number in one file and its bytes in another.
-inline constexpr uint16_t kProtocolVersion = 257;
+inline constexpr uint16_t kProtocolVersion = 259;
 
 // Default LAN port (overridable via multivoid.ini "net.port=").
 inline constexpr uint16_t kDefaultPort = 47621;
@@ -1835,8 +1835,10 @@ struct BloodDecalPayload {
     float   sclX, sclY, sclZ;          // 12 -- root scale
     int32_t type;                      // 4  -- grime_C.Type, the material variant
     uint8_t drip;                      // 1  -- 1 for grime_blood2_drip_C
-    uint8_t _pad[3];                   // 3  -- zero
+    uint8_t op;                        // 1  -- blood_op::kSpawn, or kErase: the decal at this place ended
+    uint8_t _pad[2];                   // 2  -- zero
 };
+namespace blood_op { constexpr uint8_t kSpawn = 0; constexpr uint8_t kErase = 1; }
 static_assert(sizeof(BloodDecalPayload) == 44, "BloodDecalPayload must be 44 bytes");
 static_assert(sizeof(BloodDecalPayload) <= 256 - 20 - 8, "BloodDecalPayload must fit one datagram");
 

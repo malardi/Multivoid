@@ -82,7 +82,7 @@ bool HandleEntityEvent(net::Session& session,
         for (float v : vals) if (!std::isfinite(v)) bad = true;
         if (std::fabs(p.locX) > 1.0e6f || std::fabs(p.locY) > 1.0e6f || std::fabs(p.locZ) > 1.0e6f) bad = true;
         for (int i = 6; i < 9; ++i) if (vals[i] <= 0.f || vals[i] > 100.f) bad = true;
-        if (p.type < 0 || p.type > 64 || p.drip > 1) bad = true;
+        if (p.type < 0 || p.type > 64 || p.drip > 1 || p.op > net::blood_op::kErase) bad = true;
         if (bad) {
             UE_LOGW("event_feed: BloodDecal fields out of bounds -- dropping");
             break;

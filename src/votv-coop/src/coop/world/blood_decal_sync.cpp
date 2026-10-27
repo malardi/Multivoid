@@ -3,6 +3,7 @@
 #include "coop/world/blood_decal_sync.h"
 
 #include "coop/net/protocol.h"
+#include "coop/element/death_seam.h"  // a splat's end: cleaned away
 #include "coop/net/session.h"
 #include "coop/session/net_pump.h"  // IsInAnnouncedWorld
 
@@ -13,11 +14,14 @@
 #include "ue_wrap/core/script_gate.h"
 #include "ue_wrap/core/types.h"
 #include "ue_wrap/engine/engine.h"
+#include "ue_wrap/engine/engine_pawn.h"  // DestroyActor
 #include "ue_wrap/facts/function_row.h"
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
+#include <vector>
 
 namespace coop::blood_decal_sync {
 namespace {
@@ -99,10 +103,64 @@ void OnBeginPlayPost(const sg::Call& call) {
     p.type = g_typeOff >= 0 ? *reinterpret_cast<const int32_t*>(reinterpret_cast<const uint8_t*>(call.object) + g_typeOff) : 0;
     if (p.type < 0 || p.type > 64) p.type = 0;
     p.drip = drip ? 1 : 0;
+    p.op = coop::net::blood_op::kSpawn;
     if (!s->SendReliable(coop::net::ReliableKind::BloodDecal, &p, sizeof(p))) return;
     if (++g_sent <= 3)
         UE_LOGI("[BLOOD] a splat went out: pos=(%.0f,%.0f,%.0f) type=%d drip=%u", loc.X, loc.Y, loc.Z, p.type,
                 static_cast<unsigned>(p.drip));
+}
+
+// A splat's end. The sponge's last stroke destroys a blood decal (its process, which grime_sync syncs, does
+// not read on blood's material), so the end itself is sent: every other peer removes the splat at that place.
+bool g_endSubscribed = false;
+// The splats this peer removed for a peer: their ends reach OnBloodEnd on a later drain, and are not sent back
+// (an echo would remove a neighbouring splat on the sender, splats land centimetres apart).
+std::vector<void*> g_erasedForPeer;
+uint64_t g_erasesSent = 0, g_erasesApplied = 0;
+
+void OnBloodEnd(const coop::element::death_seam::ActorEnd& end) {
+    if (end.streamedOut) return;
+    for (size_t i = 0; i < g_erasedForPeer.size(); ++i) {
+        if (g_erasedForPeer[i] == end.actor) { g_erasedForPeer.erase(g_erasedForPeer.begin() + i); return; }
+    }
+    auto* s = g_session.load(std::memory_order_acquire);
+    if (!s || !s->running() || !s->connected()) return;
+    // Read only while the slot still holds the ended actor under its serial (death_seam's contract).
+    if (R::ObjectAt(end.actorIndex) != end.actor || R::SlotSerial(end.actorIndex) != end.actorSerial) return;
+    bool drip = false;
+    if (!IsBlood(end.actor, drip)) return;
+    ue_wrap::FVector loc{};
+    if (!E::TryGetActorLocation(end.actor, loc)) return;
+    coop::net::BloodDecalPayload p{};
+    p.locX = loc.X; p.locY = loc.Y; p.locZ = loc.Z;
+    p.sclX = p.sclY = p.sclZ = 1.f;
+    p.drip = drip ? 1 : 0;
+    p.op = coop::net::blood_op::kErase;
+    if (s->SendReliable(coop::net::ReliableKind::BloodDecal, &p, sizeof(p)) && ++g_erasesSent <= 3)
+        UE_LOGI("[BLOOD] a splat was cleaned here at (%.0f,%.0f,%.0f) -- erase sent", loc.X, loc.Y, loc.Z);
+}
+
+void CollectBlood(void* ctx, void* obj, int32_t /*index*/) { static_cast<std::vector<void*>*>(ctx)->push_back(obj); }
+
+void EraseAt(const coop::net::BloodDecalPayload& p) {
+    ResolveClasses();
+    std::vector<void*> all;
+    if (g_bloodCls) OI::ForEachInstance(g_bloodCls, &CollectBlood, &all);
+    if (g_dripCls) OI::ForEachInstance(g_dripCls, &CollectBlood, &all);
+    void* best = nullptr;
+    float bestD2 = 8.f * 8.f;  // within 8 cm: the copy stands where the sender's stood
+    for (void* a : all) {
+        ue_wrap::FVector l{};
+        if (!E::TryGetActorLocation(a, l)) continue;
+        const float dx = l.X - p.locX, dy = l.Y - p.locY, dz = l.Z - p.locZ;
+        const float d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < bestD2) { bestD2 = d2; best = a; }
+    }
+    if (!best) return;
+    if (g_erasedForPeer.size() >= 64) g_erasedForPeer.erase(g_erasedForPeer.begin());
+    g_erasedForPeer.push_back(best);
+    E::DestroyActor(best);
+    if (++g_erasesApplied <= 3) UE_LOGI("[BLOOD] a peer's cleaned splat removed here at (%.0f,%.0f,%.0f)", p.locX, p.locY, p.locZ);
 }
 
 struct SpawnCtx { const coop::net::BloodDecalPayload* p; };
@@ -132,9 +190,14 @@ void Install(coop::net::Session* session) {
 
 void Tick() {
     if (!g_registered && !g_refused) Install(g_session.load(std::memory_order_acquire));
+    if (!g_endSubscribed && coop::element::death_seam::Install()) {
+        const bool a = coop::element::death_seam::SubscribeClass(L"grime_blood2_C", &OnBloodEnd);
+        g_endSubscribed = a;  // grime_blood2_drip_C is its subclass: one subscription covers both
+    }
 }
 
 void OnBloodDecal(const coop::net::BloodDecalPayload& p) {
+    if (p.op == coop::net::blood_op::kErase) { EraseAt(p); return; }
     ResolveClasses();
     void* cls = p.drip ? g_dripCls : g_bloodCls;
     if (!cls) cls = g_bloodCls;
@@ -174,6 +237,8 @@ void OnDisconnect() {
                 static_cast<unsigned long long>(g_sent), static_cast<unsigned long long>(g_spawned),
                 static_cast<unsigned long long>(g_dropped));
     g_sent = g_spawned = g_dropped = 0;
+    g_erasesSent = g_erasesApplied = 0;
+    g_erasedForPeer.clear();
 }
 
 }  // namespace coop::blood_decal_sync

@@ -10,6 +10,8 @@
 #include "coop/props/prop_drive_host.h"
 #include "coop/props/prop_element_tracker.h"
 #include "coop/props/prop_wire_parity.h"
+#include "coop/player/players_registry.h"
+#include "coop/player/remote_player.h"
 #include "coop/session/net_pump.h"  // IsInAnnouncedWorld
 
 #include "ue_wrap/core/log.h"
@@ -19,9 +21,11 @@
 #include "ue_wrap/core/script_fingerprint.h"  // the walker brain dump (devkeys)
 #include "ue_wrap/core/types.h"
 #include "ue_wrap/engine/engine.h"
+#include "ue_wrap/engine/engine_nav.h"  // FindNavPath: the route to the nearest player
 #include "ue_wrap/facts/function_row.h"
 
 #include <atomic>
+#include <cmath>
 #include <chrono>
 #include <cstdint>
 #include <sstream>
@@ -81,9 +85,15 @@ uint64_t NowMs() {
 }
 
 // A client's walker is the host's walker shown here: its own brain does not run.
+void HostBrainPre(void* w);  // below
+
 sg::Verdict OnBrainPre(const sg::Call& call) {
     auto* s = g_session.load(std::memory_order_acquire);
-    if (!s || !s->connected() || s->role() != coop::net::Role::Client) return sg::Verdict::Run;
+    if (!s || !s->connected()) return sg::Verdict::Run;
+    if (s->role() == coop::net::Role::Host) {
+        if (call.tag == kRows[0].tag && call.object && s->AnyWorldReadyPeer()) HostBrainPre(call.object);
+        return sg::Verdict::Run;
+    }
     if (!call.object || !coop::net_pump::IsInAnnouncedWorld(call.object)) return sg::Verdict::Run;
     ++g_refused;
     return sg::Verdict::Cancel;
@@ -144,6 +154,136 @@ void DumpBrainOnce() {
     UE_LOGI("[WALKER-BP] ==== end");
 }
 
+// ---- the host's walker sees every player and chases the nearest -------------------------------------------
+// Read from the walker's Blueprint ([WALKER-BP]): its tick sets `looking` = ((the box in player 0's frustum and
+// rendered) or `saw`) and not `angry`, and stands still while it holds; otherwise it steps along `Path` from
+// `ind`, a route its graph asks every half second toward player 0's camera and copies in at `upd` and after its
+// move request. Player 0 is the host, so a client was never seen and never chased. On the host: a client whose
+// aim holds the walker in a 50-degree cone within 40 m sets `saw` (the game's own "seen" latch) before the tick
+// reads it, and when the nearest player is a client the walker's `Path` is the nav route to that client,
+// written again whenever the graph copies its own route in.
+struct BrainOffsets { int32_t path = -2, ind = -2, saw = -2; uint8_t sawMask = 0; };
+BrainOffsets g_off;
+
+struct VecArray { ue_wrap::FVector* data; int32_t num; int32_t max; };
+
+struct Chase {
+    void* walker = nullptr;
+    std::vector<ue_wrap::FVector> path;  // our route to the client, empty when the host is the nearest
+    uint64_t nextRouteMs = 0;
+    bool forcedSaw = false;
+};
+std::unordered_map<void*, Chase> g_chase;
+
+bool ResolveBrain() {
+    if (g_off.path != -2) return g_off.path >= 0 && g_off.ind >= 0 && g_off.saw >= 0;
+    g_off.path = R::FindPropertyOffset(g_cls, L"Path");
+    g_off.ind  = R::FindPropertyOffset(g_cls, L"ind");
+    int32_t off = -1;
+    uint8_t mask = 0;
+    if (R::FindBoolProperty(g_cls, L"saw", off, mask)) { g_off.saw = off; g_off.sawMask = mask; } else g_off.saw = -1;
+    const bool ok = g_off.path >= 0 && g_off.ind >= 0 && g_off.saw >= 0;
+    UE_LOGI("[WALKER] host brain fields: Path@%d ind@%d saw@%d -- %s", g_off.path, g_off.ind, g_off.saw,
+            ok ? "the walker sees and chases every player" : "unresolved, it keeps the game's host-only brain");
+    return ok;
+}
+
+void WriteSaw(void* w, bool on) {
+    uint8_t* b = reinterpret_cast<uint8_t*>(w) + g_off.saw;
+    *b = on ? static_cast<uint8_t>(*b | g_off.sawMask) : static_cast<uint8_t>(*b & ~g_off.sawMask);
+}
+
+// The walker's Path as `pts`: in place when it fits, else a new engine buffer (the old one freed). ind to 0.
+void WritePath(void* w, const std::vector<ue_wrap::FVector>& pts) {
+    auto* arr = reinterpret_cast<VecArray*>(reinterpret_cast<uint8_t*>(w) + g_off.path);
+    const int32_t n = static_cast<int32_t>(pts.size());
+    if (n <= 0) return;
+    if (!arr->data || arr->max < n) {
+        auto* buf = static_cast<ue_wrap::FVector*>(R::EngineAlloc(sizeof(ue_wrap::FVector) * static_cast<size_t>(n)));
+        if (!buf) return;
+        if (arr->data) R::EngineFree(arr->data);
+        arr->data = buf;
+        arr->max = n;
+    }
+    for (int32_t i = 0; i < n; ++i) arr->data[i] = pts[static_cast<size_t>(i)];
+    arr->num = n;
+    *reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(w) + g_off.ind) = 0;
+}
+
+bool PathIs(void* w, const std::vector<ue_wrap::FVector>& pts) {
+    const auto* arr = reinterpret_cast<const VecArray*>(reinterpret_cast<const uint8_t*>(w) + g_off.path);
+    if (!arr->data || arr->num != static_cast<int32_t>(pts.size()) || pts.empty()) return false;
+    const ue_wrap::FVector& a = arr->data[arr->num - 1];
+    const ue_wrap::FVector& b = pts.back();
+    return std::fabs(a.X - b.X) < 1.f && std::fabs(a.Y - b.Y) < 1.f && std::fabs(a.Z - b.Z) < 1.f;
+}
+
+float Dist2(const ue_wrap::FVector& a, const ue_wrap::FVector& b) {
+    const float dx = a.X - b.X, dy = a.Y - b.Y, dz = a.Z - b.Z;
+    return dx * dx + dy * dy + dz * dz;
+}
+
+// Whether any client's aim holds the walker: 50 degrees either side of where it looks, within 40 m.
+bool ClientSees(const ue_wrap::FVector& at) {
+    constexpr float kCos = 0.64f;         // cos(50 deg)
+    constexpr float kRange2 = 4000.f * 4000.f;
+    auto& reg = coop::players::Registry::Get();
+    for (uint8_t slot = 1; slot < coop::players::kMaxPeers; ++slot) {
+        coop::RemotePlayer* rp = reg.Puppet(slot);
+        if (!rp || !rp->valid() || !rp->GetActor()) continue;
+        ue_wrap::FVector eye{};
+        if (!E::TryGetActorLocation(rp->GetActor(), eye)) continue;
+        eye.Z += 64.f;
+        const float d2 = Dist2(at, eye);
+        if (d2 > kRange2 || d2 < 1.f) continue;
+        const float inv = 1.f / std::sqrt(d2);
+        const ue_wrap::FVector dir{(at.X - eye.X) * inv, (at.Y - eye.Y) * inv, (at.Z - eye.Z) * inv};
+        const ue_wrap::FVector aim = rp->GetSyncedAimDirection();
+        if (aim.X * dir.X + aim.Y * dir.Y + aim.Z * dir.Z >= kCos) return true;
+    }
+    return false;
+}
+
+// The nearest player's place: the host's own (false: the game's brain already chases it) or a client's.
+bool NearestClient(const ue_wrap::FVector& at, ue_wrap::FVector& out) {
+    auto& reg = coop::players::Registry::Get();
+    float best = 1e30f;
+    bool client = false;
+    if (void* local = reg.Local()) {
+        ue_wrap::FVector l{};
+        if (E::TryGetActorLocation(local, l)) best = Dist2(at, l);
+    }
+    for (uint8_t slot = 1; slot < coop::players::kMaxPeers; ++slot) {
+        coop::RemotePlayer* rp = reg.Puppet(slot);
+        if (!rp || !rp->valid() || !rp->GetActor()) continue;
+        ue_wrap::FVector l{};
+        if (!E::TryGetActorLocation(rp->GetActor(), l)) continue;
+        const float d2 = Dist2(at, l);
+        if (d2 < best) { best = d2; out = l; client = true; }
+    }
+    return client && best <= 20000.f * 20000.f;  // the game's own chase range
+}
+
+// Before the host walker's tick: a client's look latches `saw`; the route to a nearer client is in place.
+void HostBrainPre(void* w) {
+    if (!ResolveBrain()) return;
+    ue_wrap::FVector at{};
+    if (!E::TryGetActorLocation(w, at)) return;
+    Chase& c = g_chase[w];
+    c.walker = w;
+    const bool sees = ClientSees(at);
+    if (sees) { WriteSaw(w, true); c.forcedSaw = true; }
+    else if (c.forcedSaw) { WriteSaw(w, false); c.forcedSaw = false; }
+    const uint64_t now = NowMs();
+    if (now >= c.nextRouteMs) {
+        c.nextRouteMs = now + 500;
+        ue_wrap::FVector target{};
+        c.path.clear();
+        if (NearestClient(at, target)) E::FindNavPath(w, at, target, c.path);
+    }
+    if (!c.path.empty() && !PathIs(w, c.path)) WritePath(w, c.path);
+}
+
 }  // namespace
 
 void Install(coop::net::Session* session) {
@@ -183,6 +323,7 @@ void OnDisconnect() {
                 static_cast<unsigned long long>(g_refused), static_cast<unsigned long long>(g_sent));
     g_refused = g_sent = 0;
     g_lastSent.clear();
+    g_chase.clear();
     g_nextMs = 0;
 }
 
