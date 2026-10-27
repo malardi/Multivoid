@@ -27,6 +27,7 @@
 
 #include <atomic>
 #include <cmath>
+#include <cstring>
 #include <cwctype>
 #include <string>
 
@@ -92,21 +93,6 @@ void LogGi(const char* when) {
             sub.c_str(), d.X, d.Y, d.Z, f.loadObjects >= 0 ? b[f.loadObjects] : -1);
 }
 
-// mainGameInstance.loadObjects: the next level applies the save's objects. A client's save is the host's
-// world as transferred at the join; into a dimension that is every prop of the base spawned inside the
-// level (b269: the client's labyrinth spawned prop_C by the thousand and never built a room; the
-// host's spawned only rgen_room_C). Off into a dimension, on again for the gameplay map.
-void SetLoadObjects(bool on, const char* why) {
-    void* gi = ue_wrap::world_singleton::GameInstance();
-    if (!gi) return;
-    const GiFields& f = Gi(gi);
-    if (f.loadObjects < 0) return;
-    uint8_t* b = static_cast<uint8_t*>(gi);
-    if ((b[f.loadObjects] != 0) == on) return;
-    b[f.loadObjects] = on ? 1 : 0;
-    UE_LOGI("[DIMENSION] gameInstance.loadObjects -> %d (%s)", on ? 1 : 0, why);
-}
-
 template <size_t N>
 uint8_t PutAscii(char (&dst)[N], const std::wstring& src) {
     uint8_t n = 0;
@@ -115,6 +101,45 @@ uint8_t PutAscii(char (&dst)[N], const std::wstring& src) {
         dst[n++] = (c > 0 && c < 0x80) ? static_cast<char>(c) : '_';
     }
     return n;
+}
+
+// mainGameInstance.NewVar_1: the pass a legitimate entry writes before its travel. The next level's gamemode
+// compares it with its constant and clears it; a level off its own list (untitled_1, the tutorials, the menu)
+// reached without it spawns 100000 hidden props, or quits a paused game (b277's census and the gamemode's
+// dump). The host's travel carries its value; a client's own travel into a dimension writes it.
+constexpr const wchar_t* kEntryPass = L"PQXYyeofZ8cr5rJD4YXLVw";
+
+struct WString { wchar_t* data; int32_t num; int32_t max; };
+
+int32_t TokenOff(void* gi) {
+    static void* sCls = nullptr;
+    static int32_t sOff = -2;
+    void* cls = R::ClassOf(gi);
+    if (cls != sCls) { sCls = cls; sOff = R::FindPropertyOffset(cls, L"NewVar_1"); }
+    return sOff;
+}
+
+std::wstring ReadToken(void* gi) {
+    const int32_t off = gi ? TokenOff(gi) : -1;
+    if (off < 0) return std::wstring();
+    const auto* w = reinterpret_cast<const WString*>(static_cast<const uint8_t*>(gi) + off);
+    if (!w->data || w->num <= 1) return std::wstring();
+    return std::wstring(w->data, static_cast<size_t>(w->num - 1));
+}
+
+void WriteToken(const std::wstring& token) {
+    void* gi = ue_wrap::world_singleton::GameInstance();
+    const int32_t off = gi ? TokenOff(gi) : -1;
+    if (off < 0) { UE_LOGW("[DIMENSION] mainGameInstance.NewVar_1 not found -- the entry pass cannot be written"); return; }
+    auto* w = reinterpret_cast<WString*>(static_cast<uint8_t*>(gi) + off);
+    const size_t n = token.size() + 1;
+    auto* mem = static_cast<wchar_t*>(R::EngineAlloc(n * sizeof(wchar_t)));
+    if (!mem) return;
+    std::memcpy(mem, token.c_str(), n * sizeof(wchar_t));
+    if (w->data && w->max > 0) R::EngineFree(w->data);
+    w->data = mem;
+    w->num = w->max = static_cast<int32_t>(n);
+    UE_LOGI("[DIMENSION] the entry pass is written (%zu chars)", token.size());
 }
 
 bool g_lastViaSubArea = false, g_lastClear = false;
@@ -129,18 +154,16 @@ void SendTravel(coop::net::Session& s, const std::wstring& level) {
     if (void* gi = ue_wrap::world_singleton::GameInstance()) {
         const GiFields& f = Gi(gi);
         const uint8_t* b = static_cast<const uint8_t*>(gi);
-        if (f.subArea >= 0 && f.locDist >= 0 && f.loadObjects >= 0) {
+        if (f.loadObjects >= 0) {
             p.flags |= F::kHaveGi;
             if (b[f.loadObjects]) p.flags |= F::kLoadObjects;
-            p.subAreaLen = PutAscii(p.subArea, R::ToString(*reinterpret_cast<const R::FName*>(b + f.subArea)));
-            const auto& d = *reinterpret_cast<const ue_wrap::FVector*>(b + f.locDist);
-            p.locDist[0] = d.X; p.locDist[1] = d.Y; p.locDist[2] = d.Z;
         }
+        p.tokenLen = PutAscii(p.token, ReadToken(gi));
     }
     if (s.SendReliable(coop::net::ReliableKind::WorldTravel, &p, sizeof(p))) {
         ++g_sent;
-        UE_LOGI("[DIMENSION] HOST travels to '%ls' (flags 0x%02X) -- the clients are sent there too", level.c_str(),
-                static_cast<unsigned>(p.flags));
+        UE_LOGI("[DIMENSION] HOST travels to '%ls' (flags 0x%02X, entry pass %u chars) -- the clients are sent there too",
+                level.c_str(), static_cast<unsigned>(p.flags), static_cast<unsigned>(p.tokenLen));
     } else {
         UE_LOGW("[DIMENSION] HOST travels to '%ls' -- the travel could not be sent; the clients stay", level.c_str());
     }
@@ -252,9 +275,8 @@ void OnLocalTravel(const std::wstring& level, bool own, bool viaSubArea, bool cl
     UE_LOGI("[DIMENSION] this peer travels to '%ls' -- %s%s", level.c_str(),
             toDimension ? "a dimension: the session goes on there" : "the gameplay map",
             was && !toDimension ? " (back from a dimension)" : "");
-    if (s->role() == coop::net::Role::Client)
-        SetLoadObjects(!toDimension, toDimension ? "a client's dimension takes none of the transferred save's objects"
-                                                 : "the gameplay map loads the save");
+    // (b271's loadObjects=0 for a client's dimension is gone: the flood was the gamemode's missing-pass
+    // trap, not the save; the host's value travels as it is.)
     LogGi(toDimension ? "travel to a dimension" : "travel to the gameplay map");
     // In transit: the others stop putting this peer's body into their level until it says where it is.
     g_myLevel.clear();
@@ -271,7 +293,7 @@ const wchar_t* ReturnLevel() { return kGameplayLevel; }
 void OnWorldTravel(const coop::net::WorldTravelPayload& p) {
     auto* s = g_session.load(std::memory_order_acquire);
     if (!s || !s->running() || s->role() != coop::net::Role::Client) return;
-    if (p.len == 0 || p.len > sizeof(p.name) || p.subAreaLen > sizeof(p.subArea)) return;
+    if (p.len == 0 || p.len > sizeof(p.name) || p.tokenLen > sizeof(p.token)) return;
     auto isNameChar = [](char c) {
         return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
     };
@@ -280,10 +302,11 @@ void OnWorldTravel(const coop::net::WorldTravelPayload& p) {
         if (!isNameChar(p.name[i])) { UE_LOGW("[DIMENSION] a WorldTravel with a level name that is not a level name -- dropped"); return; }
         level.push_back(static_cast<wchar_t>(p.name[i]));
     }
-    std::wstring subArea;
-    for (uint8_t i = 0; i < p.subAreaLen; ++i) {
-        if (!isNameChar(p.subArea[i])) { subArea.clear(); break; }
-        subArea.push_back(static_cast<wchar_t>(p.subArea[i]));
+    std::wstring token;
+    for (uint8_t i = 0; i < p.tokenLen && i < sizeof(p.token); ++i) {
+        const char c = p.token[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-')) { token.clear(); break; }
+        token.push_back(static_cast<wchar_t>(c));
     }
     if (EqualsNoCase(level, kMenuLevel)) return;  // never sent; a client is never sent to the menu by the host
     // An event the host fired may already have sent this client there (the labyrinth's trigger reaches both).
@@ -298,15 +321,11 @@ void OnWorldTravel(const coop::net::WorldTravelPayload& p) {
     if ((p.flags & F::kHaveGi) != 0) {
         if (void* gi = ue_wrap::world_singleton::GameInstance()) {
             const GiFields& f = Gi(gi);
-            uint8_t* b = static_cast<uint8_t*>(gi);
-            if (f.subArea >= 0) *reinterpret_cast<R::FName*>(b + f.subArea) =
-                ue_wrap::fname_utils::StringToFName(subArea.empty() ? std::wstring(L"None") : subArea);
-            const bool finite = std::isfinite(p.locDist[0]) && std::isfinite(p.locDist[1]) && std::isfinite(p.locDist[2]);
-            if (f.locDist >= 0 && finite)
-                *reinterpret_cast<ue_wrap::FVector*>(b + f.locDist) = ue_wrap::FVector{p.locDist[0], p.locDist[1], p.locDist[2]};
-            if (f.loadObjects >= 0) b[f.loadObjects] = (p.flags & F::kLoadObjects) ? 1 : 0;
+            if (f.loadObjects >= 0) static_cast<uint8_t*>(gi)[f.loadObjects] = (p.flags & F::kLoadObjects) ? 1 : 0;
         }
     }
+    // The entry pass: the host's, or the game's own constant when the host's had been spent already.
+    if (toDimension) WriteToken(token.empty() ? std::wstring(kEntryPass) : token);
     LogGi("before following the host");
     g_following = true;
     const bool ok = CallTravel(level, (p.flags & F::kViaSubArea) != 0, (p.flags & F::kClearSubArea) != 0);

@@ -30,7 +30,7 @@ inline constexpr uint32_t kMagic = 0x564D5450u;
 // This file is past the 1500-line hard cap and stays there: it is the single-feature exception the
 // rule names. One wire format, whose enum, payload structs and static_asserts are read together;
 // splitting it would put a kind's number in one file and its bytes in another.
-inline constexpr uint16_t kProtocolVersion = 277;
+inline constexpr uint16_t kProtocolVersion = 278;
 
 // Default LAN port (overridable via multivoid.ini "net.port=").
 inline constexpr uint16_t kDefaultPort = 47621;
@@ -1880,10 +1880,10 @@ struct WorldTravelPayload {
     uint8_t len;          // 1  -- 1..31
     char    name[31];     // 31 -- the level name, not terminated
     uint8_t flags;        // 1  -- world_travel_flag
-    uint8_t subAreaLen;   // 1  -- 0..17
-    char    subArea[17];  // 17 -- mainGameInstance.subArea, not terminated
-    uint8_t pad;          // 1
-    float   locDist[3];   // 12 -- mainGameInstance.locationDistance
+    uint8_t tokenLen;     // 1  -- 0..30
+    char    token[30];    // 30 -- mainGameInstance.NewVar_1 at the travel: the entry's pass the next
+                          //       level's gamemode checks (a level off its list without it is
+                          //       punished: 100000 hidden props spawned, or the game quit)
 };
 static_assert(sizeof(WorldTravelPayload) == 64, "WorldTravelPayload must be 64 bytes");
 
