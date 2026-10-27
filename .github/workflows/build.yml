@@ -19,6 +19,9 @@
 # install channel.
 name: build
 
+# Fork lane (malardi/Multivoid): a push to coop-fixes builds by itself, and the publish job puts the built
+# DLL and the mod-manager zip on the `builds` branch, one commit replaced each time, so the files can be
+# fetched with git instead of downloaded by hand from the run page.
 on:
   workflow_dispatch:
     inputs:
@@ -27,10 +30,13 @@ on:
         required: false
         type: boolean
         default: false
+  push:
+    branches: [coop-fixes]
+    paths-ignore: ['docs/**', '**.md']
 
 concurrency:
   group: ci-build-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -42,3 +48,33 @@ jobs:
       ref: ${{ github.sha }}
       source-sha: ${{ github.sha }}
       use-cache: ${{ !inputs.cacheless }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: art
+      - name: Put the build on the builds branch
+        env:
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          mkdir out
+          find art -name main.dll -exec cp {} out/main.dll \;
+          find art -name 'Pelmentor-Multivoid-*.zip' -exec cp {} out/ \;
+          find art -name build-info.txt -exec cp {} out/ \;
+          ls -la out
+          test -f out/main.dll
+          cd out
+          git init -q -b builds
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add -A
+          git commit -q -m "build ${SHA}"
+          git push -f "https://x-access-token:${TOKEN}@github.com/${REPO}.git" builds
