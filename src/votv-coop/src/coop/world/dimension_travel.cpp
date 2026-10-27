@@ -60,9 +60,22 @@ GiFields& Gi(void* gi) {
     return f;
 }
 
+// The carried-items arrays a level travel fills and the next level's gamemode spawns from.
+void LogTransports(void* gi, const char* when) {
+    void* cls = R::ClassOf(gi);
+    const wchar_t* names[] = {L"playerInv_transport", L"playerEquipment_transport", L"playerHold_transport"};
+    int32_t nums[3] = {-1, -1, -1};
+    for (int i = 0; i < 3; ++i) {
+        const int32_t off = R::FindPropertyOffset(cls, names[i]);
+        if (off >= 0) nums[i] = *reinterpret_cast<const int32_t*>(static_cast<const uint8_t*>(gi) + off + 8);
+    }
+    UE_LOGI("[DIMENSION] %s: gameInstance transports inv=%d equipment=%d hold=%d", when, nums[0], nums[1], nums[2]);
+}
+
 void LogGi(const char* when) {
     void* gi = ue_wrap::world_singleton::GameInstance();
     if (!gi) { UE_LOGI("[DIMENSION] %s: no game instance", when); return; }
+    LogTransports(gi, when);
     const GiFields& f = Gi(gi);
     const uint8_t* b = static_cast<const uint8_t*>(gi);
     std::wstring sub = f.subArea >= 0 ? R::ToString(*reinterpret_cast<const R::FName*>(b + f.subArea)) : L"?";
@@ -274,6 +287,7 @@ void Tick() {
     g_seenGen = gen;
     g_myLevel = R::ToString(R::NameOf(world));
     UE_LOGI("[DIMENSION] this peer's world is now '%ls' -- told to the others", g_myLevel.c_str());
+    LogGi("arrival");
     SendPeerLevel(g_myLevel);
     // A peer that already said it stands on another level loses its body here.
     for (int slot = 0; slot < coop::net::kMaxPeers; ++slot)

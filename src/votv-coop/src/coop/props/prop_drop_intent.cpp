@@ -139,7 +139,10 @@ void CensusSpawn(void* actor, void* author) {
     static std::chrono::steady_clock::time_point sWindowStart{};
     const auto now = std::chrono::steady_clock::now();
     if (sWindowStart.time_since_epoch().count() == 0) sWindowStart = now;
-    const std::wstring cls = R::ClassNameOf(actor) + L"<-" + (author ? R::ClassNameOf(author) : std::wstring(L"?"));
+    const ue_wrap::ufunction_hook::CallerFrame cf = ue_wrap::ufunction_hook::CurrentCallerFrame();
+    const std::wstring fnName = cf.function ? R::ToString(R::NameOf(cf.function)) : std::wstring(L"?");
+    const std::wstring cls = R::ClassNameOf(actor) + L"<-" + (author ? R::ClassNameOf(author) : std::wstring(L"?")) +
+                             L"::" + fnName + L"@" + std::to_wstring(cf.codeOffset);
     static int sNamed = 0;
     if (sNamed < 40) {
         ++sNamed;
