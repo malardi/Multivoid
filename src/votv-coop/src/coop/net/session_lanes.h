@@ -365,6 +365,7 @@ inline bool IsDimensionSendableKind(ReliableKind k) {
     case ReliableKind::RestoreVitals:
     case ReliableKind::TeleportClient:
     case ReliableKind::WorldTravel:
+    case ReliableKind::PeerLevel:
         return true;
     default:
         return false;

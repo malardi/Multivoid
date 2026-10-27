@@ -30,7 +30,7 @@ inline constexpr uint32_t kMagic = 0x564D5450u;
 // This file is past the 1500-line hard cap and stays there: it is the single-feature exception the
 // rule names. One wire format, whose enum, payload structs and static_asserts are read together;
 // splitting it would put a kind's number in one file and its bytes in another.
-inline constexpr uint16_t kProtocolVersion = 265;
+inline constexpr uint16_t kProtocolVersion = 266;
 
 // Default LAN port (overridable via multivoid.ini "net.port=").
 inline constexpr uint16_t kDefaultPort = 47621;
@@ -1149,6 +1149,12 @@ enum class ReliableKind : uint8_t {
     // level with the game's own lib_C::loadLevel, so the session goes on with every peer in one world.
     // Never relayed; not pre-world. Late join: none. WorldTravelPayload.
     WorldTravel = 203,
+    // ANY->HOST (and HOST->CLIENTS): the level this peer's world now is, or "" while it travels. A peer's
+    // puppet is a mainPlayer_C in the receiver's world, and a dimension builds itself around every one of
+    // them (the labyrinth): a pose from another level would put a body there and the receiver's level
+    // would build toward it. Poses from a peer on another level are not applied. Not relayed; not
+    // pre-world. PeerLevelPayload.
+    PeerLevel = 204,
 };
 
 #pragma pack(push, 1)
@@ -1876,6 +1882,13 @@ struct WorldTravelPayload {
     float   locDist[3];   // 12 -- mainGameInstance.locationDistance
 };
 static_assert(sizeof(WorldTravelPayload) == 64, "WorldTravelPayload must be 64 bytes");
+
+// The sender's current level (PeerLevel): its world's name, ASCII; len 0 while it travels.
+struct PeerLevelPayload {
+    uint8_t len;        // 1  -- 0..31
+    char    name[31];   // 31 -- the level name, not terminated
+};
+static_assert(sizeof(PeerLevelPayload) == 32, "PeerLevelPayload must be 32 bytes");
 
 namespace sleepingbag_intent {
 constexpr uint8_t kUnwrap = 1;

@@ -64,6 +64,18 @@ bool HandleEntityEvent(net::Session& session,
         coop::dimension_travel::OnWorldTravel(p);
         break;
     }
+    case net::ReliableKind::PeerLevel: {
+        // A peer's level, or its travel; dimension_travel keeps a puppet out of a level its peer is not in.
+        if (msg.payloadLen < sizeof(net::PeerLevelPayload)) {
+            UE_LOGW("event_feed: PeerLevel payload too short (%zu < %zu)",
+                    static_cast<size_t>(msg.payloadLen), sizeof(net::PeerLevelPayload));
+            break;
+        }
+        net::PeerLevelPayload p{};
+        std::memcpy(&p, msg.payload, sizeof(p));
+        coop::dimension_travel::OnPeerLevel(msg.senderPeerSlot, p);
+        break;
+    }
     case net::ReliableKind::SwingerPose: {
         // A peer swings a lid by hand; swinger_pose_sync puts this copy where it is. Bounds checked first.
         if (msg.payloadLen < sizeof(net::SwingerPosePayload)) {

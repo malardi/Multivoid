@@ -5,6 +5,8 @@
 #include "coop/net/protocol.h"
 #include "coop/net/session.h"
 #include "coop/player/players_registry.h"
+#include "coop/player/puppet_drive.h"   // Puppet, DestroySlot: no body from another level
+#include "coop/player/remote_player.h"
 
 #include "ue_wrap/core/call.h"
 #include "ue_wrap/core/fname_utils.h"
@@ -13,6 +15,7 @@
 #include "ue_wrap/core/script_gate.h"   // SetPassThrough: solo rules inside a dimension
 #include "ue_wrap/core/types.h"
 #include "ue_wrap/world/world_singleton.h"  // GameInstance: the travel state the entry writes
+#include "ue_wrap/engine/world_identity.h"   // CurrentWorld, Generation: this peer's arrival
 #include "coop/player/run_end_travel.h" // LoadLevelWatchTag: the one watch kept there
 
 #include <atomic>
@@ -131,6 +134,23 @@ bool CallTravel(const std::wstring& level, bool viaSubArea, bool clearSubArea) {
     return ue_wrap::Call(cdo, f);
 }
 
+// ---- the peers' levels -------------------------------------------------------------------------
+struct PeerLvl { bool known = false; std::wstring level; };  // level empty: travelling
+PeerLvl g_peer[coop::net::kMaxPeers];
+std::wstring g_myLevel;          // this peer's world's name; empty while it travels
+uint32_t g_seenGen = 0;
+uint64_t g_poseDropLogged = 0;
+
+void SendPeerLevel(const std::wstring& level) {
+    auto* s = g_session.load(std::memory_order_acquire);
+    if (!s || !s->running() || !s->connected()) return;
+    coop::net::PeerLevelPayload p{};
+    p.len = PutAscii(p.name, level);
+    s->SendReliable(coop::net::ReliableKind::PeerLevel, &p, sizeof(p));
+}
+
+void DropPuppetOf(int slot);  // defined after the anonymous namespace (puppet_drive)
+
 }  // namespace
 
 void Install(coop::net::Session* session) { g_session.store(session, std::memory_order_release); }
@@ -150,6 +170,9 @@ void OnLocalTravel(const std::wstring& level, bool own, bool viaSubArea, bool cl
             toDimension ? "a dimension: the session goes on there" : "the gameplay map",
             was && !toDimension ? " (back from a dimension)" : "");
     LogGi(toDimension ? "travel to a dimension" : "travel to the gameplay map");
+    // In transit: the others stop putting this peer's body into their level until it says where it is.
+    g_myLevel.clear();
+    SendPeerLevel(std::wstring());
     g_lastViaSubArea = viaSubArea;
     g_lastClear = clearSubArea;
     if (s->role() == coop::net::Role::Host && s->connected() && !g_following) SendTravel(*s, level);
@@ -208,6 +231,8 @@ void OnWorldTravel(const coop::net::WorldTravelPayload& p) {
 }
 
 void OnSessionStart() {
+    for (auto& pl : g_peer) pl = PeerLvl{};
+    g_seenGen = 0;
     if (auto* s = g_session.load(std::memory_order_acquire)) s->SetWorldTrafficPaused(false);
     ue_wrap::script_gate::SetPassThrough(false, 0);
     g_inDimension.store(false, std::memory_order_relaxed);
@@ -222,5 +247,56 @@ void OnDisconnect() {
     ue_wrap::script_gate::SetPassThrough(false, 0);  // no session: the gate's own holder is gone anyway
     // InDimension stays as it is: the world this peer is in does not change when the session ends.
 }
+
+void Tick() {
+    void* world = ue_wrap::world_identity::CurrentWorld();
+    const uint32_t gen = ue_wrap::world_identity::Generation();
+    if (!world || gen == g_seenGen) return;
+    if (!coop::players::Registry::Get().Local()) return;  // the body first: the level is up when it stands in it
+    g_seenGen = gen;
+    g_myLevel = R::ToString(R::NameOf(world));
+    UE_LOGI("[DIMENSION] this peer's world is now '%ls' -- told to the others", g_myLevel.c_str());
+    SendPeerLevel(g_myLevel);
+    // A peer that already said it stands on another level loses its body here.
+    for (int slot = 0; slot < coop::net::kMaxPeers; ++slot)
+        if (!PoseAccepted(slot)) DropPuppetOf(slot);
+}
+
+void OnPeerLevel(int slot, const coop::net::PeerLevelPayload& p) {
+    if (slot < 0 || slot >= coop::net::kMaxPeers || p.len > sizeof(p.name)) return;
+    std::wstring level;
+    for (uint8_t i = 0; i < p.len; ++i) {
+        const char c = p.name[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_')) return;
+        level.push_back(static_cast<wchar_t>(c));
+    }
+    g_peer[slot].known = true;
+    g_peer[slot].level = level;
+    UE_LOGI("[DIMENSION] peer slot %d %ls%ls", slot, level.empty() ? L"is travelling" : L"stands in '",
+            level.empty() ? L"" : (level + L"'").c_str());
+    if (!PoseAccepted(slot)) DropPuppetOf(slot);
+    // A peer that just arrived hears where this one is (it may have missed the word while loading).
+    if (!level.empty() && !g_myLevel.empty()) SendPeerLevel(g_myLevel);
+}
+
+bool PeerLevelKnown(int slot) { return slot >= 0 && slot < coop::net::kMaxPeers && g_peer[slot].known; }
+
+bool PoseAccepted(int slot) {
+    if (slot < 0 || slot >= coop::net::kMaxPeers) return true;
+    const PeerLvl& pl = g_peer[slot];
+    if (!pl.known) return true;            // never said: the join's own world, as before
+    if (pl.level.empty()) return false;    // travelling: its poses are of the level it left
+    if (g_myLevel.empty()) return true;    // this peer has not named its own world yet
+    return EqualsNoCase(pl.level, g_myLevel.c_str());
+}
+
+namespace {
+void DropPuppetOf(int slot) {
+    if (!coop::puppet_drive::Puppet(slot).valid()) return;
+    if (++g_poseDropLogged <= 20)
+        UE_LOGI("[DIMENSION] peer slot %d is on another level -- its body leaves this one until it is here", slot);
+    coop::puppet_drive::DestroySlot(slot);
+}
+}  // namespace
 
 }  // namespace coop::dimension_travel

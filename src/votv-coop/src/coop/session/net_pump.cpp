@@ -283,6 +283,7 @@ void Tick(coop::net::Session& session) {
     coop::subsystems::HoldSessionGate();
     coop::prop_key_index::Tick();  // a seed still owed, the births that finished loading: before any inbox read
     coop::subsystems::InstallLoadWatchers(session);
+    coop::dimension_travel::Tick();  // this peer's level, told to the others on arrival (puppets stay in their level)
 
     // ---- Hitch and source probe (diagnostic, always on, near free) ----
     // [HITCH] times the gap between consecutive game-thread Ticks (the whole frame); [HITCH-SRC],

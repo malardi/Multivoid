@@ -4,6 +4,7 @@
 // owns the loop that calls in here; this file owns what happens per slot.
 
 #include "coop/player/puppet_drive.h"
+#include "coop/world/dimension_travel.h"  // PoseAccepted: no body from another level
 
 #include "coop/creatures/wisp_grab_hold.h"
 #include "coop/dev/perf_probe.h"
@@ -107,7 +108,12 @@ void DriveTick(coop::net::Session& session, bool worldReadyAnnounced) {
             coop::net::PoseSnapshot remote;
             bool isNew = false;
             if (!session.TryGetRemotePose(slot, remote, &isNew)) continue;
+            // A peer on another level (a dimension, or in transit) has no body in this one: a puppet is
+            // a mainPlayer_C, and a dimension builds itself toward every one (coop/world/dimension_travel).
+            if (!coop::dimension_travel::PoseAccepted(slot)) continue;
             sPoseTarget[slot] = remote;  // pose-diag: latest stored pose (the interp target source)
+            // A body comes back on a FRESH pose only: the stored one may be the last of the level it left.
+            if (!g_puppets[slot].valid() && !isNew && coop::dimension_travel::PeerLevelKnown(slot)) continue;
             if (!g_puppets[slot].valid()) {
                 // A save-transfer joiner receives poses while still at the MENU (downloading
                 // and loading the host save) -- never spawn a puppet into a non-gameplay

@@ -19,6 +19,7 @@
 namespace coop::net {
 class Session;
 struct WorldTravelPayload;
+struct PeerLevelPayload;
 }  // namespace coop::net
 
 namespace coop::dimension_travel {
@@ -39,6 +40,13 @@ const wchar_t* ReturnLevel();
 
 // CLIENT: the host travelled; travel to the same level. Game thread.
 void OnWorldTravel(const coop::net::WorldTravelPayload& p);
+
+// Every peer tells the others the level its world is (and "" while it travels); a puppet is not put into
+// a level its peer is not in (a dimension builds itself toward every mainPlayer_C, a puppet included).
+void Tick();                                   // game thread: this peer's arrival in a level is sent
+void OnPeerLevel(int slot, const coop::net::PeerLevelPayload& p);
+bool PoseAccepted(int slot);                   // false: that peer stands on another level than this one
+bool PeerLevelKnown(int slot);                 // the peer has said its level at least once
 
 // Session start and end reset the state.
 void OnSessionStart();
