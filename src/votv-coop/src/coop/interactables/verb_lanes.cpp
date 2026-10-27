@@ -13,6 +13,7 @@
 #include "coop/interactables/toggle_verbs.h"
 #include "coop/items/point_sack_intent.h"
 #include "coop/net/session.h"
+#include "coop/props/open_container_sync.h"
 #include "coop/props/pry_break_sync.h"
 
 #include "ue_wrap/core/walk_timer.h"  // per-lane [WALK-TIME] attribution (diagnostic)
@@ -45,6 +46,7 @@ void Tick(coop::net::Session& session) {
     coop::keypad_verbs::Tick(session);  // settle the keypad watches; HOST: run queued keypad intents
     { ue_wrap::ScopedWalkTimer _w{"sync:desk_verb"}; coop::desk_verb_intent::Tick(session); }  // settle its seams; HOST: run one queued desk press a tick a client
     { ue_wrap::ScopedWalkTimer _w{"sync:pry_break"}; coop::pry_break_sync::Tick(session); }  // send the planks a pry freed; HOST: run queued container breaks
+    { ue_wrap::ScopedWalkTimer _w{"sync:open_container"}; coop::open_container_sync::Tick(session); }  // HOST: an open container's contents follow it on every peer
 }
 
 void OnDisconnect() {
@@ -59,6 +61,7 @@ void OnDisconnect() {
     coop::desk_verb_intent::OnDisconnect();
     coop::point_sack_intent::OnDisconnect();
     coop::pry_break_sync::OnDisconnect();
+    coop::open_container_sync::OnDisconnect();
 }
 
 }  // namespace coop::verb_lanes
