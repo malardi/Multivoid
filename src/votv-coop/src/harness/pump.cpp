@@ -1,6 +1,9 @@
 // harness/pump.cpp -- see harness/pump.h.
 
 #include "harness/pump.h"
+#include "ue_wrap/core/game_thread.h"  // TasksRun: the stall reporter's liveness count
+#include "ue_wrap/core/log.h"
+#include "ue_wrap/core/walk_timer.h"   // the walk the game thread is inside
 
 #include "coop/comms/chat_feed.h"
 #include "coop/props/prop_key_index.h"
@@ -111,7 +114,38 @@ void TickFrameTail() {
     TickShutdownHooks();
 }
 
+namespace {
+// The game-thread stall reporter: the posted-task counter stands still while a task never returns. Past
+// kStallMs it names the walk the game thread is inside (or left last), once and then every 30 s, so a
+// frozen peer's log says where it froze. A level load legitimately holds the thread for seconds.
+constexpr int64_t kStallMs = 8000;
+unsigned long long g_stallSeenTasks = 0;
+int64_t g_stallSinceMs = 0;
+int64_t g_stallNextSayMs = 0;
+
+void TickStallReport() {
+    const unsigned long long tasks = ue_wrap::game_thread::TasksRun();
+    const int64_t now = ue_wrap::WalkNowMs();
+    if (tasks != g_stallSeenTasks || g_stallSinceMs == 0) {
+        g_stallSeenTasks = tasks;
+        g_stallSinceMs = now;
+        g_stallNextSayMs = now + kStallMs;
+        return;
+    }
+    if (now < g_stallNextSayMs) return;
+    g_stallNextSayMs = now + 30000;
+    const char* cur = ue_wrap::g_walkCurrent.load(std::memory_order_acquire);
+    const char* last = ue_wrap::g_walkLast.load(std::memory_order_relaxed);
+    const int64_t inCur = now - ue_wrap::g_walkSinceMs.load(std::memory_order_relaxed);
+    UE_LOGW("[GT-STALL] no game-thread task has finished for %lld ms -- inside walk '%s' for %lld ms; "
+            "the last walk finished: '%s'",
+            static_cast<long long>(now - g_stallSinceMs), cur ? cur : "(none)",
+            static_cast<long long>(cur ? inCur : 0), last ? last : "(none)");
+}
+}  // namespace
+
 void TickWatchdogs() {
+    TickStallReport();
     // The join watchdog lives HERE, not on the render thread. Every phase budget in join_progress
     // used to be reachable only through ui::loading_screen::Render, i.e. through the ImGui
     // overlay's Present hook -- and harness.cpp treats a failed overlay install as non-fatal and

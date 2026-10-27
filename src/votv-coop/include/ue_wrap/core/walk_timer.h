@@ -15,17 +15,35 @@
 
 #include "ue_wrap/core/log.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 
 namespace ue_wrap {
 
+// The stall marker: the walk the game thread is inside now and the one it left last, with the time the
+// current one began. A watchdog on another thread (harness::pump::TickWatchdogs) names a walk that
+// never returns -- a [WALK-TIME] line is written only at the walk's end, so a hang leaves none.
+inline std::atomic<const char*> g_walkCurrent{nullptr};
+inline std::atomic<const char*> g_walkLast{nullptr};
+inline std::atomic<int64_t>     g_walkSinceMs{0};
+
+inline int64_t WalkNowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 struct ScopedWalkTimer {
     const char*                           name_;
     std::chrono::steady_clock::time_point t0_;
     explicit ScopedWalkTimer(const char* name)
-        : name_(name), t0_(std::chrono::steady_clock::now()) {}
+        : name_(name), t0_(std::chrono::steady_clock::now()) {
+        g_walkSinceMs.store(WalkNowMs(), std::memory_order_relaxed);
+        g_walkCurrent.store(name, std::memory_order_release);
+    }
     ~ScopedWalkTimer() {
+        g_walkLast.store(name_, std::memory_order_relaxed);
+        g_walkCurrent.store(nullptr, std::memory_order_release);
         const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
                             std::chrono::steady_clock::now() - t0_)
                             .count();

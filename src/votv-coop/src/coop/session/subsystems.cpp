@@ -170,7 +170,8 @@
 
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/script_gate.h"  // the session's hold on the script-body gate
-#include "ue_wrap/core/walk_timer.h"  // per-sync [WALK-TIME] attribution (diagnostic)
+#include "ue_wrap/core/walk_timer.h"
+#include "coop/world/dimension_travel.h"  // InDimension: the chain stands down in a dimension  // per-sync [WALK-TIME] attribution (diagnostic)
 #include "coop/items/hotbar_icon_edge.h"
 
 namespace coop::subsystems {
@@ -673,6 +674,17 @@ void TickGameplay(coop::net::Session& session, bool isConnected, bool isHost,
     // before the hub's pass can complete: a pass prunes what has died from its consumers' indexes, and a
     // lane names an ended actor by its index (grime's position key).
     { PP::Scope _s{PP::Bucket::Interactable}; coop::element::death_seam::Drain(); }
+    // In a dimension (coop/world/dimension_travel) the world-sync chain has nothing to sync: the level is
+    // this peer's own, and the desk, the dish, the drives and the rest are on a map nobody stands on. A
+    // client's chain stalled the game thread for good right after the labyrinth loaded (b260, b262), so
+    // only what a player needs there runs: the voice, the no-pause rule and the run-end seam (a death
+    // there is the way home).
+    if (coop::dimension_travel::InDimension()) {
+        { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:voice"}; coop::voice_chat::Tick(); }
+        { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:pause_guard"}; coop::pause_guard::Tick(isConnected); }
+        { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:run_end"}; coop::player::run_end_travel::Tick(); }
+        return;
+    }
     // The walk timer logs each sync's call over a millisecond, so a heavy one names itself; the
     // perf-probe bucket covers the whole block. The shared pass over the object index serves every
     // index consumer, and runs before the consumers' ticks so a completed pass's fresh index is
