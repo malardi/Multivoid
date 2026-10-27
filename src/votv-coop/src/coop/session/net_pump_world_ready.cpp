@@ -7,6 +7,7 @@
 
 #include "coop/dev/announce_hold.h"  // the pre-announce drill arms hold this client's announce
 #include "coop/session/join_progress.h"
+#include "coop/world/dimension_travel.h"  // InDimension: no re-announce into a dimension
 #include "coop/net/fake_link_steps.h"  // NoteOrigin: the joiner's `wr` origin
 #include "coop/net/protocol.h"
 #include "coop/net/session.h"
@@ -77,6 +78,12 @@ void ForgetWorldReadyAnnounce() {
 // travel here is local to the client, so the client says it and the host caps the repeat.
 void MaybeRequestReAnnounce(coop::net::Session& session, void* reapWorld) {
     if (session.role() == coop::net::Role::Host) return;
+    // A dimension is this peer's own level: there is no host world to stream into it. The way back
+    // to the gameplay map is a world change of its own, and that one re-announces.
+    if (coop::dimension_travel::InDimension()) {
+        UE_LOGI("net_pump: a world change into a dimension -- no re-announce there (%p)", reapWorld);
+        return;
+    }
     // A world is the same only when the same address holds the same live object. Without a baseline
     // world there is nothing to compare: the join's own announce covers it.
     if (!WLE::HasBaselineWorld()) {

@@ -97,6 +97,7 @@ bool Session::SendReliableToSlot(int peerSlot, ReliableKind kind, const void* pa
     // replay rebuilds all of it. Not absorbed by the backlog: a queued gate-skip would deliver
     // stale mutations at ready time and duplicate the replay.
     if (!IsSlotWorldReady(peerSlot) && !IsPreWorldSendableKind(kind)) return false;
+    if (WorldTrafficPaused() && !IsDimensionSendableKind(kind)) return false;  // the dimension gate
     const uint32_t hConn = peerConns_[peerSlot].load();
     if (hConn == 0) return false;
 
@@ -125,6 +126,7 @@ bool Session::TrySendReliableToSlot(int peerSlot, ReliableKind kind, const void*
         return false;
     }
     if (!IsSlotWorldReady(peerSlot) && !IsPreWorldSendableKind(kind)) return false;
+    if (WorldTrafficPaused() && !IsDimensionSendableKind(kind)) return false;  // the dimension gate
     const uint32_t hConn = peerConns_[peerSlot].load();
     if (hConn == 0) return false;
 
@@ -215,6 +217,8 @@ void Session::FinishClientLink(uint32_t hConn) {
     linkStage_.store(static_cast<uint8_t>(LinkStage::Admitted), std::memory_order_release);
 }
 
+bool Session::IsDimensionSendable(ReliableKind kind) { return IsDimensionSendableKind(kind); }
+
 bool Session::SendReliable(ReliableKind kind, const void* payload, int len, int skipSlot) {
     if (len < 0 || len > kMaxReliablePayload) {
         UE_LOGW("net: SendReliable rejected (len=%d > %d)", len, kMaxReliablePayload);
@@ -234,6 +238,7 @@ bool Session::SendReliable(ReliableKind kind, const void* payload, int len, int 
         if (hConn == 0) continue;
         // The pre-world gate, per slot (SendReliableToSlot's rule).
         if (!IsSlotWorldReady(i) && !IsPreWorldSendableKind(kind)) continue;
+        if (WorldTrafficPaused() && !IsDimensionSendableKind(kind)) continue;  // the dimension gate
         // Delivery per slot: the stream or the backlog counts as sent.
         const SendOutcome rc = backlog_.SendOrQueue(i, laneIdx, hConn, wire, total, admission_);
         if (rc == SendOutcome::Streamed) rateControl_.NoteReliableQueued(i, total);

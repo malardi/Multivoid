@@ -222,6 +222,11 @@ public:
         if (peerSlot >= 0 && peerSlot < kMaxPeers)
             slotWorldReady_[peerSlot].store(ready, std::memory_order_release);
     }
+    // The dimension gate: while set, the send paths carry only the player-scoped kinds
+    // (IsDimensionSendableKind in session_lanes.h). Set by coop/world/dimension_travel, any thread.
+    void SetWorldTrafficPaused(bool paused) { worldTrafficPaused_.store(paused, std::memory_order_release); }
+    bool WorldTrafficPaused() const { return worldTrafficPaused_.load(std::memory_order_acquire); }
+    static bool IsDimensionSendable(ReliableKind kind);
     bool IsSlotWorldReady(int peerSlot) const {
         return peerSlot >= 0 && peerSlot < kMaxPeers &&
                slotWorldReady_[peerSlot].load(std::memory_order_acquire);
@@ -718,6 +723,7 @@ private:
 
     // Per-slot world-ready flags (see MarkSlotWorldReady).
     std::array<std::atomic<bool>, kMaxPeers> slotWorldReady_{};
+    std::atomic<bool> worldTrafficPaused_{false};
     // The receive lanes holding the receive loop paused (see SetApplyPause); reset by Start.
     ApplyPauseSet applyPause_;
     // The receive edge's refusals of a kind no client may author (client_authorship.h): the first of each value

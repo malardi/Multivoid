@@ -332,6 +332,45 @@ constexpr bool IsClientRelayableReliableKind(ReliableKind k) {
 // world (downloading and loading the host save), and a host-to-client kind that mutates or
 // assumes a world must not be sent to a slot before its ClientWorldReady, since the world-ready
 // replay reconstructs all of it. The allowlist of kinds that may flow before world-ready.
+// The dimension gate (coop/world/dimension_travel): while this peer stands in a dimension -- a level of
+// its own that each peer builds for itself -- only the player-scoped kinds flow, both ways: who is who,
+// how they look, what they say, where the session goes. Every world-mutating kind names state of the
+// gameplay map (a key, an eid, a desk), and between a dimension and the gameplay map it is noise at
+// best: a prop of one world spawned into the other, a snapshot streamed into a level loading. The
+// world converges again on the way back, through the client's world-change re-announce.
+inline bool IsDimensionSendableKind(ReliableKind k) {
+    switch (k) {
+    case ReliableKind::Join:
+    case ReliableKind::AssignPeerSlot:
+    case ReliableKind::RosterRow:
+    case ReliableKind::SkinChange:
+    case ReliableKind::NameplateChange:
+    case ReliableKind::NickColorChange:
+    case ReliableKind::HandItem:
+    case ReliableKind::ChatMessage:
+    case ReliableKind::ChatLine:
+    case ReliableKind::ChatSpeaker:
+    case ReliableKind::VoiceState:
+    case ReliableKind::LinkProbe:
+    case ReliableKind::LinkProbeReply:
+    case ReliableKind::AuthHello:
+    case ReliableKind::AuthChallenge:
+    case ReliableKind::AuthProof:
+    case ReliableKind::ServerSetting:
+    case ReliableKind::PermissionGrants:
+    case ReliableKind::CommandRequest:
+    case ReliableKind::CommandReply:
+    case ReliableKind::BalanceSync:
+    case ReliableKind::UpgradeLevels:
+    case ReliableKind::RestoreVitals:
+    case ReliableKind::TeleportClient:
+    case ReliableKind::WorldTravel:
+        return true;
+    default:
+        return false;
+    }
+}
+
 inline bool IsPreWorldSendableKind(ReliableKind k) {
     switch (k) {
     case ReliableKind::Join:

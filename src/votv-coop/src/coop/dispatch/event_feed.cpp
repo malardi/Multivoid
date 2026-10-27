@@ -4,6 +4,7 @@
 // Session, handshake, snapshot and dev-key cases stay inline.
 
 #include "coop/dispatch/event_feed.h"
+#include "coop/world/dimension_travel.h"  // InDimension: the receive half of the dimension gate
 
 #include "event_dispatch.h"  // co-located private header (src tree, not include/)
 
@@ -67,6 +68,7 @@ namespace {
 // Set when the local peer leaves for the menu, so the Stop-driven row clears tear state down
 // without narrating every departure.
 bool g_suppressLeaveLines = false;
+uint64_t g_dimensionDropped = 0;  // world kinds dropped while this peer stood in a dimension
 
 // The "<X> left the game" line, driven by the ledger row transition. It reads the outgoing
 // snapshot, so it needs no ordering against the nickname clear, and it fires for a replacement
@@ -172,6 +174,14 @@ void Update(net::Session& session, void* localPlayer) {
     while (session.TryGetReliable(msg)) {
         if (msg.senderPeerSlot >= 0 && msg.senderPeerSlot < net::kMaxPeers)
             ++g_drained[msg.senderPeerSlot][static_cast<uint8_t>(msg.kind)];
+        // The dimension gate, the receive half: a peer in a dimension takes only the player-scoped
+        // kinds; the other peer may still stand on the gameplay map, and its world is not this one.
+        if (coop::dimension_travel::InDimension() && !net::Session::IsDimensionSendable(msg.kind)) {
+            if (++g_dimensionDropped == 1 || g_dimensionDropped % 500 == 0)
+                UE_LOGI("[DIMENSION] world traffic dropped in a dimension: %llu message(s) so far (kind %u)",
+                        static_cast<unsigned long long>(g_dimensionDropped), static_cast<unsigned>(msg.kind));
+            continue;
+        }
         switch (msg.kind) {
         case net::ReliableKind::Join: {
             coop::player_handshake::HandleJoinMessage(session, msg);

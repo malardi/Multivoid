@@ -74,6 +74,7 @@ void OnLocalTravel(const std::wstring& level, bool own) {
     const bool toDimension = !EqualsNoCase(level, kGameplayLevel);
     const bool was = g_inDimension.exchange(toDimension, std::memory_order_relaxed);
     g_level = toDimension ? level : std::wstring();
+    s->SetWorldTrafficPaused(toDimension);
     UE_LOGI("[DIMENSION] this peer travels to '%ls' -- %s%s", level.c_str(),
             toDimension ? "a dimension: the session goes on there" : "the gameplay map",
             was && !toDimension ? " (back from a dimension)" : "");
@@ -112,6 +113,7 @@ void OnWorldTravel(const coop::net::WorldTravelPayload& p) {
 }
 
 void OnSessionStart() {
+    if (auto* s = g_session.load(std::memory_order_acquire)) s->SetWorldTrafficPaused(false);
     g_inDimension.store(false, std::memory_order_relaxed);
     g_level.clear();
 }

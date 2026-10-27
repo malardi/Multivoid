@@ -94,6 +94,7 @@ void Session::RelayReliableToOtherClients(int originSlot, ReliableKind kind,
         // receipt->GT-flip gap was skipped here AND missed by the ready-edge seed.
         if (!IsSlotWorldReady(i) && !IsRelayEligible(i, hConn) &&
             !IsPreWorldSendableKind(kind)) continue;
+        if (WorldTrafficPaused() && !IsDimensionSendableKind(kind)) continue;  // the dimension gate
         // The relay rides the same delivery guarantee as every other reliable send. Before the
         // backlog existed, a refusal here was the worst silent-loss surface in the mod -- the
         // message was dropped without even a warning, so the field's refusal count under-reported
