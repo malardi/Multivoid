@@ -283,6 +283,11 @@ bool PeerLevelKnown(int slot) { return slot >= 0 && slot < coop::net::kMaxPeers 
 
 bool PoseAccepted(int slot) {
     if (slot < 0 || slot >= coop::net::kMaxPeers) return true;
+    // Inside a dimension no peer's body is put into the level at all. Measured (b263..b266): the client's
+    // game thread stopped right after the host's puppet -- a whole mainPlayer_C -- began play in its
+    // labyrinth, every time, and the same client in the same labyrinth with no session (no puppet)
+    // played on. A body that is not a mainPlayer_C is the follow-up.
+    if (InDimension()) return false;
     const PeerLvl& pl = g_peer[slot];
     if (!pl.known) return true;            // never said: the join's own world, as before
     if (pl.level.empty()) return false;    // travelling: its poses are of the level it left
