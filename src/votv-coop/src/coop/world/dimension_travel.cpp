@@ -72,6 +72,21 @@ void LogGi(const char* when) {
             sub.c_str(), d.X, d.Y, d.Z, f.loadObjects >= 0 ? b[f.loadObjects] : -1);
 }
 
+// mainGameInstance.loadObjects: the next level applies the save's objects. A client's save is the host's
+// world as transferred at the join; into a dimension that is every prop of the base spawned inside the
+// level (b269: the client's labyrinth spawned prop_C by the thousand and never built a room; the
+// host's spawned only rgen_room_C). Off into a dimension, on again for the gameplay map.
+void SetLoadObjects(bool on, const char* why) {
+    void* gi = ue_wrap::world_singleton::GameInstance();
+    if (!gi) return;
+    const GiFields& f = Gi(gi);
+    if (f.loadObjects < 0) return;
+    uint8_t* b = static_cast<uint8_t*>(gi);
+    if ((b[f.loadObjects] != 0) == on) return;
+    b[f.loadObjects] = on ? 1 : 0;
+    UE_LOGI("[DIMENSION] gameInstance.loadObjects -> %d (%s)", on ? 1 : 0, why);
+}
+
 template <size_t N>
 uint8_t PutAscii(char (&dst)[N], const std::wstring& src) {
     uint8_t n = 0;
@@ -169,6 +184,9 @@ void OnLocalTravel(const std::wstring& level, bool own, bool viaSubArea, bool cl
     UE_LOGI("[DIMENSION] this peer travels to '%ls' -- %s%s", level.c_str(),
             toDimension ? "a dimension: the session goes on there" : "the gameplay map",
             was && !toDimension ? " (back from a dimension)" : "");
+    if (s->role() == coop::net::Role::Client)
+        SetLoadObjects(!toDimension, toDimension ? "a client's dimension takes none of the transferred save's objects"
+                                                 : "the gameplay map loads the save");
     LogGi(toDimension ? "travel to a dimension" : "travel to the gameplay map");
     // In transit: the others stop putting this peer's body into their level until it says where it is.
     g_myLevel.clear();
