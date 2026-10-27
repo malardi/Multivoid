@@ -42,7 +42,9 @@
 #include "ue_wrap/core/ufunction_hook.h"         // InstallPostHook (chains after host_spawn_watcher's)
 #include "ue_wrap/facts/function_row.h"
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <string>
@@ -128,8 +130,38 @@ std::wstring WireToWide(const uint8_t len, const char* data, size_t cap) {
 // a settled session for place detection. Chains after the host spawn watcher's callback on
 // the same UFunction, role-disjoint (that one is host-only, this client-only). Runs on the
 // dispatching thread; the finish spawn is game-thread only in UE4 (actor construction).
+// [DIMENSION-SPAWNS] census: inside a dimension every finished spawn is counted by class and the top
+// classes logged every 2 s (both roles), so a level that keeps building names what it builds. Read
+// on the game thread only, from inside the spawn: it is written while the game thread is in its frame.
+void CensusSpawn(void* actor) {
+    static std::vector<std::pair<std::wstring, int>> sCounts;
+    static int sTotal = 0, sWindows = 0;
+    static std::chrono::steady_clock::time_point sWindowStart{};
+    const auto now = std::chrono::steady_clock::now();
+    if (sWindowStart.time_since_epoch().count() == 0) sWindowStart = now;
+    const std::wstring cls = R::ClassNameOf(actor);
+    bool found = false;
+    for (auto& c : sCounts) if (c.first == cls) { ++c.second; found = true; break; }
+    if (!found && sCounts.size() < 256) sCounts.emplace_back(cls, 1);
+    ++sTotal;
+    if (now - sWindowStart < std::chrono::seconds(2)) return;
+    if (sWindows++ < 60) {
+        std::sort(sCounts.begin(), sCounts.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+        std::wstring top;
+        for (size_t i = 0; i < sCounts.size() && i < 10; ++i)
+            top += sCounts[i].first + L" x" + std::to_wstring(sCounts[i].second) + L"; ";
+        UE_LOGI("[DIMENSION-SPAWNS] %d spawn(s) in the last %lld ms: %ls", sTotal,
+                static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(now - sWindowStart).count()),
+                top.c_str());
+    }
+    sCounts.clear();
+    sTotal = 0;
+    sWindowStart = now;
+}
+
 void OnClientFinishSpawn(void* /*context*/, void* /*srcObj*/, void* result) {
     if (!GT::IsGameThread()) return;
+    if (coop::dimension_travel::InDimension() && result && R::IsLive(result)) CensusSpawn(result);
     // The probe's birth record comes before the session gates: the menu world's births after a quit
     // happen with no session, and they are what the pause-quit drill measures.
     if (coop::dev::prop_birth_key_probe::IsEnabled() && result && R::IsLive(result) &&
