@@ -63,6 +63,8 @@ constexpr int      kMaxPlanks    = 16;
 // A container breaks where it is hit, or where it lands when thrown, so its reach is wider than a press:
 // the authority adds the container's bounds and the puppet's lag allowance to it.
 constexpr float kBreakReachUU = 1500.0f;
+// A gas can or a barrel is set off from afar too (a shot, a thrown object), so its reach is wider.
+constexpr float kBlastReachUU = 5000.0f;
 constexpr coop::net::IntentBudget kBreakBudget{4.0f, 4.0f};
 constexpr size_t   kMaxPendingBreaks = 8;
 constexpr uint64_t kRefusalSayMs     = 10000;
@@ -71,6 +73,8 @@ std::atomic<coop::net::Session*> g_session{nullptr};
 
 void* g_plankClass     = nullptr;  // prop_pryablePlank_C
 void* g_containerClass = nullptr;  // prop_container_C
+void* g_gascanClass    = nullptr;  // prop_gascan_C: its broken() is a fuel can's explosion
+void* g_barrelClass    = nullptr;  // prop_bombBarrel_C: its broken() is the barrel's explosion
 
 struct PendingPlank {
     void*    prop = nullptr;
@@ -103,6 +107,13 @@ bool IsA(void* obj, void*& cls, const wchar_t* name) {
 }
 bool IsPlank(void* obj)     { return IsA(obj, g_plankClass, L"prop_pryablePlank_C"); }
 bool IsContainer(void* obj) { return IsA(obj, g_containerClass, L"prop_container_C"); }
+// What breaks through broken()/broken_fire() and must break once, on the host: a container spills its
+// loot, a gas can and a bomb barrel spawn their explosion. A client's own explosion is dissolved by the
+// explosion lane (only launcher shots and the ATV are re-asked of the host there), so a client's break
+// of a can or a barrel left it broken with no blast anywhere; through the host it explodes for all.
+bool IsBreakable(void* obj) {
+    return IsContainer(obj) || IsA(obj, g_gascanClass, L"prop_gascan_C") || IsA(obj, g_barrelClass, L"prop_bombBarrel_C");
+}
 
 bool Stuck(void* prop) { return PR::IsStatic(prop) || PR::IsFrozen(prop); }
 
@@ -189,7 +200,7 @@ void TickPlanks(coop::net::Session& s) {
 sg::Verdict OnBreakPre(const sg::Call& call) {
     auto* s = g_session.load(std::memory_order_acquire);
     if (!s || !s->connected() || s->role() != coop::net::Role::Client) return sg::Verdict::Run;
-    if (!call.object || !IsContainer(call.object)) return sg::Verdict::Run;
+    if (!call.object || !IsBreakable(call.object)) return sg::Verdict::Run;
     // A call on an object of a world this client has not announced ready is that world's load: native.
     if (!coop::net_pump::IsInAnnouncedWorld(call.object)) return sg::Verdict::Run;
     const std::wstring key = PR::GetInteractableKeyString(call.object);
@@ -216,14 +227,14 @@ sg::Verdict OnBreakPre(const sg::Call& call) {
 bool ExecuteBreak(coop::net::Session& s, const coop::net::ContainerBreakIntentPayload& p, uint8_t slot) {
     const std::wstring key = coop::net::StringFromWireKey(p.key);
     void* box = key.empty() ? nullptr : coop::prop_key_index::Find(key);
-    if (!box || !IsContainer(box)) {
+    if (!box || !IsBreakable(box)) {
         ++g_breaksDenied;
         UE_LOGI("[CRATE] DENY slot=%u key='%ls' -- %s", static_cast<unsigned>(slot), key.c_str(),
-                box ? "that prop is not a container" : "no container holds that key here (already broken?)");
+                box ? "that prop does not break this way" : "nothing holds that key here (already broken?)");
         return true;
     }
     const coop::element::IntentSubject subject =
-        coop::element::IntentTarget::ForClientIntent(s, slot, kBreakReachUU).Authorize(box);
+        coop::element::IntentTarget::ForClientIntent(s, slot, IsContainer(box) ? kBreakReachUU : kBlastReachUU).Authorize(box);
     if (subject.outcome == coop::element::IntentOutcome::NoBody) {
         if (!g_slots[slot].waitSaid) {
             g_slots[slot].waitSaid = true;

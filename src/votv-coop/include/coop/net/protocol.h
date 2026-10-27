@@ -30,7 +30,7 @@ inline constexpr uint32_t kMagic = 0x564D5450u;
 // This file is past the 1500-line hard cap and stays there: it is the single-feature exception the
 // rule names. One wire format, whose enum, payload structs and static_asserts are read together;
 // splitting it would put a kind's number in one file and its bytes in another.
-inline constexpr uint16_t kProtocolVersion = 252;
+inline constexpr uint16_t kProtocolVersion = 253;
 
 // Default LAN port (overridable via multivoid.ini "net.port=").
 inline constexpr uint16_t kDefaultPort = 47621;
@@ -1127,7 +1127,7 @@ enum class ReliableKind : uint8_t {
     // edge; never relayed; not pre-world; a copy landing before the joiner's world is ready waits for it.
     // AtvSetCompletePayload.
     AtvSetComplete = 199,
-    // CLIENT->HOST: this client's copy of a container (a crate, a box, a barrel) reached its broken() or
+    // CLIENT->HOST: this client's copy of a container (a crate, a box), a gas can or a bomb barrel reached its broken() or
     // broken_fire(), which on a client is refused at the body: the spill would be client-born props the
     // host never sees. The host runs the same verb on its own copy, whose loot and destroy reach every peer
     // on the host's own spawn and destroy lanes. Never relayed; not pre-world. Late join: none, a break is
