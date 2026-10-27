@@ -4,6 +4,7 @@
 // when the local peer has quit to the menu.
 
 #include "coop/props/registry_reaper.h"
+#include "coop/world/dimension_travel.h"
 
 #include "coop/dev/perf_probe.h"
 #include "coop/element/element.h"
@@ -136,7 +137,8 @@ bool Tick(coop::net::Session& session) {
         if (inGameplayWorld) {
             g_everInGameplayThisSession = true;
         } else if (kind == ue_wrap::world_identity::WorldKind::Other &&
-                   g_everInGameplayThisSession && !coop::net_pump::IsFleeing() && session.running()) {
+                   g_everInGameplayThisSession && !coop::net_pump::IsFleeing() && session.running() &&
+                   !coop::dimension_travel::InDimension()) {  // a dimension is the run, not the menu
             // Positive Other, never Unknown: a travel publishes null for about a second in both
             // directions, and fleeing on that would end the session of a peer mid-load. Other also
             // covers preLoad and the tutorial maps, which a name test for "menu" did not.

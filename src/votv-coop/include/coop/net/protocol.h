@@ -30,7 +30,7 @@ inline constexpr uint32_t kMagic = 0x564D5450u;
 // This file is past the 1500-line hard cap and stays there: it is the single-feature exception the
 // rule names. One wire format, whose enum, payload structs and static_asserts are read together;
 // splitting it would put a kind's number in one file and its bytes in another.
-inline constexpr uint16_t kProtocolVersion = 259;
+inline constexpr uint16_t kProtocolVersion = 260;
 
 // Default LAN port (overridable via multivoid.ini "net.port=").
 inline constexpr uint16_t kDefaultPort = 47621;
@@ -1144,6 +1144,11 @@ enum class ReliableKind : uint8_t {
     // moved the far copy a little or not at all; the pose puts it where the swinging peer's is. Not
     // pre-world. Late join: none (ContainerState's snapshot carries open or closed). SwingerPosePayload.
     SwingerPose = 202,
+    // HOST->CLIENT: the host's own player is travelling to another level of the run -- a dimension (the
+    // labyrinth, the well pit, hell, ...) or back to the gameplay map. Each client travels to the same
+    // level with the game's own lib_C::loadLevel, so the session goes on with every peer in one world.
+    // Never relayed; not pre-world. Late join: none. WorldTravelPayload.
+    WorldTravel = 203,
 };
 
 #pragma pack(push, 1)
@@ -1850,6 +1855,13 @@ struct SwingerPosePayload {
 };
 static_assert(sizeof(SwingerPosePayload) == 56, "SwingerPosePayload must be 56 bytes");
 static_assert(sizeof(SwingerPosePayload) <= 256 - 20 - 8, "SwingerPosePayload must fit one datagram");
+
+// A level travel (WorldTravel): the level's name as lib_C::loadLevel takes it, ASCII.
+struct WorldTravelPayload {
+    uint8_t len;        // 1  -- 1..63
+    char    name[63];   // 63 -- the level name, not terminated
+};
+static_assert(sizeof(WorldTravelPayload) == 64, "WorldTravelPayload must be 64 bytes");
 
 namespace sleepingbag_intent {
 constexpr uint8_t kUnwrap = 1;

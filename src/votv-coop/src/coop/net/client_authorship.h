@@ -223,6 +223,7 @@ constexpr ClientAuthorship AuthorshipOf(ReliableKind k) {
     case ReliableKind::CameraActiveState:
     case ReliableKind::CameraLightState:
     case ReliableKind::LaptopTabState:
+    case ReliableKind::WorldTravel:
     case ReliableKind::AtvSetComplete:
         return ClientAuthorship::Host;
     }

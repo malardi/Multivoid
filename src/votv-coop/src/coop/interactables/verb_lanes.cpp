@@ -17,6 +17,7 @@
 #include "coop/props/open_container_sync.h"
 #include "coop/world/blood_decal_sync.h"
 #include "coop/creatures/walker_mirror.h"
+#include "coop/world/dimension_travel.h"
 #include "coop/props/pry_break_sync.h"
 
 #include "ue_wrap/core/walk_timer.h"  // per-lane [WALK-TIME] attribution (diagnostic)
@@ -36,6 +37,7 @@ void Install(coop::net::Session& session) {
     coop::point_sack_intent::Install(&session);  // a client's opened point sack is paid by the host
     coop::pry_break_sync::Install(&session);     // a pried plank goes free everywhere; a client's container break is run by the host
     coop::blood_decal_sync::Install(&session);   // a blood splat lands on every peer
+    coop::dimension_travel::Install(&session);   // a dimension: the session kept, the clients follow the host
     coop::walker_mirror::Install(&session);      // one walking mannequin: a client's brain off, the host's pose streamed
 }
 
@@ -74,6 +76,7 @@ void OnDisconnect() {
     coop::blood_decal_sync::OnDisconnect();
     coop::walker_mirror::OnDisconnect();
     coop::swinger_pose_sync::OnDisconnect();
+    coop::dimension_travel::OnDisconnect();
 }
 
 }  // namespace coop::verb_lanes

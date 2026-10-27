@@ -6,6 +6,7 @@
 
 #include "event_dispatch.h"  // co-located private header (src tree, not include/)
 #include "coop/world/blood_decal_sync.h"
+#include "coop/world/dimension_travel.h"
 #include "coop/interactables/swinger_pose_sync.h"
 
 #include "coop/element/player.h"
@@ -47,6 +48,22 @@ bool HandleEntityEvent(net::Session& session,
                        void* localPlayer) {
     (void)session;
     switch (msg.kind) {
+    case net::ReliableKind::WorldTravel: {
+        // The host travels to another level of the run; dimension_travel takes this client there too.
+        if (msg.senderPeerSlot != 0) {
+            UE_LOGW("event_feed: WorldTravel from slot %d, not the host -- dropping", msg.senderPeerSlot);
+            break;
+        }
+        if (msg.payloadLen < sizeof(net::WorldTravelPayload)) {
+            UE_LOGW("event_feed: WorldTravel payload too short (%zu < %zu)",
+                    static_cast<size_t>(msg.payloadLen), sizeof(net::WorldTravelPayload));
+            break;
+        }
+        net::WorldTravelPayload p{};
+        std::memcpy(&p, msg.payload, sizeof(p));
+        coop::dimension_travel::OnWorldTravel(p);
+        break;
+    }
     case net::ReliableKind::SwingerPose: {
         // A peer swings a lid by hand; swinger_pose_sync puts this copy where it is. Bounds checked first.
         if (msg.payloadLen < sizeof(net::SwingerPosePayload)) {

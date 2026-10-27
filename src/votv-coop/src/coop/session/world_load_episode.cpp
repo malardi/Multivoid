@@ -2,6 +2,7 @@
 // The episode latch plus the load-tail quiescence probe that gates the ClientWorldReady announce.
 
 #include "coop/session/world_load_episode.h"
+#include "coop/world/dimension_travel.h"
 
 #include "coop/config/config.h"  // ReadEnv, for the drill switch
 #include "coop/net/net_clock.h"
@@ -285,7 +286,9 @@ bool TickQuiesceProbe() {
                     save_replay_watch::Refused() ? "the script gate refused it"
                                                  : "its function does not exist in this game build");
         } else if (g_failure.failure == Failure::None &&
-                   (save_replay_watch::ReturnedInThisWorld(&cw) || save_replay_watch::GateBreak())) {
+                   (save_replay_watch::ReturnedInThisWorld(&cw) || save_replay_watch::GateBreak() ||
+                    (req == Request::WorldChange && coop::dimension_travel::InDimension()))) {
+            // A dimension's level loads no save, so its replay never returns: its world counts as replayed.
             // (3) the replay returned: the request is consumed and its session opens. An Arm that
             // replaced the request this tick, off the game thread, fails the exchange; the next tick
             // sees the new one.

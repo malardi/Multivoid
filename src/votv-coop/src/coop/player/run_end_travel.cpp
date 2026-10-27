@@ -14,6 +14,8 @@
 // dying.
 
 #include "coop/player/run_end_travel.h"
+#include "coop/world/dimension_travel.h"  // a dimension's travels, the session kept
+#include "ue_wrap/core/fname_utils.h"     // the return travel's level name
 
 #include "coop/config/config.h"
 #include "coop/config/config_registry.h"
@@ -158,6 +160,8 @@ sg::Verdict OnLoadLevelPre(const sg::Call& call) {
     void* author = *reinterpret_cast<void* const*>(call.locals + sAuthorOff);
 
     if (!R::NameEquals(level, kMenuLevel)) {
+        coop::dimension_travel::OnLocalTravel(R::ToString(level),
+                                              author && author == coop::players::Registry::Get().Local());
         // A sub-level travel (sl_*, the map transitions). It is not this seam's to refuse -- and
         // it will still end the session for the peer that takes it, which is a separate open
         // question, so the trail is left deliberately.
@@ -206,6 +210,19 @@ sg::Verdict OnLoadLevelPre(const sg::Call& call) {
 
     const std::wstring cls = R::ClassNameOf(author);
     const bool isLocalPawn = author && author == coop::players::Registry::Get().Local();
+    // Inside a dimension the run-ending (a death there, the white void's end, the goop) is the way back:
+    // vanilla reloads the save from the menu, so the travel goes to the gameplay map instead, which loads
+    // the save, and the session goes on. On the host the clients follow it there.
+    if (coop::dimension_travel::InDimension()) {
+        const R::FName back = ue_wrap::fname_utils::StringToFName(coop::dimension_travel::ReturnLevel());
+        if (!(back.ComparisonIndex == 0 && back.Number == 0)) {
+            *reinterpret_cast<R::FName*>(call.locals + sLevelOff) = back;
+            UE_LOGI("run_end_travel: a run-ending travel by %ls inside a dimension -- it goes back to '%ls' "
+                    "instead of the menu", cls.c_str(), coop::dimension_travel::ReturnLevel());
+            coop::dimension_travel::OnLocalTravel(coop::dimension_travel::ReturnLevel(), true);
+            return sg::Verdict::Run;
+        }
+    }
     g_cancelled.fetch_add(1, std::memory_order_relaxed);
     UE_LOGW("run_end_travel: REFUSED lib_C::loadLevel(\"menu\") authored by %ls%s -- the game is "
             "ending the run and this is a coop session, so the world is kept and the player is "
@@ -281,6 +298,7 @@ void Tick() {
 }
 
 void OnSessionStart() {
+    coop::dimension_travel::OnSessionStart();
     // Nothing world-scoped is carried across sessions, and this lane now holds nothing that is:
     // both authors are judged by name against the object in hand. What is reset is the counters
     // and the one-shot warnings. The watch itself is process-wide and outlives a session.
