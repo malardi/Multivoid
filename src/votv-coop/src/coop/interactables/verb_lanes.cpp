@@ -14,6 +14,7 @@
 #include "coop/items/point_sack_intent.h"
 #include "coop/net/session.h"
 #include "coop/props/open_container_sync.h"
+#include "coop/world/blood_decal_sync.h"
 #include "coop/props/pry_break_sync.h"
 
 #include "ue_wrap/core/walk_timer.h"  // per-lane [WALK-TIME] attribution (diagnostic)
@@ -32,6 +33,7 @@ void Install(coop::net::Session& session) {
     coop::desk_verb_intent::Install(&session);   // a client's press on the desk's save family is run by the host
     coop::point_sack_intent::Install(&session);  // a client's opened point sack is paid by the host
     coop::pry_break_sync::Install(&session);     // a pried plank goes free everywhere; a client's container break is run by the host
+    coop::blood_decal_sync::Install(&session);   // a blood splat lands on every peer
 }
 
 void Tick(coop::net::Session& session) {
@@ -47,6 +49,7 @@ void Tick(coop::net::Session& session) {
     { ue_wrap::ScopedWalkTimer _w{"sync:desk_verb"}; coop::desk_verb_intent::Tick(session); }  // settle its seams; HOST: run one queued desk press a tick a client
     { ue_wrap::ScopedWalkTimer _w{"sync:pry_break"}; coop::pry_break_sync::Tick(session); }  // send the planks a pry freed; HOST: run queued container breaks
     { ue_wrap::ScopedWalkTimer _w{"sync:open_container"}; coop::open_container_sync::Tick(session); }  // HOST: an open container's contents follow it on every peer
+    coop::blood_decal_sync::Tick();     // settle the blood watch
 }
 
 void OnDisconnect() {
@@ -62,6 +65,7 @@ void OnDisconnect() {
     coop::point_sack_intent::OnDisconnect();
     coop::pry_break_sync::OnDisconnect();
     coop::open_container_sync::OnDisconnect();
+    coop::blood_decal_sync::OnDisconnect();
 }
 
 }  // namespace coop::verb_lanes

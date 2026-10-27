@@ -30,7 +30,7 @@ inline constexpr uint32_t kMagic = 0x564D5450u;
 // This file is past the 1500-line hard cap and stays there: it is the single-feature exception the
 // rule names. One wire format, whose enum, payload structs and static_asserts are read together;
 // splitting it would put a kind's number in one file and its bytes in another.
-inline constexpr uint16_t kProtocolVersion = 254;
+inline constexpr uint16_t kProtocolVersion = 255;
 
 // Default LAN port (overridable via multivoid.ini "net.port=").
 inline constexpr uint16_t kDefaultPort = 47621;
@@ -1133,6 +1133,11 @@ enum class ReliableKind : uint8_t {
     // on the host's own spawn and destroy lanes. Never relayed; not pre-world. Late join: none, a break is
     // an act. ContainerBreakIntentPayload.
     ContainerBreakIntent = 200,
+    // ANY PEER, relayed by the host: a blood splat (grime_blood2_C, or its drip) landed on this peer; every
+    // other peer spawns the same decal at the same transform, so the splatter of a player who bleeds is
+    // seen by all and sits at one world position, which grime_sync's cleaning keys on. Not pre-world.
+    // Late join: none (the host's save carries the host's decals). BloodDecalPayload.
+    BloodDecal = 201,
 };
 
 #pragma pack(push, 1)
@@ -1815,6 +1820,19 @@ struct ContainerBreakIntentPayload {
 static_assert(sizeof(ContainerBreakIntentPayload) == 36, "ContainerBreakIntentPayload must be 36 bytes");
 static_assert(sizeof(ContainerBreakIntentPayload) <= 256 - 20 - 8,
               "ContainerBreakIntentPayload must fit one datagram");
+
+// A blood decal (BloodDecal): where it landed, its facing and size, which of the game's blood
+// materials it took, and whether it is the drip variant.
+struct BloodDecalPayload {
+    float   locX, locY, locZ;          // 12 -- world position (cm)
+    float   rotPitch, rotYaw, rotRoll; // 12 -- world rotation (deg)
+    float   sclX, sclY, sclZ;          // 12 -- root scale
+    int32_t type;                      // 4  -- grime_C.Type, the material variant
+    uint8_t drip;                      // 1  -- 1 for grime_blood2_drip_C
+    uint8_t _pad[3];                   // 3  -- zero
+};
+static_assert(sizeof(BloodDecalPayload) == 44, "BloodDecalPayload must be 44 bytes");
+static_assert(sizeof(BloodDecalPayload) <= 256 - 20 - 8, "BloodDecalPayload must fit one datagram");
 
 namespace sleepingbag_intent {
 constexpr uint8_t kUnwrap = 1;

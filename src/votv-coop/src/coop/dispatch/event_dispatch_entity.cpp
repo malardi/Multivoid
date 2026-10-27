@@ -5,6 +5,7 @@
 // coop/dispatch/event_dispatch.h.
 
 #include "event_dispatch.h"  // co-located private header (src tree, not include/)
+#include "coop/world/blood_decal_sync.h"
 
 #include "coop/element/player.h"
 #include "coop/element/registry.h"
@@ -45,6 +46,29 @@ bool HandleEntityEvent(net::Session& session,
                        void* localPlayer) {
     (void)session;
     switch (msg.kind) {
+    case net::ReliableKind::BloodDecal: {
+        // A peer's blood splat; blood_decal_sync spawns the same decal here. Bounds checked before any
+        // engine write.
+        if (msg.payloadLen < sizeof(net::BloodDecalPayload)) {
+            UE_LOGW("event_feed: BloodDecal payload too short (%zu < %zu)",
+                    static_cast<size_t>(msg.payloadLen), sizeof(net::BloodDecalPayload));
+            break;
+        }
+        net::BloodDecalPayload p{};
+        std::memcpy(&p, msg.payload, sizeof(p));
+        const float vals[9] = {p.locX, p.locY, p.locZ, p.rotPitch, p.rotYaw, p.rotRoll, p.sclX, p.sclY, p.sclZ};
+        bool bad = false;
+        for (float v : vals) if (!std::isfinite(v)) bad = true;
+        if (std::fabs(p.locX) > 1.0e6f || std::fabs(p.locY) > 1.0e6f || std::fabs(p.locZ) > 1.0e6f) bad = true;
+        for (int i = 6; i < 9; ++i) if (vals[i] <= 0.f || vals[i] > 100.f) bad = true;
+        if (p.type < 0 || p.type > 64 || p.drip > 1) bad = true;
+        if (bad) {
+            UE_LOGW("event_feed: BloodDecal fields out of bounds -- dropping");
+            break;
+        }
+        coop::blood_decal_sync::OnBloodDecal(p);
+        break;
+    }
     case net::ReliableKind::PropStickState: {
         // A peer stuck a wall-attach component's prop (the camera) to a surface, or it came unstuck.
         // Symmetric prop state, relayed by the host; prop_stick_sync replays the component's own

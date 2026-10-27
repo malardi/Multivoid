@@ -18,6 +18,7 @@
 #include "ue_wrap/actors/prop.h"          // GetKeyString for swinger (it is an Aprop_C)
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/actors/swinger.h"
+#include "ue_wrap/engine/engine.h"  // IsChildActor, ParentActorOf: a child lid's key
 
 #include <chrono>
 #include <string>
@@ -113,11 +114,30 @@ const Adapter g_lightGroupAdapter = {
     },
     nullptr,  // no TickApply: runTrigger lands the state in its own body
 };
+// A swinger's cross-peer key. A lid that is its own prop keys by its save Key. A lid that is a child actor --
+// a microwave's door, a fridge's two doors, spawned by the parent's construction script on every peer -- gets
+// a fresh NewGuid Key per process, so its own Key named nothing on the other peer and its open state never
+// applied there: it keys by its parent's Key and its UChildActorComponent's name, the half of a child actor's
+// identity that is stable across processes. Bounded to the wire key's 31 characters.
+std::wstring SwingerKey(void* a) {
+    if (ue_wrap::engine::IsChildActor(a)) {
+        std::wstring comp;
+        void* parent = ue_wrap::engine::ParentActorOf(a, &comp);
+        const std::wstring pk = parent ? ue_wrap::prop::GetKeyString(parent) : std::wstring();
+        if (!pk.empty() && pk != L"None" && !comp.empty() && pk.size() + 2 <= 31) {
+            std::wstring k = pk + L"|" + comp;
+            if (k.size() > 31) k.resize(31);
+            return k;
+        }
+    }
+    return ue_wrap::prop::GetKeyString(a);  // a swinger is an Aprop_C
+}
+
 const Adapter g_containerAdapter = {
     "container", coop::net::ReliableKind::ContainerState,
     &ue_wrap::swinger::EnsureResolved,
     &ue_wrap::swinger::IsSwinger,
-    &ue_wrap::prop::GetKeyString,  // a swinger is an Aprop_C
+    &SwingerKey,
     &ue_wrap::swinger::TryReadOpen,
     [](void* a, bool on) -> bool { return on ? ue_wrap::swinger::CallOpen(a, false) : ue_wrap::swinger::CallClose(a); },
 };

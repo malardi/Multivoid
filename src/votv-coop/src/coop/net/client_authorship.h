@@ -114,6 +114,7 @@ constexpr ClientAuthorship AuthorshipOf(ReliableKind k) {
     case ReliableKind::WindowStroke:
     case ReliableKind::DoorVerbIntent:
     case ReliableKind::ContainerBreakIntent:
+    case ReliableKind::BloodDecal:
     case ReliableKind::SleepingbagIntent:
     case ReliableKind::KeypadIntent:
     case ReliableKind::OvenRepairState:
