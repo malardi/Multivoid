@@ -15,6 +15,7 @@
 #include "ue_wrap/core/script_gate.h"   // SetPassThrough: solo rules inside a dimension
 #include "ue_wrap/core/script_fingerprint.h"  // the [BP-DUMP] of the gameplay mode
 #include "ue_wrap/core/paths.h"
+#include "ue_wrap/facts/function_row.h"
 #include "coop/config/config.h"
 #include "coop/config/config_registry.h"
 #include <cstdio>
@@ -185,9 +186,52 @@ void SendPeerLevel(const std::wstring& level) {
 
 void DropPuppetOf(int slot);  // defined after the anonymous namespace (puppet_drive)
 
+// ---- the carried equipment ---------------------------------------------------------------------
+// mainGamemode's BeginPlay spawns one prop per entry of saveSlot.beginEquipment beside the player, then
+// clears the array: what a level travel carries. A client's labyrinth found thousands there (b274/b275: the
+// flood is that loop, ExecuteUbergraph_mainGamemode's beginEquipment walk), the host's a handful. Read at the
+// gamemode's BeginPlay, before the loop; a client's array past any real kit is emptied in a dimension.
+UE_FACT_FN(kRowGmBeginPlay, "dimension_travel", L"mainGamemode_C", L"ReceiveBeginPlay", Declared);
+constexpr size_t kMaxCarried = 200;
+bool g_gmWatch = false, g_gmLive = false;
+
+struct NameArray { R::FName* data; int32_t num; int32_t max; };
+
+ue_wrap::script_gate::Verdict OnGamemodeBeginPlayPre(const ue_wrap::script_gate::Call& call) {
+    void* gm = call.object;
+    if (!gm) return ue_wrap::script_gate::Verdict::Run;
+    const int32_t slotOff = R::FindPropertyOffset(R::ClassOf(gm), L"saveSlot");
+    void* slot = slotOff >= 0 ? *reinterpret_cast<void**>(static_cast<uint8_t*>(gm) + slotOff) : nullptr;
+    if (!slot) {
+        UE_LOGI("[DIMENSION] gamemode BeginPlay: no saveSlot (off=%d)", slotOff);
+        return ue_wrap::script_gate::Verdict::Run;
+    }
+    const int32_t eqOff = R::FindPropertyOffset(R::ClassOf(slot), L"beginEquipment");
+    if (eqOff < 0) return ue_wrap::script_gate::Verdict::Run;
+    auto* arr = reinterpret_cast<NameArray*>(static_cast<uint8_t*>(slot) + eqOff);
+    std::wstring first;
+    for (int32_t i = 0; i < arr->num && i < 8 && arr->data; ++i) first += R::ToString(arr->data[i]) + L" ";
+    auto* s = g_session.load(std::memory_order_acquire);
+    const bool client = s && s->running() && s->role() == coop::net::Role::Client;
+    UE_LOGI("[DIMENSION] gamemode BeginPlay: saveSlot.beginEquipment holds %d (first: %ls)%s", arr->num, first.c_str(),
+            InDimension() ? " -- in a dimension" : "");
+    if (client && InDimension() && arr->num > static_cast<int32_t>(kMaxCarried)) {
+        UE_LOGW("[DIMENSION] a client's carried equipment of %d entries is no kit -- emptied before the level spawns it",
+                arr->num);
+        arr->num = 0;  // the storage stays; the array is empty, as the gamemode's own clear leaves it
+    }
+    return ue_wrap::script_gate::Verdict::Run;
+}
+
 }  // namespace
 
-void Install(coop::net::Session* session) { g_session.store(session, std::memory_order_release); }
+void Install(coop::net::Session* session) {
+    g_session.store(session, std::memory_order_release);
+    // The same tag as run_end_travel's travel watch: a dimension's pass-through keeps it.
+    if (!g_gmWatch)
+        g_gmWatch = ue_wrap::script_gate::WatchName(kRowGmBeginPlay, coop::player::run_end_travel::LoadLevelWatchTag(),
+                                                    &OnGamemodeBeginPlayPre, nullptr);
+}
 
 void OnLocalTravel(const std::wstring& level, bool own, bool viaSubArea, bool clearSubArea) {
     auto* s = g_session.load(std::memory_order_acquire);
@@ -318,6 +362,11 @@ void DumpGamemodeOnce() {
 
 void Tick() {
     DumpGamemodeOnce();
+    if (g_gmWatch && !g_gmLive) {
+        ue_wrap::script_gate::ResolvePendingNames();
+        g_gmLive = ue_wrap::script_gate::NameWatchLive(kRowGmBeginPlay, coop::player::run_end_travel::LoadLevelWatchTag());
+        if (g_gmLive) UE_LOGI("[DIMENSION] the gamemode's BeginPlay is watched (the carried equipment)");
+    }
     void* world = ue_wrap::world_identity::CurrentWorld();
     const uint32_t gen = ue_wrap::world_identity::Generation();
     if (!world || gen == g_seenGen) return;
