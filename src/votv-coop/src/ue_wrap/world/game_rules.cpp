@@ -61,6 +61,39 @@ std::string PrettyLabel(const std::wstring& name) {
     return out;
 }
 
+// The game's text as UTF-8, which is what ImGui draws: a Russian, Chinese or any other localised label
+// (a translation pak renames the rules) keeps its letters instead of folding each one to '?'. wchar_t is
+// UTF-16 on Windows, so a surrogate pair joins into one code point; a lone surrogate becomes U+FFFD.
+std::string Utf8(const std::wstring& w) {
+    std::string out;
+    out.reserve(w.size());
+    for (size_t i = 0; i < w.size(); ++i) {
+        uint32_t cp = static_cast<uint16_t>(w[i]);
+        if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < w.size()) {
+            const uint32_t lo = static_cast<uint16_t>(w[i + 1]);
+            if (lo >= 0xDC00 && lo <= 0xDFFF) { cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00); ++i; }
+        }
+        if (cp >= 0xD800 && cp <= 0xDFFF) cp = 0xFFFD;
+        if (cp == 0) continue;
+        if (cp < 0x80) {
+            out.push_back(static_cast<char>(cp));
+        } else if (cp < 0x800) {
+            out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        } else if (cp < 0x10000) {
+            out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        } else {
+            out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        }
+    }
+    return out;
+}
+
 // The game's display name of one enumerator, through the same library function its rules pane
 // fills its combo boxes with. Empty when the library or the enum is not there.
 std::string EnumValueName(void* enumObj, uint8_t value) {
@@ -75,8 +108,9 @@ std::string EnumValueName(void* enumObj, uint8_t value) {
     if (!ue_wrap::Call(sCdo, f)) return {};
     R::FString ret{};
     if (!f.GetRaw(L"ReturnValue", &ret, sizeof(ret)) || !ret.Data) return {};
-    std::string out;
-    for (int32_t i = 0; i + 1 < ret.Num; ++i) out.push_back(static_cast<char>(ret.Data[i]));
+    // UTF-16 to UTF-8: a localised enumerator name keeps its letters (a byte cut of each unit drew
+    // "Нет" as "\x1D5B").
+    const std::string out = Utf8(std::wstring(ret.Data, ret.Num > 0 ? static_cast<size_t>(ret.Num - 1) : 0));
     R::EngineFree(ret.Data);  // the returned string is ours: the frame is freed raw, not destructed
     return out;
 }

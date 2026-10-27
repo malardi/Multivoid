@@ -21,10 +21,36 @@ constexpr int kMaxDepth = 24;  // the pane nests 6 deep; a bound, so a cyclic tr
 struct ObjArray { void** data; int32_t num; int32_t max; };
 struct NameArray { R::FName* data; int32_t num; int32_t max; };
 
+// The game's text as UTF-8, which is what ImGui draws: a Russian, Chinese or any other localised label
+// (a translation pak renames the rules) keeps its letters instead of folding each one to '?'. wchar_t is
+// UTF-16 on Windows, so a surrogate pair joins into one code point; a lone surrogate becomes U+FFFD.
 std::string Narrow(const std::wstring& w) {
     std::string out;
     out.reserve(w.size());
-    for (wchar_t c : w) out.push_back(c < 0x80 ? static_cast<char>(c) : '?');
+    for (size_t i = 0; i < w.size(); ++i) {
+        uint32_t cp = static_cast<uint16_t>(w[i]);
+        if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < w.size()) {
+            const uint32_t lo = static_cast<uint16_t>(w[i + 1]);
+            if (lo >= 0xDC00 && lo <= 0xDFFF) { cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00); ++i; }
+        }
+        if (cp >= 0xD800 && cp <= 0xDFFF) cp = 0xFFFD;
+        if (cp == 0) continue;
+        if (cp < 0x80) {
+            out.push_back(static_cast<char>(cp));
+        } else if (cp < 0x800) {
+            out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        } else if (cp < 0x10000) {
+            out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        } else {
+            out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        }
+    }
     return out;
 }
 
