@@ -95,6 +95,10 @@ inline constexpr const wchar_t* NpcClass_WispG        = L"wisp_g_C";
 inline constexpr const wchar_t* NpcClass_WispO        = L"wisp_o_C";
 inline constexpr const wchar_t* NpcClass_WispP        = L"wisp_p_C";
 inline constexpr const wchar_t* NpcClass_WispBlu      = L"wisp_blu_C";
+// The ambient wildlife the world's tickers spawn at world-anchored points (not around a player): one herd, one
+// grove for every peer, the host's.
+inline constexpr const wchar_t* NpcClass_Deer         = L"deer_C";
+inline constexpr const wchar_t* NpcClass_WalkingTree  = L"walkingTree_C";
 
 // The allowlist array: resolved once at install through R::FindClass and cached. The classes load
 // on the first gameplay-level transition, not at the menu, so the install retries until every
@@ -126,6 +130,8 @@ inline constexpr const wchar_t* kNpcAllowlist[] = {
     NpcClass_WispO,
     NpcClass_WispP,
     NpcClass_WispBlu,
+    NpcClass_Deer,         // ticker_deerSpawner_C: random absolute map points; the host rolls (spawn_authority)
+    NpcClass_WalkingTree,  // ticker_treeSpawner_C: a world-anchored ring; the host rolls
 };
 inline constexpr size_t kNpcAllowlistSize = sizeof(kNpcAllowlist) / sizeof(kNpcAllowlist[0]);
 

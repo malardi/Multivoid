@@ -90,6 +90,8 @@ UE_FACT_FN(kRowReceiveBeginPlaySuperEgger, "spawn_authority", L"superEgger_C", L
 UE_FACT_FN(kRowSpwnSuperEgger, "spawn_authority", L"superEgger_C", L"spwn", Declared);
 UE_FACT_FN(kRowTossFloppyKerfurOmega, "spawn_authority", L"kerfurOmega_C",
            L"OnNotifyBegin_7ac3dd824d2a2ebb4e59308080ceab45", Declared);
+UE_FACT_FN(kRowReceiveTickTickerDeerSpawner, "spawn_authority", L"ticker_deerSpawner_C", L"ReceiveTick", Declared);
+UE_FACT_FN(kRowReceiveTickTickerTreeSpawner, "spawn_authority", L"ticker_treeSpawner_C", L"ReceiveTick", Declared);
 UE_FACT_FN(kRowEatOverlapWoodchipper, "spawn_authority", L"woodchipper_C",
            L"BndEvt__eat_K2Node_ComponentBoundEvent_0_ComponentBeginOverlapSignature__DelegateSignature", Declared);
 
@@ -107,6 +109,10 @@ constexpr Row kRows[] = {
     // from its own floppyType and floppyData. A client's Omega is the host's mirror, whose disc fields are empty, so
     // its toss minted a second disc, empty (or from no class at all), beside the host's full one, which crosses.
     {&kRowTossFloppyKerfurOmega,          "kerfurOmega.tossFloppy"},
+    // The deer and the walking trees: world-anchored rolls (random absolute map points, a fixed ring), so one
+    // herd and one grove for everyone, the host's; the source-gated catch and the npc allowlist mirror them.
+    {&kRowReceiveTickTickerDeerSpawner,   "deerSpawner.ReceiveTick"},
+    {&kRowReceiveTickTickerTreeSpawner,   "treeSpawner.ReceiveTick"},
     {&kRowSpawnMushroomMaster,            "mushroomMaster.Spawn"},
     {&kRowSpawnMushroomSpawner,           "mushroomSpawner.Spawn"},
     // A late-game class: keyed by name, the watch holds from the class's first body, whenever it loads.

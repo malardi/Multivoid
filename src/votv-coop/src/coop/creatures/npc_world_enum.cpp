@@ -164,6 +164,8 @@ constexpr ExSpawnSource kExSpawnSources[] = {
     {L"superEgger_C",            nullptr},          // eggvasion: spwn() mints the eg_C children
     {L"tentacleBallsFollower_C", nullptr},          // tentacleBalls: runTrigger() mints the pack
     {L"trigger_spawnProp_C",     kSpawnPropOutputs},  // the picnic's warping ships
+    {L"ticker_deerSpawner_C",    nullptr},          // the deer, at random absolute map points
+    {L"ticker_treeSpawner_C",    nullptr},          // the walking trees, on a world-anchored ring
 };
 
 // Whether `cls`'s own name is one of `names` (null-terminated). One render, then plain compares.
