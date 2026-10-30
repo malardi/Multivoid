@@ -415,6 +415,18 @@ void* ParentActorOf(void* actor, std::wstring* outComponentName) {
     std::memcpy(&weak, reinterpret_cast<uint8_t*>(actor) + off, sizeof(weak));
     void* comp = R::ResolveWeakObject(weak.idx, weak.serial);
     if (!comp || !R::IsLive(comp)) return nullptr;
+    // What the weak pointer names must be a child-actor component (or a subclass); anything else is a
+    // stale or foreign slot, and its name is not this actor's to render: that rendering faulted the
+    // engine inside the scan hub's pass every two seconds. Pointer compares only, before any name.
+    static void* sCacCls = nullptr;
+    if (!sCacCls) sCacCls = R::FindClass(L"ChildActorComponent");
+    if (!sCacCls || !R::IsDescendantOfAny(R::ClassOf(comp), &sCacCls, 1)) {
+        static std::atomic<int> sSaid{0};
+        if (sSaid.fetch_add(1) < 5)
+            UE_LOGW("engine: ParentActorOf(%p) -- its ParentComponent {idx=%d serial=%d} names %p, not a "
+                    "child-actor component; no parent", actor, weak.idx, weak.serial, comp);
+        return nullptr;
+    }
     if (outComponentName) *outComponentName = R::ToString(R::NameOf(comp));
     return R::OuterOf(comp);   // a UActorComponent's Outer IS its owning AActor
 }
