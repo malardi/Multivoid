@@ -4,6 +4,7 @@
 
 #include "coop/element/element.h"
 #include "coop/element/intent_authority.h"
+#include "coop/interactables/atv_sync_internal.h"  // FindEntry: an ATV by its Key
 #include "coop/net/intent_bucket.h"
 #include "coop/net/intent_queue.h"
 #include "coop/net/protocol.h"
@@ -247,7 +248,9 @@ sg::Verdict OnFuelPre(const sg::Call& call) {
     auto* s = g_session.load(std::memory_order_acquire);
     if (!s || !s->connected() || s->role() != coop::net::Role::Client) return sg::Verdict::Run;
     if (!call.object || !coop::net_pump::IsInAnnouncedWorld(call.object)) return sg::Verdict::Run;
-    const std::wstring key = PR::GetInteractableKeyString(call.object);
+    // An ATV is keyed by its prop Key (the ATV lane's own index names it so), which the interactable read misses.
+    std::wstring key = PR::GetInteractableKeyString(call.object);
+    if (key.empty() || key == L"None") key = PR::GetKeyString(call.object);
     if (key.empty() || key == L"None") {
         UE_LOGW("[FUEL] %ls %p has no key the host could resolve -- its fuel stays here alone",
                 R::ClassNameOf(call.object).c_str(), call.object);
@@ -291,6 +294,10 @@ void* NearestGascan(void* target) {
 bool ExecuteFuel(coop::net::Session& s, const coop::net::ContainerBreakIntentPayload& p, uint8_t slot) {
     const std::wstring key = coop::net::StringFromWireKey(p.key);
     void* target = key.empty() ? nullptr : coop::prop_key_index::Find(key);
+    if (!target && !key.empty()) {
+        const coop::atv_sync::AtvEntry* atv = coop::atv_sync::FindEntry(key);
+        if (atv && atv->actor && R::IsLiveByIndex(atv->actor, atv->idx)) target = atv->actor;
+    }
     const wchar_t* verb = (p.verb == CB::kFuelUp) ? L"fuelUp" : L"gascanFuel";
     void* fn = target ? R::FindDispatchFunctionCached(R::ClassOf(target), verb) : nullptr;
     if (!fn) {
