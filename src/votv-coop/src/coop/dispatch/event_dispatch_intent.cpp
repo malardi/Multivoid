@@ -108,7 +108,7 @@ bool HandleIntentEvent(net::Session& session,
         }
         net::ContainerBreakIntentPayload p{};
         std::memcpy(&p, msg.payload, sizeof(p));
-        if (p.verb > net::container_break::kBrokenFire) {
+        if (p.verb > net::container_break::kLast) {
             UE_LOGW("event_feed: ContainerBreakIntent verb=%u out of range -- dropping",
                     static_cast<unsigned>(p.verb));
             break;

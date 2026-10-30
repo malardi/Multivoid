@@ -1832,10 +1832,16 @@ static_assert(sizeof(DoorVerbIntentPayload) <= 256 - 20 - 8,
 
 // A container break intent (ContainerBreakIntent): the container by its prop key, and which of its two
 // break verbs the client's copy reached.
-namespace container_break { constexpr uint8_t kBroken = 0; constexpr uint8_t kBrokenFire = 1; }
+// kFuelUp / kGascanFuel: the key names what a client's gas can poured into (an ATV, a generator: fuelUp; a wood
+// chipper, a lamp, a torch: gascanFuel); the host pours from its own nearest gas can, the same verb.
+namespace container_break {
+constexpr uint8_t kBroken = 0; constexpr uint8_t kBrokenFire = 1;
+constexpr uint8_t kFuelUp = 2; constexpr uint8_t kGascanFuel = 3;
+constexpr uint8_t kLast = kGascanFuel;
+}
 struct ContainerBreakIntentPayload {
     WireKey  key;        // 32 -- the container's prop key
-    uint8_t  verb;       // 1  -- container_break::kBroken (broken) or kBrokenFire (broken_fire)
+    uint8_t  verb;       // 1  -- container_break::kBroken (broken), kBrokenFire (broken_fire), kFuelUp, kGascanFuel
     uint8_t  _pad[3];    // 3  -- zero
 };
 static_assert(sizeof(ContainerBreakIntentPayload) == 36, "ContainerBreakIntentPayload must be 36 bytes");

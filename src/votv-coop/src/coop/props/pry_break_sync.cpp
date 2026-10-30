@@ -9,6 +9,8 @@
 #include "coop/net/protocol.h"
 #include "coop/net/session.h"
 #include "coop/net/wire_key_util.h"
+#include "coop/player/players_registry.h"  // the sender's puppet, the pour's player
+#include "coop/player/remote_player.h"
 #include "coop/player/roster_ledger.h"  // PerSlotState
 #include "coop/props/prop_element_tracker.h"
 #include "coop/props/prop_key_index.h"
@@ -17,9 +19,11 @@
 
 #include "ue_wrap/actors/prop.h"
 #include "ue_wrap/actors/prop_flags.h"
+#include "ue_wrap/core/call.h"            // ParamFrame / Call (the host's pour)
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/object_index.h"
 #include "ue_wrap/core/reflection.h"
+#include "ue_wrap/core/reflection_props.h"  // FunctionParams / ParamOffset
 #include "ue_wrap/core/script_gate.h"
 #include "ue_wrap/core/types.h"
 #include "ue_wrap/engine/engine.h"
@@ -30,6 +34,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cwctype>
 #include <string>
 
 namespace coop::pry_break_sync {
@@ -47,10 +52,20 @@ namespace CB = coop::net::container_break;
 UE_FACT_FN(kRowCrowbarOpen, "pry_break_sync", nullptr, L"crowbarOpen", AnyClass);
 UE_FACT_FN(kRowBroken, "pry_break_sync", nullptr, L"broken", AnyClass);
 UE_FACT_FN(kRowBrokenFire, "pry_break_sync", nullptr, L"broken_fire", AnyClass);
+// A gas can pours through its target's verb: fuelUp (the ATV, the portable generator) or gascanFuel (the wood
+// chipper, a lamp, a torch, another can). Both hand the can to the target, which calls the can's getFuel on its own
+// fuel field.
+UE_FACT_FN(kRowFuelUp, "pry_break_sync", nullptr, L"fuelUp", AnyClass);
+UE_FACT_FN(kRowGascanFuel, "pry_break_sync", nullptr, L"gascanFuel", AnyClass);
 
 constexpr int kTagPry        = 0x50425059;  // 'PBPY'
 constexpr int kTagBroken     = 0x50424252;  // 'PBBR'
 constexpr int kTagBrokenFire = 0x50424246;  // 'PBBF'
+constexpr int kTagFuelUp     = 0x50424655;  // 'PBFU'
+constexpr int kTagGascanFuel = 0x50424746;  // 'PBGF'
+// The host pours from its own gas can nearest the target, within this of it: the client's can is in the
+// client's hand beside the target, and its copy on the host is driven there.
+constexpr float kFuelCanReachUU = 600.0f;
 
 struct Watch { const ue_wrap::facts::Function* row; int tag; sg::PreFn pre; const char* what; };
 enum class Reg : uint8_t { Pending, Registered, Refused };
@@ -93,6 +108,7 @@ coop::roster_ledger::PerSlotState<Slot> g_slots;
 
 uint64_t g_pliesSeen = 0, g_planksSent = 0, g_planksApplied = 0, g_plankTimeouts = 0;
 uint64_t g_breaksSent = 0, g_breaksRan = 0, g_breaksDenied = 0, g_breaksNative = 0;
+uint64_t g_fuelsSent = 0, g_fuelsRan = 0;
 
 uint64_t NowMs() {
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -223,8 +239,105 @@ sg::Verdict OnBreakPre(const sg::Call& call) {
     return sg::Verdict::Cancel;
 }
 
+// ---- refuelling: a client's pour runs here and on the host ------------------------------------
+// The client's own pour runs (its copy fills at once, as it would alone), and the host pours the same into its
+// own copy, the one the ATV's stream and the save carry; before this the host's stream wrote the ATV's fuel back
+// to empty a moment later and the host's save never had it.
+sg::Verdict OnFuelPre(const sg::Call& call) {
+    auto* s = g_session.load(std::memory_order_acquire);
+    if (!s || !s->connected() || s->role() != coop::net::Role::Client) return sg::Verdict::Run;
+    if (!call.object || !coop::net_pump::IsInAnnouncedWorld(call.object)) return sg::Verdict::Run;
+    const std::wstring key = PR::GetInteractableKeyString(call.object);
+    if (key.empty() || key == L"None") {
+        UE_LOGW("[FUEL] %ls %p has no key the host could resolve -- its fuel stays here alone",
+                R::ClassNameOf(call.object).c_str(), call.object);
+        return sg::Verdict::Run;
+    }
+    coop::net::ContainerBreakIntentPayload p{};
+    coop::net::WireKeyFromString(key, p.key);
+    p.verb = (call.tag == kTagFuelUp) ? CB::kFuelUp : CB::kGascanFuel;
+    if (call.locals && call.function) {
+        static R::ParamOffset sBack(L"back");
+        const int32_t bo = sBack.Of(call.function);
+        if (bo >= 0) p._pad[0] = call.locals[bo] ? 1 : 0;
+    }
+    if (s->SendReliable(coop::net::ReliableKind::ContainerBreakIntent, &p, sizeof(p))) {
+        ++g_fuelsSent;
+        UE_LOGI("[FUEL] CLIENT SENT a pour%s into %ls key='%ls' (#%llu)", p._pad[0] ? " back" : "",
+                R::ClassNameOf(call.object).c_str(), key.c_str(), static_cast<unsigned long long>(g_fuelsSent));
+    }
+    return sg::Verdict::Run;
+}
+
+struct NearestCan { ue_wrap::FVector at; void* best; float bestD2; };
+
+void* NearestGascan(void* target) {
+    NearestCan n{};
+    if (!E::TryGetActorLocation(target, n.at)) return nullptr;
+    n.bestD2 = kFuelCanReachUU * kFuelCanReachUU;
+    if (!g_gascanClass) g_gascanClass = ue_wrap::object_index::ClassByName(L"prop_gascan_C");
+    if (!g_gascanClass) return nullptr;
+    ue_wrap::object_index::ForEachInstance(g_gascanClass, [](void* ctx, void* obj, int32_t) {
+        auto* nc = static_cast<NearestCan*>(ctx);
+        ue_wrap::FVector a{};
+        if (!E::TryGetActorLocation(obj, a)) return;
+        const float dx = a.X - nc->at.X, dy = a.Y - nc->at.Y, dz = a.Z - nc->at.Z;
+        const float d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < nc->bestD2) { nc->bestD2 = d2; nc->best = obj; }
+    }, &n);
+    return n.best;
+}
+
+bool ExecuteFuel(coop::net::Session& s, const coop::net::ContainerBreakIntentPayload& p, uint8_t slot) {
+    const std::wstring key = coop::net::StringFromWireKey(p.key);
+    void* target = key.empty() ? nullptr : coop::prop_key_index::Find(key);
+    const wchar_t* verb = (p.verb == CB::kFuelUp) ? L"fuelUp" : L"gascanFuel";
+    void* fn = target ? R::FindDispatchFunctionCached(R::ClassOf(target), verb) : nullptr;
+    if (!fn) {
+        UE_LOGI("[FUEL] DENY slot=%u key='%ls' -- %s", static_cast<unsigned>(slot), key.c_str(),
+                target ? "it has no such verb" : "nothing holds that key here");
+        return true;
+    }
+    const coop::element::IntentSubject subject =
+        coop::element::IntentTarget::ForClientIntent(s, slot, kBreakReachUU).Authorize(target);
+    if (subject.outcome == coop::element::IntentOutcome::NoBody) return false;
+    if (!subject) {
+        UE_LOGI("[FUEL] DENY slot=%u key='%ls' -- %s (%.0f uu of %.0f)", static_cast<unsigned>(slot), key.c_str(),
+                coop::element::OutcomeName(subject.outcome), subject.distUU, subject.reachUU);
+        return true;
+    }
+    void* can = NearestGascan(target);
+    if (!can || can == target) {
+        UE_LOGI("[FUEL] DENY slot=%u key='%ls' -- no gas can of the host's within %.0f uu of it",
+                static_cast<unsigned>(slot), key.c_str(), kFuelCanReachUU);
+        return true;
+    }
+    ue_wrap::ParamFrame f(fn);
+    bool canSet = false;
+    for (const auto& prm : R::FunctionParams(fn)) {
+        std::wstring n = prm.name;
+        for (auto& ch : n) ch = static_cast<wchar_t>(::towlower(ch));
+        if (n == L"back") { f.Set<bool>(prm.name.c_str(), p._pad[0] != 0); continue; }
+        if (prm.size != static_cast<int32_t>(sizeof(void*))) continue;
+        if (n == L"player") {
+            coop::RemotePlayer* rp = coop::players::Registry::Get().Puppet(slot);
+            void* puppet = (rp && rp->valid()) ? rp->GetActor() : nullptr;
+            f.Set<void*>(prm.name.c_str(), puppet);
+        } else if (!canSet) {
+            f.Set<void*>(prm.name.c_str(), can);
+            canSet = true;
+        }
+    }
+    const bool ran = canSet && ue_wrap::Call(target, f);
+    if (ran) ++g_fuelsRan;
+    UE_LOGI("[FUEL] host ran slot %u's %ls%s on key='%ls' from its can %p: %s", static_cast<unsigned>(slot), verb,
+            p._pad[0] ? " (back)" : "", key.c_str(), can, ran ? "ran" : "did not run");
+    return true;
+}
+
 // False keeps the break at its sender's queue head (no body to measure its reach from yet).
 bool ExecuteBreak(coop::net::Session& s, const coop::net::ContainerBreakIntentPayload& p, uint8_t slot) {
+    if (p.verb == CB::kFuelUp || p.verb == CB::kGascanFuel) return ExecuteFuel(s, p, slot);
     const std::wstring key = coop::net::StringFromWireKey(p.key);
     void* box = key.empty() ? nullptr : coop::prop_key_index::Find(key);
     if (!box || !IsBreakable(box)) {
@@ -262,6 +375,8 @@ const Watch kWatches[] = {
     { &kRowCrowbarOpen, kTagPry,        &OnPryPre,   "crowbarOpen" },
     { &kRowBroken,      kTagBroken,     &OnBreakPre, "broken" },
     { &kRowBrokenFire,  kTagBrokenFire, &OnBreakPre, "broken_fire" },
+    { &kRowFuelUp,      kTagFuelUp,     &OnFuelPre,  "fuelUp" },
+    { &kRowGascanFuel,  kTagGascanFuel, &OnFuelPre,  "gascanFuel" },
 };
 constexpr int kWatchCount = static_cast<int>(sizeof(kWatches) / sizeof(kWatches[0]));
 Reg  g_reg[kWatchCount] = {};
