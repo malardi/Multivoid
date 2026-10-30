@@ -95,6 +95,11 @@ struct TaskFaultInfo {
     void*         faultingIP = nullptr;  // EXCEPTION_RECORD::ExceptionAddress
     void*         accessAddr = nullptr;  // ExceptionInformation[1] on an AV
     unsigned long code       = 0;        // 0xC0000005 == EXCEPTION_ACCESS_VIOLATION
+    // Return addresses into the mod's own image found on the faulting stack, nearest first: a fault
+    // inside the engine names which of our calls led there (a stack scan, so a stale slot can appear).
+    void*         ourFrames[6] = {};
+    int           ourFrameCount = 0;
+    const char*   walk = nullptr;            // the [WALK-TIME] pass the game thread was inside
 };
 // The current thread's last-absorbed-fault stash (filled by the SEH filters).
 TaskFaultInfo& LastTaskFault();

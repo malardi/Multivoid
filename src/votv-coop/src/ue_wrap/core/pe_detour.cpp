@@ -14,6 +14,7 @@
 #include "ue_wrap/core/pe_diag.h"
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/core/sdk_profile.h"
+#include "ue_wrap/core/walk_timer.h"
 
 #include <windows.h>
 
@@ -138,6 +139,30 @@ int TaskFaultFilter(EXCEPTION_POINTERS* ep) {
          ep->ExceptionRecord->NumberParameters >= 2)
             ? reinterpret_cast<void*>(ep->ExceptionRecord->ExceptionInformation[1])
             : nullptr;
+    // Our own frames on the faulting stack: every slot from the faulting RSP up that points into this
+    // image's code. Read under its own guard, since the stack is the faulting thread's own and live.
+    t_lastTaskFault.ourFrameCount = 0;
+    t_lastTaskFault.walk = ::ue_wrap::g_walkCurrent.load(std::memory_order_relaxed);
+    static uintptr_t sBase = 0, sEnd = 0;
+    if (!sBase) {
+        HMODULE self = nullptr;
+        if (::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                 reinterpret_cast<LPCWSTR>(&TaskFaultFilter), &self) && self) {
+            const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(self);
+            const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(reinterpret_cast<const uint8_t*>(self) + dos->e_lfanew);
+            sBase = reinterpret_cast<uintptr_t>(self) + nt->OptionalHeader.BaseOfCode;
+            sEnd = sBase + nt->OptionalHeader.SizeOfCode;
+        }
+    }
+    if (sBase && ep->ContextRecord) {
+        const uintptr_t* sp = reinterpret_cast<const uintptr_t*>(ep->ContextRecord->Rsp);
+        const uintptr_t* top = reinterpret_cast<const uintptr_t*>(reinterpret_cast<NT_TIB*>(::NtCurrentTeb())->StackBase);
+        for (int i = 0; i < 2048 && sp + i < top && t_lastTaskFault.ourFrameCount < 6; ++i) {
+            const uintptr_t v = sp[i];
+            if (v >= sBase && v < sEnd)
+                t_lastTaskFault.ourFrames[t_lastTaskFault.ourFrameCount++] = reinterpret_cast<void*>(v);
+        }
+    }
     return EXCEPTION_EXECUTE_HANDLER;
 }
 

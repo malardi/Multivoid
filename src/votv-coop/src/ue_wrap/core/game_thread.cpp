@@ -25,6 +25,9 @@
 #include <deque>
 #include <mutex>
 #include <typeinfo>
+#include <cstdio>
+
+extern "C" IMAGE_DOS_HEADER __ImageBase;
 #include <string>
 
 namespace ue_wrap::game_thread {
@@ -313,6 +316,16 @@ void Pump() {
                         "skipped, pump continues -- task %s",
                         f.code, f.faultingIP, D::FormatModuleRva(f.faultingIP), f.accessAddr,
                         taskType ? taskType : "?");
+                std::string frames;
+                for (int i = 0; i < f.ourFrameCount; ++i) {
+                    char b[40];
+                    std::snprintf(b, sizeof(b), " +0x%llX",
+                                  static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(f.ourFrames[i]) -
+                                                                  reinterpret_cast<uintptr_t>(&__ImageBase)));
+                    frames += b;
+                }
+                UE_LOGE("game_thread:   that fault's own stack in the mod (RVAs against main.map):%s; inside walk '%s'",
+                        frames.c_str(), f.walk ? f.walk : "-");
             }
         }
         g_tasksRun.fetch_add(1, std::memory_order_relaxed);
