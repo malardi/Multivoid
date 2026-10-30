@@ -11,6 +11,7 @@
 #include "ue_wrap/core/fname_utils.h"
 #include "ue_wrap/core/game_thread.h"
 #include "ue_wrap/core/log.h"
+#include "ue_wrap/core/object_index.h"
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/core/script_gate.h"
 #include "ue_wrap/facts/function_row.h"
@@ -101,6 +102,18 @@ void RefreshLook(void* box, bool opened) {
 // The reel case's record fields, for the logs: `lid`, and each slot's reel progress (-1 = empty).
 int32_t g_lidOff = -1, g_topOff = -1, g_bottomOff = -1;
 
+std::string DescribeMiner(void* m) {
+    if (!m) return "-";
+    void* cls = R::ClassOf(m);
+    const int32_t pts = R::FindPropertyOffset(cls, L"accumulatedPoints");
+    const int32_t pow = R::FindPropertyOffset(cls, L"powered");
+    char b[96];
+    std::snprintf(b, sizeof(b), "points=%d powered=%d",
+                  pts >= 0 ? *reinterpret_cast<const int32_t*>(static_cast<const char*>(m) + pts) : -1,
+                  pow >= 0 ? (*reinterpret_cast<const uint8_t*>(static_cast<const char*>(m) + pow) ? 1 : 0) : -1);
+    return b;
+}
+
 std::string DescribeBox(void* box) {
     bool opened = false;
     return ReadOpened(box, opened) ? (opened ? "opened=1" : "opened=0") : "opened=?";
@@ -128,6 +141,13 @@ std::string DescribeReelCase(void* rc) {
 // re-derived on receipt (RefreshLook); the reel case's upd() reads `lid` itself.
 UE_FACT_FN(kRowUpdBox,     "prop_record_refresh", L"prop_box_C",     L"upd", Dispatch);
 UE_FACT_FN(kRowUpdReelbox, "prop_record_refresh", L"prop_reelbox_C", L"upd", Dispatch);
+// The crypto miner: its state (power, GPUs and fans, the points it holds, its heat) is its save record, and
+// none of it travelled, so a client's upgrade, claim or plug changed only its own copy and the host's kept
+// mining into points the client had already claimed. Its three verbs that change it publish the record; the
+// host also republishes every live miner on a slow beat (below), since the points grow on each peer's tick.
+UE_FACT_FN(kRowMinerUpgrade, "prop_record_refresh", L"prop_miner_C", L"upgrade", Dispatch);
+UE_FACT_FN(kRowMinerAction,  "prop_record_refresh", L"prop_miner_C", L"actionOptionIndex", Dispatch);
+UE_FACT_FN(kRowMinerPlugged, "prop_record_refresh", L"prop_miner_C", L"plugged", Dispatch);
 
 struct Watched {
     const ue_wrap::facts::Function* row;
@@ -138,6 +158,9 @@ struct Watched {
 constexpr Watched kWatched[] = {
     { &kRowUpdBox,     0x44424F58, true,  &DescribeBox },       // 'DBOX'
     { &kRowUpdReelbox, 0x5242584F, false, &DescribeReelCase },  // 'RBXO'
+    { &kRowMinerUpgrade, 0x4D4E5550, false, &DescribeMiner },   // 'MNUP'
+    { &kRowMinerAction,  0x4D4E4143, false, &DescribeMiner },   // 'MNAC'
+    { &kRowMinerPlugged, 0x4D4E504C, false, &DescribeMiner },   // 'MNPL'
 };
 // The UFunction each watch was armed on, so a re-armed one can be recognised. A world change can
 // re-create a Blueprint class and its functions (127 were in a same-process rejoin; these two kept
@@ -145,6 +168,8 @@ constexpr Watched kWatched[] = {
 // fire for whatever lives there. An exact watch is re-validated; the neighbouring lanes use name
 // watches, which resolve themselves.
 ue_wrap::facts::Resolved g_watchedFn[std::size(kWatched)] = {};  // game thread only
+
+void HostMinerBeat();  // below: the host's slow republish of every live miner
 
 const Watched* ByTag(int tag) {
     for (const Watched& w : kWatched)
@@ -213,6 +238,7 @@ void OnUpdPost(const sg::Call& call) {
 void Install(coop::net::Session* session) {
     g_session.store(session, std::memory_order_release);
     if (!GT::IsGameThread()) return;
+    HostMinerBeat();
     // Throttle the class walks while a class is unresolved, the shape prop_spawn_authoring and
     // prop_drop_intent use: this Install is the per-tick retry pump, a FindClass MISS is not cached
     // (a class can load later), and a walk renders a name per object, so an unresolved class would
@@ -264,6 +290,32 @@ void Install(coop::net::Session* session) {
                 "every in-place change", rearm ? "re-armed on" : "watching", w.row->Class());
     }
 }
+
+namespace {
+// HOST: every live miner's record on a slow beat. Each peer's own tick grows the points and the heat, so
+// the copies drift between verbs; the host's is the one that counts.
+void HostMinerBeat() {
+    auto* s = g_session.load(std::memory_order_acquire);
+    if (!s || !s->connected() || s->role() != coop::net::Role::Host) return;
+    static Clock::time_point sNext{};
+    const auto now = Clock::now();
+    if (now < sNext) return;
+    sNext = now + std::chrono::seconds(4);
+    void* cls = ue_wrap::object_index::ClassByName(L"prop_miner_C");
+    if (!cls) return;
+    struct Ctx { coop::net::Session* s; int n; } ctx{s, 0};
+    ue_wrap::object_index::ForEachInstance(cls, [](void* c, void* obj, int32_t) {
+        auto* x = static_cast<Ctx*>(c);
+        if (!obj || !R::IsLive(obj) || R::NameStartsWith(R::NameOf(obj), L"Default__")) return;
+        const std::wstring key = ue_wrap::prop::GetInteractableKeyString(obj);
+        if (key.empty() || key == L"None") return;
+        if (coop::prop_save_data::Publish(x->s, obj, key)) ++x->n;
+    }, &ctx);
+    static int sSaid = 0;
+    if (ctx.n > 0 && sSaid++ < 3)
+        UE_LOGI("prop_record_refresh: host beat published %d miner record(s)", ctx.n);
+}
+}  // namespace
 
 void OnDisconnect() {
     if (g_cPublished || g_cCoalesced || g_cRelooked)
