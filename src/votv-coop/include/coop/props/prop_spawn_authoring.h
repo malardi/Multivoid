@@ -31,9 +31,7 @@ void Install(bool isClient);
 // calling frame (ue_wrap::ufunction_hook::CurrentCallerFrame) and this thread's open menu
 // bracket, both of which mean nothing outside one. False when neither verb is on the stack, which
 // is every ambient spawn the world makes for itself. Game thread.
-// `actor`, when given, is the birth itself: a shovel's hole is a player's only by its class, since the player's
-// graph that digs it finishes other births too.
-bool BirthIsPlayerAuthored(void* actor = nullptr);
+bool BirthIsPlayerAuthored();
 
 // Session teardown: report both columns of the caller tally -- the menu's calls, which crossed as
 // intents, and every other caller's, which stayed local -- and zero it. The watch and the resolved

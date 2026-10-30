@@ -46,7 +46,6 @@ R::FName g_toolUberName{0, 0};    // "ExecuteUbergraph_tool_spawn"
 // sawing player's machine runs that sawing (it starts at the player's own hand use). Without this a
 // client's cut made the prop vanish for everyone and its scrap appear for the sawyer alone.
 R::FName g_sawUberName{0, 0};     // "ExecuteUbergraph_prop_hacksaw"
-R::FName g_playerUberName{0, 0};  // "ExecuteUbergraph_mainPlayer" (the shovel's dig)
 void*    g_sawUberFn = nullptr;
 
 // Is `fn` a function named `name` whose owner (a UFunction's Outer is its declaring class) is
@@ -116,8 +115,6 @@ void Install(bool isClient) {
         g_menuSpawnName = ue_wrap::fname_utils::StringToFName(L"spawn");
     if (g_toolUberName.ComparisonIndex == 0)
         g_toolUberName = ue_wrap::fname_utils::StringToFName(L"ExecuteUbergraph_tool_spawn");
-    if (g_playerUberName.ComparisonIndex == 0)
-        g_playerUberName = ue_wrap::fname_utils::StringToFName(L"ExecuteUbergraph_mainPlayer");
     if (g_sawUberName.ComparisonIndex == 0)
         g_sawUberName = ue_wrap::fname_utils::StringToFName(L"ExecuteUbergraph_prop_hacksaw");
 
@@ -145,7 +142,7 @@ void Install(bool isClient) {
     g_watchInstalled = true;
 }
 
-bool BirthIsPlayerAuthored(void* actor) {
+bool BirthIsPlayerAuthored() {
     // The menu: is the gamemode's spawn verb running on this thread, entered from the menu's own
     // spawn()? The gate answers from the RAII scope it pushes around the body, so the window
     // cannot outlive the body on any exit path, and an inner watched body belonging to some other
@@ -158,16 +155,6 @@ bool BirthIsPlayerAuthored(void* actor) {
     if (!caller) return false;
     if (caller == g_toolUberFn) return true;
     if (caller == g_sawUberFn) return true;
-    // The shovel: the player's own graph digs, at the dig notify, a dirtHole_C where the trace met the ground.
-    if (actor && R::NameEquals(R::NameOf(R::ClassOf(actor)), L"dirtHole_C") &&
-        FunctionIs(const_cast<void*>(caller), g_playerUberName, L"mainPlayer_C")) {
-        static bool sSaid = false;
-        if (!sSaid) {
-            sSaid = true;
-            UE_LOGI("prop_spawn_authoring: a shovel's hole, dug by the player's own graph, is a player's birth");
-        }
-        return true;
-    }
     if (!g_sawUberFn &&
         FunctionIs(const_cast<void*>(caller), g_sawUberName, L"prop_hacksaw_C")) {
         g_sawUberFn = const_cast<void*>(caller);
