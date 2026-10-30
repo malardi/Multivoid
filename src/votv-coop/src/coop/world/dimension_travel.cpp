@@ -207,6 +207,7 @@ bool CallTravel(const std::wstring& level, bool viaSubArea, bool clearSubArea, c
 struct PeerLvl { bool known = false; std::wstring level; };  // level empty: travelling
 PeerLvl g_peer[coop::net::kMaxPeers];
 std::wstring g_myLevel;          // this peer's world's name; empty while it travels
+bool g_inTransit = false;        // this peer's own level travel is under way (set at the travel, cleared on arrival)
 uint32_t g_seenGen = 0;
 uint64_t g_poseDropLogged = 0;
 
@@ -289,8 +290,13 @@ void OnLocalTravel(const std::wstring& level, bool own, bool viaSubArea, bool cl
     // (b271's loadObjects=0 for a client's dimension is gone: the flood was the gamemode's missing-pass
     // trap, not the save; the host's value travels as it is.)
     LogGi(toDimension ? "travel to a dimension" : "travel to the gameplay map");
-    // In transit: the others stop putting this peer's body into their level until it says where it is.
+    // In transit: the others stop putting this peer's body into their level until it says where it is, and this
+    // peer puts no other body into the world it is leaving or the one still loading.
     g_myLevel.clear();
+    g_inTransit = true;
+    // The bodies of the others go before this world does, as they do when the host leads (it says "travelling"
+    // first); each comes back on arrival if its peer stands on the same level.
+    for (int slot = 0; slot < coop::net::kMaxPeers; ++slot) DropPuppetOf(slot);
     SendPeerLevel(std::wstring());
     g_lastViaSubArea = viaSubArea;
     g_lastOption = option;
@@ -350,6 +356,7 @@ void OnWorldTravel(const coop::net::WorldTravelPayload& p) {
 
 void OnSessionStart() {
     for (auto& pl : g_peer) pl = PeerLvl{};
+    g_inTransit = false;
     g_seenGen = 0;
     if (auto* s = g_session.load(std::memory_order_acquire)) s->SetWorldTrafficPaused(false);
     ue_wrap::script_gate::SetPassThrough(false, 0);
@@ -414,6 +421,7 @@ void Tick() {
     if (!coop::players::Registry::Get().Local()) return;  // the body first: the level is up when it stands in it
     g_seenGen = gen;
     g_myLevel = R::ToString(R::NameOf(world));
+    g_inTransit = false;
     UE_LOGI("[DIMENSION] this peer's world is now '%ls' -- told to the others", g_myLevel.c_str());
     LogGi("arrival");
     SendPeerLevel(g_myLevel);
@@ -450,6 +458,10 @@ bool PoseAccepted(int slot) {
     const PeerLvl& pl = g_peer[slot];
     if (!pl.known) return true;            // never said: the join's own world, as before
     if (pl.level.empty()) return false;    // travelling: its poses are of the level it left
+    // This peer is between levels: a body spawned now lands in the world being torn down or the one still
+    // loading. A client going home alone from the labyrinth (by its death or its own travel) crashed in the
+    // load twice of three times while the host's body, on another level, was put back mid-travel.
+    if (g_inTransit) return false;
     if (g_myLevel.empty()) return true;    // this peer has not named its own world yet
     return EqualsNoCase(pl.level, g_myLevel.c_str());
 }
