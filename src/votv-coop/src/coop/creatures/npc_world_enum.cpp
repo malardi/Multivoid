@@ -148,10 +148,10 @@ struct ExSpawnSource {
     const wchar_t* const* outputs;   // null-terminated; null: any allowlisted output
 };
 constexpr const wchar_t* kEventerOutputs[] = {L"ventCrawler_C", L"superEgger_C", nullptr};
-// The plain trigger the level's events are placed as (the picnic's trigger_picnicSpawn): its spawns are
-// bytecode-internal too, and of them only the ariral ships warping out are mirrored (its props ride the
-// prop lane already).
-constexpr const wchar_t* kTriggerBaseOutputs[] = {L"arirShipVanishing_C", nullptr};
+// The level's prop-spawning trigger (the picnic's warparrow_size* spawners, which the picnic's trigger runs):
+// its spawns are bytecode-internal too. Most of them are props, which ride the prop lane already; the two
+// ariral ships warping out are actors, and only they are mirrored here.
+constexpr const wchar_t* kSpawnPropOutputs[] = {L"arirShipVanishing_C", nullptr};
 constexpr ExSpawnSource kExSpawnSources[] = {
     {L"trigger_wispSwarm_C",     nullptr},          // the wisps event swarm
     {L"piramidSpawner_C",        nullptr},          // the piramid event chain
@@ -163,7 +163,7 @@ constexpr ExSpawnSource kExSpawnSources[] = {
     {L"grayEventController_C",   nullptr},          // graysforest: spawn() mints the grayTest_C pack
     {L"superEgger_C",            nullptr},          // eggvasion: spwn() mints the eg_C children
     {L"tentacleBallsFollower_C", nullptr},          // tentacleBalls: runTrigger() mints the pack
-    {L"triggerBase_C",           kTriggerBaseOutputs},  // the picnic's warping ships
+    {L"trigger_spawnProp_C",     kSpawnPropOutputs},  // the picnic's warping ships
 };
 
 // Whether `cls`'s own name is one of `names` (null-terminated). One render, then plain compares.
