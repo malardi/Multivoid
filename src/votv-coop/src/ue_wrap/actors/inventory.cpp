@@ -88,7 +88,21 @@ void ReadEquipRecord(const void* base, EquipRecord& rec) {
 void WriteEquipRecord(uint8_t* base, const EquipRecord& r) {
     SR::WriteFNameField(base + kEquip_propName, r.propName);
     SR::WriteFNameField(base + kEquip_propKey, r.propKey);
-    SR::WriteSaveRecord(base + kEquip_data, r.data);  // embedded Fstruct_save (0x100 slot)
+    // A slot is empty to the game only when it equals a default Fstruct_equipment, whose save record
+    // carries the IDENTITY transform (rotation w 1, scale 1). A blank written with an all-zero transform
+    // is never found by AddEquipment's Array_Find, so a client whose profile padded its slots with
+    // such blanks was told "Not enough space" for every boot and helmet. A record with no transform at
+    // all is written as the identity.
+    const auto& x = r.data.xform;
+    bool zero = true;
+    for (float f : x) if (f != 0.f) { zero = false; break; }
+    if (zero) {
+        SR::SaveRecord d = r.data;
+        d.xform = {0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f, 1.f, 1.f};
+        SR::WriteSaveRecord(base + kEquip_data, d);
+    } else {
+        SR::WriteSaveRecord(base + kEquip_data, r.data);  // embedded Fstruct_save (0x100 slot)
+    }
     SR::WriteFNameField(base + kEquip_tag, r.tag);
 }
 
