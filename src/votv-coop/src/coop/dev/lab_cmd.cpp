@@ -94,14 +94,17 @@ std::vector<Near> ActorsAround(const std::string& sub, float radius) {
     void* local = coop::players::Registry::Get().Local();
     ue_wrap::FVector me{};
     if (!local || !ue_wrap::engine::TryGetActorLocation(local, me)) return out;
+    static void* sActor = nullptr;
+    if (!sActor) sActor = R::FindClass(L"Actor");
     const int32_t n = R::NumObjects();
     for (int32_t i = 0; i < n; ++i) {
         void* obj = R::ObjectAt(i);
-        if (!obj || obj == local) continue;
+        if (!obj || obj == local || !R::IsLive(obj)) continue;
         const std::wstring cn = R::ClassNameOf(obj);
         if (cn.size() < 3 || cn.compare(cn.size() - 2, 2, L"_C") != 0) continue;
         if (!sub.empty() && Lower(Narrow(cn)).find(sub) == std::string::npos) continue;
         if (R::NameStartsWith(R::NameOf(obj), L"Default__")) continue;
+        if (!sActor || !R::IsDescendantOfAny(R::ClassOf(obj), &sActor, 1, 32)) continue;
         ue_wrap::FVector at{};
         if (!ue_wrap::engine::TryGetActorLocation(obj, at)) continue;
         const float dx = at.X - me.X, dy = at.Y - me.Y, dz = at.Z - me.Z;
@@ -254,8 +257,9 @@ std::string Fields(void* obj, const std::string& filter) {
 
 // Call a function on a target with name=value arguments (floats, ints, bools, bytes).
 bool CallWithArgs(void* obj, const std::string& fnName, std::istringstream& in, std::string& out) {
-    void* fn = R::FindFunction(R::ClassOf(obj), Wide(fnName).c_str());
-    if (!fn) { out = "no function"; return false; }
+    void* decl = nullptr;
+    void* fn = R::FindDispatchFunction(R::ClassOf(obj), Wide(fnName).c_str(), &decl);
+    if (!fn) { out = " no function"; return false; }
     ue_wrap::ParamFrame f(fn);
     if (!f.valid()) { out = "bad frame"; return false; }
     std::string kv;
