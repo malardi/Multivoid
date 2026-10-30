@@ -6,6 +6,8 @@
 #include "coop/net/session.h"
 
 #include "ue_wrap/core/call.h"
+#include "ue_wrap/engine/engine.h"
+#include "ue_wrap/engine/world_identity.h"
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/object_index.h"
 #include "ue_wrap/core/reflection.h"
@@ -14,6 +16,8 @@
 #include "ue_wrap/facts/function_row.h"
 
 #include <atomic>
+#include <cmath>
+#include <cstdio>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -26,6 +30,7 @@ namespace {
 
 namespace R  = ue_wrap::reflection;
 namespace OI = ue_wrap::object_index;
+namespace E  = ue_wrap::engine;
 namespace sg = ue_wrap::script_gate;
 
 UE_FACT_FN(kRowTryBurst, "pipe_burst_sync", L"basementDrain_C", L"tryBurstPipe", Declared);
@@ -58,6 +63,18 @@ bool Resolve() {
     return g_damagedOff >= 0;
 }
 
+// A pipe is named on the wire by where it stands ("@x,y,z", whole units), not by its object name: a world loaded
+// back from the save (a return from a dimension, a reload) names the save's pipes burstWaterPipe_C_<n>, which no
+// other peer shares, and the host's every pipe state then went nowhere ("the host's pipe ... is not in this world").
+std::string PosKey(void* pipe) {
+    ue_wrap::FVector a{};
+    if (!E::TryGetActorLocation(pipe, a)) return std::string();
+    char b[64];
+    std::snprintf(b, sizeof(b), "@%d,%d,%d", static_cast<int>(std::lround(a.X)), static_cast<int>(std::lround(a.Y)),
+                  static_cast<int>(std::lround(a.Z)));
+    return b;
+}
+
 std::string NarrowName(void* obj) {
     const std::wstring w = R::ToString(R::NameOf(obj));
     std::string n;
@@ -85,8 +102,14 @@ void HostPoll(coop::net::Session& s, bool full) {
     Collect c{&pipes};
     OI::ForEachInstance(g_pipeCls, [](void* ctx, void* obj, int32_t) {
         auto* cc = static_cast<Collect*>(ctx);
-        std::string n = NarrowName(obj);
-        if (n.rfind("Default__", 0) == 0) return;
+        if (NarrowName(obj).rfind("Default__", 0) == 0) return;
+        // The pipes of the world just left linger until the collector runs (renamed burstWaterPipe_C_<n>): only
+        // the current world's are this world's state.
+        void* cur = ue_wrap::world_identity::CurrentWorld();
+        void* its = ue_wrap::world_identity::WorldOf(obj);
+        if (cur && its && its != cur) return;
+        std::string n = PosKey(obj);
+        if (n.empty()) return;
         cc->out->emplace_back(std::move(n), ReadDamaged(obj));
     }, &c);
     for (const auto& [name, damaged] : pipes) {
@@ -106,6 +129,7 @@ void HostPoll(coop::net::Session& s, bool full) {
 }
 
 struct FindByName { const char* name; void* found; };
+struct FindNear { float x, y, z; void* found; float bestD2; };
 
 }  // namespace
 
@@ -132,10 +156,28 @@ void Tick() {
 void OnPipeState(const coop::net::PipeStatePayload& p) {
     if (!Resolve()) return;
     FindByName f{p.name, nullptr};
-    OI::ForEachInstance(g_pipeCls, [](void* ctx, void* obj, int32_t) {
-        auto* ff = static_cast<FindByName*>(ctx);
-        if (!ff->found && NarrowName(obj) == ff->name) ff->found = obj;
-    }, &f);
+    float px = 0, py = 0, pz = 0;
+    if (p.name[0] == '@' && std::sscanf(p.name + 1, "%f,%f,%f", &px, &py, &pz) == 3) {
+        // By place: this world's pipe within a metre of the host's.
+        FindNear n{px, py, pz, nullptr, 100.f * 100.f};
+        OI::ForEachInstance(g_pipeCls, [](void* ctx, void* obj, int32_t) {
+            auto* nn = static_cast<FindNear*>(ctx);
+            void* cur = ue_wrap::world_identity::CurrentWorld();
+            void* its = ue_wrap::world_identity::WorldOf(obj);
+            if (cur && its && its != cur) return;
+            ue_wrap::FVector a{};
+            if (!E::TryGetActorLocation(obj, a)) return;
+            const float dx = a.X - nn->x, dy = a.Y - nn->y, dz = a.Z - nn->z;
+            const float d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 < nn->bestD2) { nn->bestD2 = d2; nn->found = obj; }
+        }, &n);
+        f.found = n.found;
+    } else {
+        OI::ForEachInstance(g_pipeCls, [](void* ctx, void* obj, int32_t) {
+            auto* ff = static_cast<FindByName*>(ctx);
+            if (!ff->found && NarrowName(obj) == ff->name) ff->found = obj;
+        }, &f);
+    }
     if (!f.found) {
         if (++g_unresolved <= 5) UE_LOGW("[PIPE] the host's pipe '%s' is not in this world", p.name);
         return;

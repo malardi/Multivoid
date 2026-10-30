@@ -67,10 +67,17 @@ void ResolveClass() {
     if (g_holeCls && g_matOff == -2) g_matOff = R::FindPropertyOffset(g_holeCls, L"matType");
 }
 
+// The suspicious dirt hole (susDirtHole_C, ticker_susHoleSpawner's) descends from the dug hole but is no dig: it is
+// a creature-like actor the owner-entity lane carries. Sent as a dig it also stood on the others as a plain hole,
+// whose BeginPlay could dig into a loot mound there.
+void* g_susHoleCls = nullptr;
+
 bool IsHole(void* obj) {
     ResolveClass();
     void* cls = obj ? R::ClassOf(obj) : nullptr;
-    return cls && g_holeCls && R::IsDescendantOfAny(cls, &g_holeCls, 1);
+    if (!cls || !g_holeCls || !R::IsDescendantOfAny(cls, &g_holeCls, 1)) return false;
+    if (!g_susHoleCls) g_susHoleCls = OI::ClassByName(L"susDirtHole_C");
+    return !(g_susHoleCls && R::IsDescendantOfAny(cls, &g_susHoleCls, 1));
 }
 
 void OnBeginPlayPost(const sg::Call& call) {

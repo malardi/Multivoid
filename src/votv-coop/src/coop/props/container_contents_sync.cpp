@@ -503,6 +503,10 @@ sg::Verdict OnVerbEntry(const sg::Call& br) {
     if (br.tag == kVerbTakeObj) g_takeObjInFlight.store(true, std::memory_order_relaxed);
     void* owner = ci::OwnerOf(br.object);
     if (!owner) return sg::Verdict::Run;
+    // A client's world it has not announced ready is loading: the containers' loadData fills them through the
+    // same verbs, and shipped as the client's edits they were the stale save's contents (95 were refused on a
+    // return from the labyrinth only because the client stood out of reach).
+    if (!IsHost() && !coop::net_pump::IsInAnnouncedWorld(owner)) return sg::Verdict::Run;
     const uint32_t eid =
         static_cast<uint32_t>(coop::element::Registry::Get().EidForActor(owner));
     if (eid == static_cast<uint32_t>(coop::element::kInvalidId)) return sg::Verdict::Run;

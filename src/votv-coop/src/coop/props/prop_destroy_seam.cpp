@@ -22,6 +22,7 @@
 #include "coop/props/prop_act_request.h"
 #include "coop/props/prop_echo_suppress.h"
 #include "coop/props/prop_element_tracker.h"
+#include "coop/session/net_pump.h"  // IsInAnnouncedWorld
 #include "coop/session/world_load_episode.h"
 #include "ue_wrap/engine/engine.h"  // IsChildActor
 #include "ue_wrap/core/game_thread.h"
@@ -147,7 +148,11 @@ void DestroySeamBody(void* self, HandView handView) {
     // window, of any kind: a junk broadcast costs more than a suppressed destroy, which the
     // bracket re-expresses. A keyed suppression in the reconcile window alone warns with a rate
     // latch, since it is the trace if a player's genuine destroy vanished.
-    const bool inLoadEpisode = coop::world_load_episode::InEpisode();  // read once
+    // A world change of the client's own (back from a dimension, a follow of the host's travel) loads the save
+    // again outside any join episode: its churn is a world not yet announced ready. 973 such destroys went out in
+    // one return from the labyrinth.
+    const bool inLoadEpisode = coop::world_load_episode::InEpisode() ||
+                               (s->role() == coop::net::Role::Client && !coop::net_pump::IsInAnnouncedWorld(self));
     if (s->role() == coop::net::Role::Client &&
         (inLoadEpisode || coop::world_load_episode::InReconcileWindow())) {
         const bool newSegment = !inLoadEpisode;
