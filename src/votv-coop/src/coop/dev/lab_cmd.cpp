@@ -350,6 +350,15 @@ void Run(long long id, const std::string& verb, const std::string& rest) {
         if (verb == "fields") { Answer(id, true, Fields(obj, Lower(prop))); return; }
         if (verb == "set" && !WriteValue(R::ClassOf(obj), obj, Wide(prop), val)) { Answer(id, false, "set failed " + prop); return; }
         Answer(id, true, t + "." + prop + " = " + ReadValue(R::ClassOf(obj), obj, Wide(prop)));
+    } else if (verb == "move") {
+        // move <target> <x> <y> <z>: the actor teleported there (a disc dropped into a slot's mouth, say).
+        std::string t;
+        float x = 0, y = 0, z = 0;
+        in >> t >> x >> y >> z;
+        void* obj = Target(t);
+        if (!obj) { Answer(id, false, "move: no target " + t); return; }
+        const bool ok = ue_wrap::engine::TeleportTo(obj, ue_wrap::FVector{x, y, z}, ue_wrap::FRotator{0.f, 0.f, 0.f});
+        Answer(id, ok, "move " + t);
     } else if (verb == "rows" || verb == "addrow") {
         // rows <target> <field>: a TArray<FString> read out; addrow <target> <field> <text>: one row appended
         // ('+' for a space), as a device writes a file onto a disc.
