@@ -47,6 +47,10 @@ std::wstring g_dir, g_tag;
 long long g_lastId = 0;
 FILETIME g_lastWrite{};
 std::chrono::steady_clock::time_point g_nextPoll{}, g_nextState{};
+// Frames counted since the last state write, and the worst frame among them, for the fps line.
+int g_frames = 0;
+double g_worstMs = 0.0;
+std::chrono::steady_clock::time_point g_lastFrame{}, g_lastStateAt{};
 
 std::wstring Env(const wchar_t* name) {
     wchar_t buf[512] = {};
@@ -403,6 +407,16 @@ void WriteState() {
     std::ostringstream o;
     void* world = ue_wrap::world_identity::CurrentWorld();
     o << "time " << ::GetTickCount64() << "\r\n";
+    {
+        const auto now = std::chrono::steady_clock::now();
+        const double span = std::chrono::duration<double>(now - g_lastStateAt).count();
+        char b[96];
+        std::snprintf(b, sizeof(b), "fps %.1f worst %.0f ms\r\n", span > 0 ? g_frames / span : 0.0, g_worstMs);
+        o << b;
+        g_frames = 0;
+        g_worstMs = 0.0;
+        g_lastStateAt = now;
+    }
     o << "world " << (world ? Narrow(R::ToString(R::NameOf(world))) : std::string("-")) << " gen "
       << ue_wrap::world_identity::Generation() << "\r\n";
     o << "dimension " << (coop::dimension_travel::InDimension() ? 1 : 0) << "\r\n";
@@ -468,6 +482,12 @@ void Tick() {
     }
     if (!g_on) return;
     const auto now = std::chrono::steady_clock::now();
+    if (g_lastFrame.time_since_epoch().count() != 0) {
+        const double ms = std::chrono::duration<double, std::milli>(now - g_lastFrame).count();
+        if (ms > g_worstMs) g_worstMs = ms;
+    }
+    g_lastFrame = now;
+    ++g_frames;
     if (now >= g_nextPoll) { g_nextPoll = now + std::chrono::milliseconds(200); Poll(); }
     if (now >= g_nextState) { g_nextState = now + std::chrono::seconds(1); WriteState(); }
 }
