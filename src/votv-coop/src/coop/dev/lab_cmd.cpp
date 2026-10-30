@@ -395,6 +395,16 @@ void Run(long long id, const std::string& verb, const std::string& rest) {
         if (!obj) { Answer(id, false, "key: no target " + t); return; }
         Answer(id, true, "key " + t + " = '" + Narrow(coop::element::PortableIdentity(obj)) + "' wire '" +
                              Narrow(coop::element::PortableWireKey(obj)) + "'");
+    } else if (verb == "spawn") {
+        // spawn <Class> <x> <y> <z>: the class's actor at that place (the game's own spawn; a host's is broadcast
+        // as any runtime birth is).
+        std::string cls;
+        float x = 0, y = 0, z = 0;
+        in >> cls >> x >> y >> z;
+        void* c = R::FindClass(Wide(cls).c_str());
+        if (!c) { Answer(id, false, "spawn: no class " + cls); return; }
+        void* a = ue_wrap::engine::SpawnActor(c, ue_wrap::FVector{x, y, z});
+        Answer(id, a != nullptr, "spawn " + cls + (a ? " -> " + Narrow(R::ToString(R::NameOf(a))) : std::string(" failed")));
     } else if (verb == "resync") {
         coop::session_manager::RequestResync();
         Answer(id, true, "resync asked");
