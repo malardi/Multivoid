@@ -42,6 +42,11 @@ unsigned g_verbFromOther = 0;   // ... by anything else (lib_C::replaceProp, com
 // and never a string build. Zeroed ComparisonIndex means "not yet converted".
 R::FName g_menuSpawnName{0, 0};   // "spawn"
 R::FName g_toolUberName{0, 0};    // "ExecuteUbergraph_tool_spawn"
+// The hacksaw: the scrap a sawn prop turns into is finished by the saw's own ubergraph, and only the
+// sawing player's machine runs that sawing (it starts at the player's own hand use). Without this a
+// client's cut made the prop vanish for everyone and its scrap appear for the sawyer alone.
+R::FName g_sawUberName{0, 0};     // "ExecuteUbergraph_prop_hacksaw"
+void*    g_sawUberFn = nullptr;
 
 // Is `fn` a function named `name` whose owner (a UFunction's Outer is its declaring class) is
 // called `className`? Both compares are allocation-free: the FName pair is two ints, and the
@@ -110,6 +115,8 @@ void Install(bool isClient) {
         g_menuSpawnName = ue_wrap::fname_utils::StringToFName(L"spawn");
     if (g_toolUberName.ComparisonIndex == 0)
         g_toolUberName = ue_wrap::fname_utils::StringToFName(L"ExecuteUbergraph_tool_spawn");
+    if (g_sawUberName.ComparisonIndex == 0)
+        g_sawUberName = ue_wrap::fname_utils::StringToFName(L"ExecuteUbergraph_prop_hacksaw");
 
     ue_wrap::facts::Resolved gamemodeSpawn;
     if (!g_gamemodeSpawnFn) {
@@ -147,6 +154,14 @@ bool BirthIsPlayerAuthored() {
     const void* caller = ue_wrap::ufunction_hook::CurrentCallerFrame().function;
     if (!caller) return false;
     if (caller == g_toolUberFn) return true;
+    if (caller == g_sawUberFn) return true;
+    if (!g_sawUberFn &&
+        FunctionIs(const_cast<void*>(caller), g_sawUberName, L"prop_hacksaw_C")) {
+        g_sawUberFn = const_cast<void*>(caller);
+        UE_LOGI("prop_spawn_authoring: the hacksaw's ubergraph is the calling frame -- the scrap of a "
+                "sawn prop is a player's birth");
+        return true;
+    }
     if (!g_toolUberFn &&
         FunctionIs(const_cast<void*>(caller), g_toolUberName, L"tool_spawn_C")) {
         g_toolUberFn = const_cast<void*>(caller);
