@@ -119,8 +119,16 @@ std::vector<Near> ActorsAround(const std::string& sub, float radius) {
     return out;
 }
 
-// A target by name: player, gm, gi, slot (the save object), or C:<Class> (the first live object of that class).
+// A target by name: player, gm, gi, slot (the save object), C:<Class> (the first live object of that class),
+// near:<class text> (the nearest actor of such a class); <target>/<property> follows an object property of it.
 void* Target(const std::string& t) {
+    const size_t slash = t.find('/');
+    if (slash != std::string::npos) {
+        void* base = Target(t.substr(0, slash));
+        if (!base) return nullptr;
+        const int32_t off = R::FindPropertyOffset(R::ClassOf(base), Wide(t.substr(slash + 1)).c_str());
+        return off < 0 ? nullptr : *reinterpret_cast<void**>(static_cast<char*>(base) + off);
+    }
     if (t == "player") return coop::players::Registry::Get().Local();
     if (t == "gm") return ue_wrap::world_singleton::Gamemode();
     if (t == "gi") return ue_wrap::world_singleton::GameInstance();
