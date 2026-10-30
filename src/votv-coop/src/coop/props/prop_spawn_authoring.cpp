@@ -47,6 +47,11 @@ R::FName g_toolUberName{0, 0};    // "ExecuteUbergraph_tool_spawn"
 // client's cut made the prop vanish for everyone and its scrap appear for the sawyer alone.
 R::FName g_sawUberName{0, 0};     // "ExecuteUbergraph_prop_hacksaw"
 void*    g_sawUberFn = nullptr;
+// The plank's crowbar: a pry hands the prier's crowbar to the plank (its hand copy is destroyed), and the
+// plank's end() mints a new prop_crowbar_C on the prier's machine alone -- flung, dropped, or back in the
+// hand. Without this a client's pry took the crowbar out of everyone else's world for good.
+R::FName g_pryEndName{0, 0};      // "end" on pryingCrowbar_C
+void*    g_pryEndFn = nullptr;
 
 // Is `fn` a function named `name` whose owner (a UFunction's Outer is its declaring class) is
 // called `className`? Both compares are allocation-free: the FName pair is two ints, and the
@@ -117,6 +122,8 @@ void Install(bool isClient) {
         g_toolUberName = ue_wrap::fname_utils::StringToFName(L"ExecuteUbergraph_tool_spawn");
     if (g_sawUberName.ComparisonIndex == 0)
         g_sawUberName = ue_wrap::fname_utils::StringToFName(L"ExecuteUbergraph_prop_hacksaw");
+    if (g_pryEndName.ComparisonIndex == 0)
+        g_pryEndName = ue_wrap::fname_utils::StringToFName(L"end");
 
     ue_wrap::facts::Resolved gamemodeSpawn;
     if (!g_gamemodeSpawnFn) {
@@ -155,6 +162,13 @@ bool BirthIsPlayerAuthored() {
     if (!caller) return false;
     if (caller == g_toolUberFn) return true;
     if (caller == g_sawUberFn) return true;
+    if (caller == g_pryEndFn) return true;
+    if (!g_pryEndFn && FunctionIs(const_cast<void*>(caller), g_pryEndName, L"pryingCrowbar_C")) {
+        g_pryEndFn = const_cast<void*>(caller);
+        UE_LOGI("prop_spawn_authoring: a plank crowbar's end() is the calling frame -- the crowbar a pry gives "
+                "back is a player's birth");
+        return true;
+    }
     if (!g_sawUberFn &&
         FunctionIs(const_cast<void*>(caller), g_sawUberName, L"prop_hacksaw_C")) {
         g_sawUberFn = const_cast<void*>(caller);

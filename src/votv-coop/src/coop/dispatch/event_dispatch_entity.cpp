@@ -8,6 +8,7 @@
 #include "coop/comms/log_mirror.h"  // OnChunk: a client's log on the host's machine
 #include "coop/world/blood_decal_sync.h"
 #include "coop/world/dig_hole_sync.h"
+#include "coop/props/pry_crowbar_sync.h"
 #include "coop/world/dimension_travel.h"
 #include "coop/interactables/swinger_pose_sync.h"
 
@@ -123,6 +124,23 @@ bool HandleEntityEvent(net::Session& session,
             break;
         }
         coop::dig_hole_sync::OnDirtHole(p);
+        break;
+    }
+    case net::ReliableKind::PryCrowbar: {
+        // A peer's plank crowbar out or back; pry_crowbar_sync shows or hides the same child here.
+        if (msg.payloadLen < sizeof(net::PryCrowbarPayload)) {
+            UE_LOGW("event_feed: PryCrowbar payload too short (%zu < %zu)",
+                    static_cast<size_t>(msg.payloadLen), sizeof(net::PryCrowbarPayload));
+            break;
+        }
+        net::PryCrowbarPayload p{};
+        std::memcpy(&p, msg.payload, sizeof(p));
+        if (p.plankKey.len > sizeof(p.plankKey.data) || p.visible > 1) {
+            UE_LOGW("event_feed: PryCrowbar fields out of bounds -- dropping");
+            break;
+        }
+        p.component[sizeof(p.component) - 1] = 0;
+        coop::pry_crowbar_sync::OnPryCrowbar(p);
         break;
     }
     case net::ReliableKind::BloodDecal: {

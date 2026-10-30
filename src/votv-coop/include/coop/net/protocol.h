@@ -30,7 +30,7 @@ inline constexpr uint32_t kMagic = 0x564D5450u;
 // This file is past the 1500-line hard cap and stays there: it is the single-feature exception the
 // rule names. One wire format, whose enum, payload structs and static_asserts are read together;
 // splitting it would put a kind's number in one file and its bytes in another.
-inline constexpr uint16_t kProtocolVersion = 282;
+inline constexpr uint16_t kProtocolVersion = 283;
 
 // Default LAN port (overridable via multivoid.ini "net.port=").
 inline constexpr uint16_t kDefaultPort = 47621;
@@ -1164,6 +1164,11 @@ enum class ReliableKind : uint8_t {
     // the same hole at that transform with its ground material. Not pre-world. Late join: none (the host's
     // save carries the host's holes). DirtHolePayload.
     DirtHole = 206,
+    // ANY PEER, relayed by the host: a plank's own crowbar (a pryingCrowbar_C child of the plank) came out
+    // or went back. The game's pry destroys the crowbar in the prier's hand and shows the plank's child in
+    // its place, on the prier's screen alone, so to every other peer the crowbar vanished. The receivers
+    // show or hide the same child. Not pre-world. Late join: none (a pry lasts seconds). PryCrowbarPayload.
+    PryCrowbar = 207,
 };
 
 #pragma pack(push, 1)
@@ -1877,6 +1882,17 @@ struct DirtHolePayload {
 };
 static_assert(sizeof(DirtHolePayload) == 28, "DirtHolePayload must be 28 bytes");
 static_assert(sizeof(DirtHolePayload) <= 256 - 20 - 8, "DirtHolePayload must fit one datagram");
+
+// A plank's crowbar shown or hidden (PryCrowbar): the plank by its key (or eid), the child by the
+// ChildActorComponent's name, which is the same on every peer.
+struct PryCrowbarPayload {
+    WireKey  plankKey;                 // 32 -- the plank's Key (len 0: none)
+    uint32_t plankEid;                 // 4  -- the plank's prop element id (0: none)
+    char     component[27];            // 27 -- the child's component name, ASCII, zero-padded
+    uint8_t  visible;                  // 1  -- 1 out, 0 back
+};
+static_assert(sizeof(PryCrowbarPayload) == 64, "PryCrowbarPayload must be 64 bytes");
+static_assert(sizeof(PryCrowbarPayload) <= 256 - 20 - 8, "PryCrowbarPayload must fit one datagram");
 
 // A swinging lid's pose (SwingerPose): the lid by the container lane's key, its world transform.
 struct SwingerPosePayload {
