@@ -626,6 +626,20 @@ void OnPropDropIntent(coop::net::Session& session, const coop::net::PropDropInte
     }
 }
 
+void EnqueueAuthoredBirth(void* actor, const char* why) {
+    auto* s = LoadSession();
+    if (!s || !s->connected() || s->role() != coop::net::Role::Client) return;
+    if (!actor || !R::IsLive(actor) || !ue_wrap::prop::IsDescendantOfProp(actor)) return;
+    if (PT::GetPropElementIdForActor(actor) != coop::element::kInvalidId) return;  // already shared
+    for (const PendingPlace& e : g_pending)
+        if (e.actor == actor) return;
+    if (g_pending.size() >= kMaxPending) return;
+    g_pending.push_back(PendingPlace{actor, R::InternalIndexOf(actor), 0, false, true});
+    coop::join_membership_sweep::RecordSelfAuthored(actor);
+    UE_LOGI("[PROP-DROP] CLIENT enqueued an existing prop as a PLAYER-AUTHORED birth actor=%p cls='%ls' (%s)",
+            actor, R::ClassNameOf(actor).c_str(), why ? why : "");
+}
+
 void OnReelEjectIntent(coop::net::Session& session, const coop::net::PropDropIntentPayload& p,
                        uint8_t senderSlot) {
     UE_ASSERT_GAME_THREAD("prop_drop_intent::OnReelEjectIntent");

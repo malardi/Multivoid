@@ -66,6 +66,12 @@ void OnPropDropIntent(coop::net::Session& session, const coop::net::PropDropInte
 void OnReelEjectIntent(coop::net::Session& session, const coop::net::PropDropIntentPayload& p,
                        uint8_t senderSlot);
 
+// CLIENT: author `actor`, a prop this client's world already holds untracked, as a player's birth -- the drain
+// sends it to the host as a drop intent like a spawn-menu prop, and the host's echo binds this copy by its Key.
+// For a prop the game made long before the player made it theirs (a buried item a dig pulls out). No-op on the
+// host, for a tracked prop, or past the pending cap. Game thread.
+void EnqueueAuthoredBirth(void* actor, const char* why);
+
 // Session teardown -- clear the park set + pending. Game thread.
 void Reset();
 

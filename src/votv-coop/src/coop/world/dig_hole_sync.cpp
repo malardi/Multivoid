@@ -4,6 +4,7 @@
 
 #include "coop/net/protocol.h"
 #include "coop/net/session.h"
+#include "coop/props/prop_drop_intent.h"  // a dug-out item becomes a player's birth
 #include "coop/session/net_pump.h"  // IsInAnnouncedWorld
 
 #include "ue_wrap/core/log.h"
@@ -29,6 +30,14 @@ namespace sg = ue_wrap::script_gate;
 
 UE_FACT_FN(kRowHoleBeginPlay, "dig_hole_sync", L"dirtHole_C", L"ReceiveBeginPlay", Declared);
 constexpr int kTag = 0x44494748;  // 'DIGH'
+// A buried-loot mound (dirtHole_item_C, laid by the underground garbage spawner around each peer's own player)
+// holds its item as a hidden prop the spawner made; pullOut shows it and lets it fall. On a client that prop was a
+// world birth no lane carried, so what a client dug out existed for it alone. pullOut's exit makes it a player's
+// birth: the host spawns it by its Key and every peer sees it.
+UE_FACT_FN(kRowMoundPullOut, "dig_hole_sync", L"dirtHole_item_C", L"pullOut", Declared);
+constexpr int kTagPull = 0x44494750;  // 'DIGP'
+bool g_pullRegistered = false, g_pullRefused = false;
+int32_t g_acOff = -2;
 
 // A dig takes a second of animation; past this many a second something else is spawning holes, and the
 // rest stay local.
@@ -89,6 +98,17 @@ void OnBeginPlayPost(const sg::Call& call) {
         UE_LOGI("[DIG] a hole dug here went out: pos=(%.0f,%.0f,%.0f) matType=%d", loc.X, loc.Y, loc.Z, p.matType);
 }
 
+void OnPullOutPost(const sg::Call& call) {
+    auto* s = g_session.load(std::memory_order_acquire);
+    if (!s || !s->running() || !s->connected() || s->role() != coop::net::Role::Client || !call.object) return;
+    if (!coop::net_pump::IsInAnnouncedWorld(call.object)) return;
+    if (g_acOff == -2) g_acOff = R::FindPropertyOffset(R::ClassOf(call.object), L"ac");
+    if (g_acOff < 0) return;
+    void* item = *reinterpret_cast<void* const*>(reinterpret_cast<const uint8_t*>(call.object) + g_acOff);
+    if (!item || !R::IsLive(item)) return;
+    coop::prop_drop_intent::EnqueueAuthoredBirth(item, "dug out of a loot mound");
+}
+
 struct SpawnCtx { const coop::net::DirtHolePayload* p; };
 
 // Before BeginPlay: the ground's material and the facing, as the digger's graph sets them on its own hole.
@@ -102,6 +122,14 @@ void BeforeFinish(void* ctx, void* actor) {
 
 void Install(coop::net::Session* session) {
     g_session.store(session, std::memory_order_release);
+    if (!g_pullRegistered && !g_pullRefused) {
+        if (sg::WatchName(kRowMoundPullOut, kTagPull, nullptr, &OnPullOutPost)) g_pullRegistered = true;
+        else {
+            g_pullRefused = true;
+            UE_LOGE("[DIG] the script-body gate refused the loot mound's pullOut watch -- a client's dug-out item stays "
+                    "its own");
+        }
+    }
     if (g_registered || g_refused) return;
     if (sg::WatchName(kRowHoleBeginPlay, kTag, nullptr, &OnBeginPlayPost)) {
         g_registered = true;
@@ -112,7 +140,8 @@ void Install(coop::net::Session* session) {
 }
 
 void Tick() {
-    if (!g_registered && !g_refused) Install(g_session.load(std::memory_order_acquire));
+    if ((!g_registered && !g_refused) || (!g_pullRegistered && !g_pullRefused))
+        Install(g_session.load(std::memory_order_acquire));
 }
 
 void OnDirtHole(const coop::net::DirtHolePayload& p) {

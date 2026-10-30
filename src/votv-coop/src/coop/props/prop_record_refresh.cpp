@@ -40,6 +40,12 @@ std::atomic<coop::net::Session*> g_session{nullptr};
 // so the second publish would carry the same bytes. Game-thread serial, no lock.
 constexpr auto kCoalesce = std::chrono::milliseconds(300);
 std::unordered_map<void*, Clock::time_point> g_lastPublish;
+// A change that fell inside the window still has to travel: the window drops the repeat of one action, but a
+// second action in it (a second GPU, a claim right after an upgrade) changed the state again, and that state
+// went nowhere until some later verb -- "an install sometimes does not show". The window's end publishes the
+// prop once more, whatever it holds by then.
+struct Trailing { int32_t idx; Clock::time_point due; };
+std::unordered_map<void*, Trailing> g_trailing;
 
 unsigned long long g_cPublished = 0;
 unsigned long long g_cCoalesced = 0;
@@ -171,6 +177,28 @@ ue_wrap::facts::Resolved g_watchedFn[std::size(kWatched)] = {};  // game thread 
 
 void HostMinerBeat();  // below: the host's slow republish of every live miner
 
+// The trailing publishes whose window has closed. Game thread, from the per-tick pump.
+void FlushTrailing() {
+    if (g_trailing.empty()) return;
+    auto* s = g_session.load(std::memory_order_acquire);
+    const auto now = Clock::now();
+    for (auto e = g_trailing.begin(); e != g_trailing.end();) {
+        if (now < e->second.due) { ++e; continue; }
+        void* actor = e->first;
+        const int32_t idx = e->second.idx;
+        e = g_trailing.erase(e);
+        if (!s || !s->connected() || !R::IsLiveByIndex(actor, idx)) continue;
+        const std::wstring key = ue_wrap::prop::GetInteractableKeyString(actor);
+        if (key.empty() || key == L"None") continue;
+        g_lastPublish[actor] = now;
+        if (coop::prop_save_data::Publish(s, actor, key)) {
+            ++g_cPublished;
+            UE_LOGI("prop_record_refresh: published key='%ls' at its window's end (a change inside the window)",
+                    key.c_str());
+        }
+    }
+}
+
 const Watched* ByTag(int tag) {
     for (const Watched& w : kWatched)
         if (w.tag == tag) return &w;
@@ -208,7 +236,11 @@ void OnUpdPost(const sg::Call& call) {
     }
     const auto now = Clock::now();
     auto it = g_lastPublish.find(actor);
-    if (it != g_lastPublish.end() && now - it->second < kCoalesce) { ++g_cCoalesced; return; }
+    if (it != g_lastPublish.end() && now - it->second < kCoalesce) {
+        ++g_cCoalesced;
+        g_trailing[actor] = Trailing{R::InternalIndexOf(actor), it->second + kCoalesce};
+        return;
+    }
     // Evict what the window has passed. The map is keyed on the actor's address, so without this it
     // both grows for the life of the session and can hold a dead box's entry against a new one the
     // allocator puts at the same address -- which would swallow that box's first publish.
@@ -239,6 +271,7 @@ void Install(coop::net::Session* session) {
     g_session.store(session, std::memory_order_release);
     if (!GT::IsGameThread()) return;
     HostMinerBeat();
+    FlushTrailing();
     // Throttle the class walks while a class is unresolved, the shape prop_spawn_authoring and
     // prop_drop_intent use: this Install is the per-tick retry pump, a FindClass MISS is not cached
     // (a class can load later), and a walk renders a name per object, so an unresolved class would
@@ -322,6 +355,7 @@ void OnDisconnect() {
         UE_LOGI("prop_record_refresh: session end -- published=%llu coalesced=%llu relooked=%llu",
                 g_cPublished, g_cCoalesced, g_cRelooked);
     g_lastPublish.clear();
+    g_trailing.clear();
     g_cPublished = 0;
     g_cCoalesced = 0;
     g_cRelooked  = 0;
