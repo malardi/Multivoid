@@ -12,8 +12,12 @@
 #include "harness/session_runtime.h"
 
 #include "ue_wrap/core/call.h"
+#include "ue_wrap/core/field_io.h"
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/reflection.h"
+#include "ue_wrap/core/reflection_props.h"
+#include "ue_wrap/core/script_fingerprint.h"
+#include "ue_wrap/actors/vitals.h"
 #include "ue_wrap/core/types.h"
 #include "ue_wrap/engine/engine.h"
 #include "ue_wrap/engine/world_identity.h"
@@ -21,6 +25,7 @@
 
 #include <windows.h>
 
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -69,6 +74,170 @@ bool CallNoParams(void* obj, const wchar_t* fnName) {
     return f.valid() && ue_wrap::Call(obj, f);
 }
 
+
+std::wstring Wide(const std::string& s) { return std::wstring(s.begin(), s.end()); }
+
+std::string Lower(std::string s) {
+    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
+// A target by name: player, gm, gi, slot (the save object), or C:<Class> (the first live object of that class).
+void* Target(const std::string& t) {
+    if (t == "player") return coop::players::Registry::Get().Local();
+    if (t == "gm") return ue_wrap::world_singleton::Gamemode();
+    if (t == "gi") return ue_wrap::world_singleton::GameInstance();
+    if (t == "slot") {
+        void* gi = ue_wrap::world_singleton::GameInstance();
+        if (!gi) return nullptr;
+        const int32_t off = R::FindPropertyOffset(R::ClassOf(gi), L"save_gameInst");
+        return off < 0 ? nullptr : *reinterpret_cast<void**>(static_cast<char*>(gi) + off);
+    }
+    if (t.rfind("C:", 0) == 0) return R::FindObjectByClass(Wide(t.substr(2)).c_str());
+    return nullptr;
+}
+
+// A property of `owner` (a UClass* or UFunction*) at `base`, as text.
+std::string ReadValue(void* owner, void* base, const std::wstring& prop) {
+    int32_t off = -1;
+    std::wstring cls;
+    if (!R::PropertyOffsetAndClass(owner, prop.c_str(), off, cls) || off < 0) return "?(no such property)";
+    const char* p = static_cast<const char*>(base) + off;
+    char buf[160];
+    if (cls == L"FloatProperty") std::snprintf(buf, sizeof(buf), "%g", *reinterpret_cast<const float*>(p));
+    else if (cls == L"IntProperty") std::snprintf(buf, sizeof(buf), "%d", *reinterpret_cast<const int32_t*>(p));
+    else if (cls == L"ByteProperty") std::snprintf(buf, sizeof(buf), "%u", static_cast<unsigned>(*reinterpret_cast<const uint8_t*>(p)));
+    else if (cls == L"BoolProperty") {
+        int32_t bo = 0; uint8_t mask = 0;
+        if (!R::FindBoolProperty(owner, prop.c_str(), bo, mask)) return "?(bool)";
+        std::snprintf(buf, sizeof(buf), "%d", (static_cast<const uint8_t*>(base)[bo] & mask) ? 1 : 0);
+    } else if (cls == L"ObjectProperty" || cls == L"ClassProperty") {
+        void* o = *reinterpret_cast<void* const*>(p);
+        if (!o) return "null";
+        return Narrow(R::ClassNameOf(o)) + ":" + Narrow(R::ToString(R::NameOf(o)));
+    } else if (cls == L"NameProperty") {
+        return Narrow(R::ToString(*reinterpret_cast<const ue_wrap::reflection::FName*>(p)));
+    } else if (cls == L"StrProperty") {
+        return Narrow(ue_wrap::field_io::ReadFStringAt(base, off));
+    } else if (cls == L"StructProperty" && prop.size()) {
+        const float* f = reinterpret_cast<const float*>(p);
+        std::snprintf(buf, sizeof(buf), "struct %g %g %g", f[0], f[1], f[2]);
+    } else {
+        std::snprintf(buf, sizeof(buf), "?(%s)", Narrow(cls).c_str());
+    }
+    return buf;
+}
+
+bool WriteValue(void* owner, void* base, const std::wstring& prop, const std::string& v) {
+    int32_t off = -1;
+    std::wstring cls;
+    if (!R::PropertyOffsetAndClass(owner, prop.c_str(), off, cls) || off < 0) return false;
+    char* p = static_cast<char*>(base) + off;
+    if (cls == L"FloatProperty") *reinterpret_cast<float*>(p) = std::strtof(v.c_str(), nullptr);
+    else if (cls == L"IntProperty") *reinterpret_cast<int32_t*>(p) = std::atoi(v.c_str());
+    else if (cls == L"ByteProperty") *reinterpret_cast<uint8_t*>(p) = static_cast<uint8_t>(std::atoi(v.c_str()));
+    else if (cls == L"BoolProperty") {
+        int32_t bo = 0; uint8_t mask = 0;
+        if (!R::FindBoolProperty(owner, prop.c_str(), bo, mask)) return false;
+        uint8_t& b = static_cast<uint8_t*>(base)[bo];
+        b = (v == "1" || v == "true") ? static_cast<uint8_t>(b | mask) : static_cast<uint8_t>(b & ~mask);
+    } else return false;
+    return true;
+}
+
+void WriteText(const std::wstring& path, const std::string& text) {
+    if (FILE* f = _wfopen(path.c_str(), L"wb")) {
+        std::fwrite(text.data(), 1, text.size(), f);
+        std::fclose(f);
+    }
+}
+
+// Every Blueprint function whose decoded text holds `needle` (lowercase), listed to <tag>_scan.txt.
+std::string Scan(const std::string& needle) {
+    std::ostringstream o;
+    int fns = 0, hits = 0;
+    ue_wrap::script_fingerprint::BeginPass();
+    const int32_t n = R::NumObjects();
+    for (int32_t i = 0; i < n; ++i) {
+        void* obj = R::ObjectAt(i);
+        if (!obj || R::ClassNameOf(obj) != L"Function") continue;
+        void* outer = R::OuterOf(obj);
+        if (!outer) continue;
+        const std::wstring on = R::ToString(R::NameOf(outer));
+        if (on.size() < 2 || on.compare(on.size() - 2, 2, L"_C") != 0) continue;
+        ++fns;
+        const auto r = ue_wrap::script_fingerprint::Of(obj);
+        if (r.native || r.text.find(needle) == std::string::npos) continue;
+        ++hits;
+        o << ue_wrap::script_fingerprint::PathOf(obj) << "\r\n";
+        size_t pos = 0;
+        int shown = 0;
+        while ((pos = r.text.find(needle, pos)) != std::string::npos && shown < 4) {
+            const size_t ls = r.text.rfind('\n', pos);
+            const size_t le = r.text.find('\n', pos);
+            const size_t a = ls == std::string::npos ? 0 : ls + 1;
+            std::string line = r.text.substr(a, (le == std::string::npos ? r.text.size() : le) - a);
+            if (line.size() > 300) line = line.substr(0, 300) + "...";
+            o << "    " << line << "\r\n";
+            pos = le == std::string::npos ? r.text.size() : le;
+            ++shown;
+        }
+    }
+    ue_wrap::script_fingerprint::EndPass();
+    WriteText(PathOf(L"_scan.txt"), o.str());
+    return "scan '" + needle + "': " + std::to_string(hits) + " of " + std::to_string(fns) + " BP functions";
+}
+
+// One function's decoded text (by Class and Function) to <tag>_bp_<Function>.txt.
+std::string Dump(const std::string& cls, const std::string& fn) {
+    void* c = R::FindClass(Wide(cls).c_str());
+    void* f = c ? R::FindFunction(c, Wide(fn).c_str()) : nullptr;
+    if (!f) return "";
+    const auto r = ue_wrap::script_fingerprint::Of(f);
+    std::string safe = fn;
+    for (char& ch : safe) if (ch == ' ' || ch == '\\' || ch == '/' || ch == ':') ch = '_';
+    WriteText(PathOf((L"_bp_" + Wide(cls) + L"_" + Wide(safe) + L".txt").c_str()), r.text);
+    return cls + "." + fn + ": " + std::to_string(r.text.size()) + " bytes";
+}
+
+// The own and inherited fields of a target, filtered, as name=value lines in <tag>_fields.txt.
+std::string Fields(void* obj, const std::string& filter) {
+    std::ostringstream o;
+    int n = 0;
+    for (void* c = R::ClassOf(obj); c; c = R::SuperStructOf(c)) {
+        for (const auto& fi : R::EnumerateStructFields(c)) {
+            const std::string name = Narrow(fi.name);
+            if (!filter.empty() && Lower(name).find(filter) == std::string::npos) continue;
+            o << Narrow(R::ToString(R::NameOf(c))) << "." << name << " = " << ReadValue(c, obj, fi.name) << "\r\n";
+            ++n;
+        }
+    }
+    WriteText(PathOf(L"_fields.txt"), o.str());
+    return std::to_string(n) + " fields";
+}
+
+// Call a function on a target with name=value arguments (floats, ints, bools, bytes).
+bool CallWithArgs(void* obj, const std::string& fnName, std::istringstream& in, std::string& out) {
+    void* fn = R::FindFunction(R::ClassOf(obj), Wide(fnName).c_str());
+    if (!fn) { out = "no function"; return false; }
+    ue_wrap::ParamFrame f(fn);
+    if (!f.valid()) { out = "bad frame"; return false; }
+    std::string kv;
+    while (in >> kv) {
+        const size_t eq = kv.find('=');
+        if (eq == std::string::npos) continue;
+        std::string val = kv.substr(eq + 1);
+        if (!WriteValue(fn, f.data(), Wide(kv.substr(0, eq)), val)) { out = "bad arg " + kv; return false; }
+    }
+    const bool ok = ue_wrap::Call(obj, f);
+    std::ostringstream o;
+    for (const auto& p : R::FunctionParams(fn))
+        if (p.flags & 0x100 /*CPF_OutParm*/ || p.flags & 0x400 /*CPF_ReturnParm*/)
+            o << " " << Narrow(p.name) << "=" << ReadValue(fn, f.data(), p.name);
+    out = o.str();
+    return ok;
+}
+
 void Run(long long id, const std::string& verb, const std::string& rest) {
     std::istringstream in(rest);
     void* local = coop::players::Registry::Get().Local();
@@ -93,6 +262,37 @@ void Run(long long id, const std::string& verb, const std::string& rest) {
         in >> fn;
         void* obj = verb == "callp" ? local : ue_wrap::world_singleton::Gamemode();
         Answer(id, CallNoParams(obj, std::wstring(fn.begin(), fn.end()).c_str()), verb + " " + fn);
+    } else if (verb == "scan") {
+        std::string needle;
+        std::getline(in, needle);
+        const size_t b = needle.find_first_not_of(' ');
+        needle = b == std::string::npos ? std::string() : Lower(needle.substr(b));
+        Answer(id, !needle.empty(), needle.empty() ? "scan: empty" : Scan(needle));
+    } else if (verb == "dump") {
+        std::string cls, fn;
+        in >> cls;
+        std::getline(in, fn);
+        const size_t b = fn.find_first_not_of(' ');
+        fn = b == std::string::npos ? std::string() : fn.substr(b);
+        const std::string r = Dump(cls, fn);
+        Answer(id, !r.empty(), r.empty() ? "dump: not found " + cls + "." + fn : r);
+    } else if (verb == "get" || verb == "set" || verb == "fields") {
+        std::string t, prop, val;
+        in >> t >> prop >> val;
+        void* obj = Target(t);
+        if (!obj) { Answer(id, false, verb + ": no target " + t); return; }
+        if (verb == "fields") { Answer(id, true, Fields(obj, Lower(prop))); return; }
+        if (verb == "set" && !WriteValue(R::ClassOf(obj), obj, Wide(prop), val)) { Answer(id, false, "set failed " + prop); return; }
+        Answer(id, true, t + "." + prop + " = " + ReadValue(R::ClassOf(obj), obj, Wide(prop)));
+    } else if (verb == "call") {
+        std::string t, fn;
+        in >> t >> fn;
+        for (char& c : fn) if (c == '+') c = ' ';  // a function name with spaces is written with '+'
+        void* obj = Target(t);
+        if (!obj) { Answer(id, false, "call: no target " + t); return; }
+        std::string out;
+        const bool ok = CallWithArgs(obj, fn, in, out);
+        Answer(id, ok, "call " + t + "." + fn + out);
     } else if (verb == "log") {
         UE_LOGI("[LAB] ---- %s ----", rest.c_str());
         Answer(id, true, "log");
@@ -133,6 +333,16 @@ void WriteState() {
     coop::net::Session& s = harness::session_runtime::Session();
     o << "session running=" << (s.running() ? 1 : 0) << " connected=" << (s.connected() ? 1 : 0)
       << " role=" << (s.role() == coop::net::Role::Host ? "host" : "client") << "\r\n";
+    {
+        namespace V = ue_wrap::vitals;
+        o << "vitals";
+        for (uint8_t i = 0; i < static_cast<uint8_t>(V::Field::Count); ++i) {
+            float v = 0.f;
+            const V::Field f = static_cast<V::Field>(i);
+            if (V::Read(f, &v)) { char b[48]; std::snprintf(b, sizeof(b), " %s=%.1f", V::RowOf(f).name, v); o << b; }
+        }
+        o << "\r\n";
+    }
     if (void* local = coop::players::Registry::Get().Local()) {
         ue_wrap::FVector l{};
         ue_wrap::engine::TryGetActorLocation(local, l);
