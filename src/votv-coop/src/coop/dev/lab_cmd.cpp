@@ -10,6 +10,8 @@
 #include "coop/player/puppet_drive.h"
 #include "coop/player/remote_player.h"
 #include "coop/session/teleport_client.h"
+#include "coop/props/remote_prop.h"     // ResolveMirrorEidByActor (grabintent)
+#include "coop/props/trash_channel.h"   // SendGrabIntent / SendThrowIntent / ClientCarryEid
 #include "coop/world/dimension_travel.h"
 #include "harness/screenshot.h"
 #include "harness/session_runtime.h"
@@ -424,6 +426,26 @@ void Run(long long id, const std::string& verb, const std::string& rest) {
         if (!c) { Answer(id, false, "spawn: no class " + cls); return; }
         void* a = ue_wrap::engine::SpawnActor(c, ue_wrap::FVector{x, y, z});
         Answer(id, a != nullptr, "spawn " + cls + (a ? " -> " + Narrow(R::ToString(R::NameOf(a))) : std::string(" failed")));
+    } else if (verb == "grabintent") {
+        // grabintent <target>: send the host the trash grab intent for that mirror's eid, as the E-press
+        // on it does (a client's resting ball or pile, when the aim cannot reach it).
+        std::string t;
+        in >> t;
+        void* obj = Target(t);
+        const coop::element::ElementId eid = obj ? coop::remote_prop::ResolveMirrorEidByActor(obj)
+                                                 : coop::element::kInvalidId;
+        coop::net::Session* s = &harness::session_runtime::Session();
+        if (eid == coop::element::kInvalidId || !s) { Answer(id, false, "grabintent: no mirror eid for " + t); return; }
+        coop::trash_channel::SendGrabIntent(*s, static_cast<uint32_t>(eid));
+        Answer(id, true, "grabintent eid " + std::to_string(eid));
+    } else if (verb == "throwintent") {
+        // throwintent: let go of the clump this client carries (the E-press while carrying).
+        coop::net::Session* s = &harness::session_runtime::Session();
+        const coop::element::ElementId carry = coop::trash_channel::ClientCarryEid();
+        if (!s || carry == coop::element::kInvalidId) { Answer(id, false, "throwintent: carrying nothing"); return; }
+        coop::trash_channel::SendThrowIntent(*s, static_cast<uint32_t>(carry), coop::net::throw_mode::kRelease,
+                                             ue_wrap::FVector{});
+        Answer(id, true, "throwintent eid " + std::to_string(carry));
     } else if (verb == "resync") {
         coop::session_manager::RequestResync();
         Answer(id, true, "resync asked");
