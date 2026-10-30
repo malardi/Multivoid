@@ -140,6 +140,8 @@ inline constexpr const wchar_t* kWorldActorAllowlist[] = {
     L"ufoDropper_tank_C",          // ufoDropper tank variant
     L"rozitBorg_C",                // Rozital mothership (borgRozital event)
     L"arirShip_C",                 // ariral ship
+    L"arirShipVanishing_C",        // an ariral ship warping out (the picnic event's warp streaks): host-spawned,
+                                   // and a client never runs the event, so it saw none of them
     L"skyUfo_C",                   // high-altitude sky UFO
     L"jellyfish_C",                // space jellyfish
     L"morningUfo_C",               // morningGay event UFO
