@@ -2,6 +2,8 @@
 
 #include "coop/dev/lab_cmd.h"
 
+#include "coop/element/portable_identity.h"
+
 #include "coop/net/session.h"
 #include "coop/player/players_registry.h"
 #include "coop/player/puppet_drive.h"
@@ -381,6 +383,14 @@ void Run(long long id, const std::string& verb, const std::string& rest) {
         }
         WriteText(PathOf(L"_around.txt"), o.str());
         Answer(id, true, "around " + std::to_string(v.size()) + " actors");
+    } else if (verb == "key") {
+        // key <target>: the portable identity peers name this actor by, readable and on the wire.
+        std::string t;
+        in >> t;
+        void* obj = Target(t);
+        if (!obj) { Answer(id, false, "key: no target " + t); return; }
+        Answer(id, true, "key " + t + " = '" + Narrow(coop::element::PortableIdentity(obj)) + "' wire '" +
+                             Narrow(coop::element::PortableWireKey(obj)) + "'");
     } else if (verb == "log") {
         UE_LOGI("[LAB] ---- %s ----", rest.c_str());
         Answer(id, true, "log");

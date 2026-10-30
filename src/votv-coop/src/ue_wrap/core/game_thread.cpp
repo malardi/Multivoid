@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <typeinfo>
 #include <string>
 
 namespace ue_wrap::game_thread {
@@ -297,17 +298,21 @@ void Pump() {
         // pump loop continues either way, so one faulting task never stops the others or wedges the
         // tick.
         D::LastTaskFault() = {};
+        // The task's own type names the lambda and the function it was written in, so a fault below says
+        // which of the many posting sites it was (RTTI's name of a closure carries its enclosing function).
+        const char* taskType = task.target_type().name();
         if (D::RunTaskSEH(task) != 0) {
             constexpr unsigned long kCppExceptionCode = 0xE06D7363u;  // MSVC C++ throw
             const D::TaskFaultInfo& f = D::LastTaskFault();
             if (f.code == kCppExceptionCode) {
                 UE_LOGE("game_thread: posted task threw a C++ exception at ip=%p [%s]; "
-                        "skipped, pump continues",
-                        f.faultingIP, D::FormatModuleRva(f.faultingIP));
+                        "skipped, pump continues -- task %s",
+                        f.faultingIP, D::FormatModuleRva(f.faultingIP), taskType ? taskType : "?");
             } else {
                 UE_LOGE("game_thread: posted task FAULT code=0x%08lX ip=%p [%s] access=%p; "
-                        "skipped, pump continues",
-                        f.code, f.faultingIP, D::FormatModuleRva(f.faultingIP), f.accessAddr);
+                        "skipped, pump continues -- task %s",
+                        f.code, f.faultingIP, D::FormatModuleRva(f.faultingIP), f.accessAddr,
+                        taskType ? taskType : "?");
             }
         }
         g_tasksRun.fetch_add(1, std::memory_order_relaxed);
