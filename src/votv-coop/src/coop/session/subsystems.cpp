@@ -136,6 +136,7 @@
 #include "coop/props/grab_observer.h"
 #include "coop/player/item_activate.h"
 #include "coop/player/player_damage.h"
+#include "coop/player/damage_ledger.h"
 #include "coop/player/player_hit.h"
 #include "coop/session/player_handshake.h"  // TickSkinConverge
 #include "coop/player/skin_preview.h"
@@ -716,6 +717,7 @@ void TickGameplay(coop::net::Session& session, bool isConnected, bool isHost,
     if (isHost) { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:explosion_coast"}; coop::explosion_parking::Tick(&session); }  // HOST: the props a blast flung, handed to the driven-prop channel (before its tick below; an empty list costs one size check)
     if (isHost) { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:prop_drive_host"}; coop::prop_drive_host::Tick(session); }  // HOST: publish the driven props that moved, close the streams that rested (after the hook poll that feeds it; an empty set costs one size check)
     coop::dev::dev_lanes::TickDrills(session);  // [dev] the drills' and censuses' legs (a single read each when off)
+    coop::player::damage_ledger::Tick();  // every hit on this machine's player recorded; a lethal one logs its cause
     coop::player_damage::Tick();  // impact-entry PRE cancels lazy install (non-local bodies)
     coop::player_handshake::TickSkinConverge();  // heal a join-window deferred skin apply (~2 s throttle)
     coop::skin_preview::Tick();  // F1-skins live mannequin preview (spawn/apply/position/hide)
