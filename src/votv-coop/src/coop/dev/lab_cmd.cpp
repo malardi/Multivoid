@@ -20,12 +20,14 @@
 #include "ue_wrap/actors/vitals.h"
 #include "ue_wrap/core/types.h"
 #include "ue_wrap/engine/engine.h"
+#include "ue_wrap/engine/engine_pawn.h"
 #include "ue_wrap/engine/world_identity.h"
 #include "ue_wrap/world/world_singleton.h"
 
 #include <windows.h>
 
 #include <cctype>
+#include <cmath>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -293,6 +295,28 @@ void Run(long long id, const std::string& verb, const std::string& rest) {
         std::string out;
         const bool ok = CallWithArgs(obj, fn, in, out);
         Answer(id, ok, "call " + t + "." + fn + out);
+    } else if (verb == "look" || verb == "face") {
+        // look <yaw> [pitch]: turn this player's view; face <slot>: turn it toward that peer's puppet.
+        float yaw = 0.f, pitch = 0.f;
+        if (verb == "look") {
+            in >> yaw >> pitch;
+        } else {
+            int slot = -1;
+            in >> slot;
+            ue_wrap::FVector me{}, them{};
+            auto& p = coop::puppet_drive::Puppet(slot);
+            if (!local || !p.valid() || !ue_wrap::engine::TryGetActorLocation(local, me) || !p.TryGetLocation(them)) {
+                Answer(id, false, "face: no puppet in slot " + std::to_string(slot));
+                return;
+            }
+            yaw = static_cast<float>(std::atan2(them.Y - me.Y, them.X - me.X) * 180.0 / 3.14159265358979);
+        }
+        void* ctrl = local ? ue_wrap::engine::GetController(local) : nullptr;
+        if (ctrl) ue_wrap::engine::SetControlRotation(ctrl, ue_wrap::FRotator{pitch, yaw, 0.f});
+        const bool ok = ctrl != nullptr;
+        char b[64];
+        std::snprintf(b, sizeof(b), "%s yaw %.0f pitch %.0f", verb.c_str(), yaw, pitch);
+        Answer(id, ok, b);
     } else if (verb == "log") {
         UE_LOGI("[LAB] ---- %s ----", rest.c_str());
         Answer(id, true, "log");
