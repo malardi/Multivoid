@@ -27,7 +27,9 @@
 #include <windows.h>
 
 #include <cctype>
+#include <algorithm>
 #include <cmath>
+#include <vector>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -84,6 +86,32 @@ std::string Lower(std::string s) {
     return s;
 }
 
+
+// Live actors (not class defaults) whose class name holds `sub` (lowercase), with their distance to this player.
+struct Near { void* obj; float dist; ue_wrap::FVector at; };
+std::vector<Near> ActorsAround(const std::string& sub, float radius) {
+    std::vector<Near> out;
+    void* local = coop::players::Registry::Get().Local();
+    ue_wrap::FVector me{};
+    if (!local || !ue_wrap::engine::TryGetActorLocation(local, me)) return out;
+    const int32_t n = R::NumObjects();
+    for (int32_t i = 0; i < n; ++i) {
+        void* obj = R::ObjectAt(i);
+        if (!obj || obj == local) continue;
+        const std::wstring cn = R::ClassNameOf(obj);
+        if (cn.size() < 3 || cn.compare(cn.size() - 2, 2, L"_C") != 0) continue;
+        if (!sub.empty() && Lower(Narrow(cn)).find(sub) == std::string::npos) continue;
+        if (R::NameStartsWith(R::NameOf(obj), L"Default__")) continue;
+        ue_wrap::FVector at{};
+        if (!ue_wrap::engine::TryGetActorLocation(obj, at)) continue;
+        const float dx = at.X - me.X, dy = at.Y - me.Y, dz = at.Z - me.Z;
+        const float d = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (d <= radius) out.push_back({obj, d, at});
+    }
+    std::sort(out.begin(), out.end(), [](const Near& a, const Near& b) { return a.dist < b.dist; });
+    return out;
+}
+
 // A target by name: player, gm, gi, slot (the save object), or C:<Class> (the first live object of that class).
 void* Target(const std::string& t) {
     if (t == "player") return coop::players::Registry::Get().Local();
@@ -96,6 +124,10 @@ void* Target(const std::string& t) {
         return off < 0 ? nullptr : *reinterpret_cast<void**>(static_cast<char*>(gi) + off);
     }
     if (t.rfind("C:", 0) == 0) return R::FindObjectByClass(Wide(t.substr(2)).c_str());
+    if (t.rfind("near:", 0) == 0) {  // the nearest live actor whose class name holds the text
+        const auto v = ActorsAround(Lower(t.substr(5)), 1e9f);
+        return v.empty() ? nullptr : v.front().obj;
+    }
     return nullptr;
 }
 
@@ -317,6 +349,20 @@ void Run(long long id, const std::string& verb, const std::string& rest) {
         char b[64];
         std::snprintf(b, sizeof(b), "%s yaw %.0f pitch %.0f", verb.c_str(), yaw, pitch);
         Answer(id, ok, b);
+    } else if (verb == "around") {
+        // around <radius cm> [class text]: the actors near this player, nearest first, to <tag>_around.txt.
+        float radius = 500.f;
+        std::string sub;
+        in >> radius >> sub;
+        const auto v = ActorsAround(Lower(sub), radius);
+        std::ostringstream o;
+        for (const Near& a : v) {
+            char b[96];
+            std::snprintf(b, sizeof(b), "%7.0f  (%.0f %.0f %.0f)  ", a.dist, a.at.X, a.at.Y, a.at.Z);
+            o << b << Narrow(R::ClassNameOf(a.obj)) << " " << Narrow(R::ToString(R::NameOf(a.obj))) << "\r\n";
+        }
+        WriteText(PathOf(L"_around.txt"), o.str());
+        Answer(id, true, "around " + std::to_string(v.size()) + " actors");
     } else if (verb == "log") {
         UE_LOGI("[LAB] ---- %s ----", rest.c_str());
         Answer(id, true, "log");
