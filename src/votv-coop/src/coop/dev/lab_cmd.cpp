@@ -377,6 +377,33 @@ void Run(long long id, const std::string& verb, const std::string& rest) {
         std::string all;
         for (const auto& w : v) all += (all.empty() ? "" : " | ") + Narrow(w);
         Answer(id, true, t + "." + prop + " n=" + std::to_string(v.size()) + " [" + all.substr(0, 300) + "]");
+    } else if (verb == "names" || verb == "addname" || verb == "clearnames") {
+        // names <target> <field>: a TArray<FName> read out; addname <target> <field> <name>: one appended;
+        // clearnames <target> <field>: emptied (an Omega's worn accessory list, say).
+        std::string t, prop, text;
+        in >> t >> prop >> text;
+        void* obj = Target(t);
+        if (!obj) { Answer(id, false, verb + ": no target " + t); return; }
+        const int32_t off = R::FindPropertyOffset(R::ClassOf(obj), Wide(prop).c_str());
+        if (off < 0) { Answer(id, false, verb + ": no field " + prop); return; }
+        struct NameArr { R::FName* data; int32_t num; int32_t max; };
+        auto* arr = reinterpret_cast<NameArr*>(static_cast<char*>(obj) + off);
+        if (verb == "clearnames") arr->num = 0;
+        if (verb == "addname") {
+            if (arr->num >= arr->max) {
+                const int32_t cap = arr->max + 8;
+                auto* buf = static_cast<R::FName*>(R::EngineAlloc(sizeof(R::FName) * static_cast<size_t>(cap)));
+                if (!buf) { Answer(id, false, "addname: alloc failed"); return; }
+                for (int32_t i = 0; i < arr->num; ++i) buf[i] = arr->data[i];
+                if (arr->data) R::EngineFree(arr->data);
+                arr->data = buf;
+                arr->max = cap;
+            }
+            arr->data[arr->num++] = ue_wrap::fname_utils::StringToFName(Wide(text));
+        }
+        std::string all;
+        for (int32_t i = 0; i < arr->num && i < 32; ++i) all += (i ? " | " : "") + Narrow(R::ToString(arr->data[i]));
+        Answer(id, true, t + "." + prop + " n=" + std::to_string(arr->num) + " [" + all + "]");
     } else if (verb == "call") {
         std::string t, fn;
         in >> t >> fn;
