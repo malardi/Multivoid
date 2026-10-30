@@ -13,6 +13,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <string>
 
@@ -31,6 +32,7 @@ struct Hit {
     float        amount = 0.f;
     float        healthBefore = 0.f;
     std::wstring source, caller;
+    std::string  detail;   // where the hit landed and the player's fall velocity: tells a fall from a blow
 };
 constexpr int kRing = 12;
 Hit g_ring[kRing];
@@ -63,8 +65,9 @@ void LogRing(const char* why) {
     const int n = g_count < kRing ? g_count : kRing;
     for (int i = 0; i < n; ++i) {
         const Hit& h = g_ring[(g_next - n + i + kRing) % kRing];
-        UE_LOGW("[DEATH-CAUSE]   -%.1fs  %.2f damage (health was %.1f)  source=%ls  by %ls",
-                (now - h.ms) / 1000.0, h.amount, h.healthBefore, h.source.c_str(), h.caller.c_str());
+        UE_LOGW("[DEATH-CAUSE]   -%.1fs  %.2f damage (health was %.1f)  source=%ls  by %ls  %s",
+                (now - h.ms) / 1000.0, h.amount, h.healthBefore, h.source.c_str(), h.caller.c_str(),
+                h.detail.c_str());
     }
     for (int i = 0; i < g_kindCount; ++i)
         UE_LOGW("[DEATH-CAUSE]   this session: %u x %ls", g_kindHits[i], g_kinds[i].c_str());
@@ -81,12 +84,24 @@ sg::Verdict OnDamagePre(const sg::Call& c) {
 
     static R::ParamOffset sAmount(L"Damage");
     static R::ParamOffset sSource(L"Source");
+    static R::ParamOffset sWhere(L"damageLocation");
     float amount = 0.f;
     void* source = nullptr;
     const int32_t ao = sAmount.Of(c.function);
     const int32_t so = sSource.Of(c.function);
     if (ao >= 0) std::memcpy(&amount, c.locals + ao, sizeof(amount));
     if (so >= 0) std::memcpy(&source, c.locals + so, sizeof(source));
+    float where[3] = {0.f, 0.f, 0.f};
+    if (const int32_t wo = sWhere.Of(c.function); wo >= 0) std::memcpy(where, c.locals + wo, sizeof(where));
+    // The game's fall damage reads fallVeloc and lands at (0,0,0); a blow lands where it struck.
+    static int32_t sFallOff = -2;
+    if (sFallOff == -2) sFallOff = R::FindPropertyOffset(R::ClassOf(c.object), L"fallVeloc");
+    float fall[3] = {0.f, 0.f, 0.f};
+    if (sFallOff >= 0) std::memcpy(fall, static_cast<uint8_t*>(c.object) + sFallOff, sizeof(fall));
+    char detail[160];
+    std::snprintf(detail, sizeof(detail), "at=(%.0f,%.0f,%.0f) fallVeloc=(%.0f,%.0f,%.0f) source%s",
+                  where[0], where[1], where[2], fall[0], fall[1], fall[2],
+                  source == c.object ? "=self" : (source ? "=other" : "=none"));
     float health = 0.f;
     ue_wrap::vitals::Read(ue_wrap::vitals::Field::Health, &health);
 
@@ -95,6 +110,7 @@ sg::Verdict OnDamagePre(const sg::Call& c) {
     h.amount = amount;
     h.healthBefore = health;
     h.source = ClassOrNull(source);
+    h.detail = detail;
     h.caller = ClassOrNull(c.callerObject) + L"." +
                (c.callerFunction ? R::ToString(R::NameOf(c.callerFunction)) : std::wstring(L"<ProcessEvent>"));
     g_next = (g_next + 1) % kRing;
@@ -104,8 +120,11 @@ sg::Verdict OnDamagePre(const sg::Call& c) {
     const int k = KindIndex(h.caller + L" source=" + h.source, &isNew);
     if (k >= 0) ++g_kindHits[k];
     if (isNew)
-        UE_LOGI("[DMG-SRC] first hit of its kind on this machine's player: %.2f damage (health %.1f) source=%ls by %ls",
-                amount, health, h.source.c_str(), h.caller.c_str());
+        UE_LOGI("[DMG-SRC] first hit of its kind on this machine's player: %.2f damage (health %.1f) source=%ls by %ls %s",
+                amount, health, h.source.c_str(), h.caller.c_str(), detail);
+    else if (amount >= 25.f)
+        UE_LOGI("[DMG-SRC] a heavy hit: %.2f damage (health %.1f) source=%ls by %ls %s",
+                amount, health, h.source.c_str(), h.caller.c_str(), detail);
     if (amount > 0.f && health > 0.f && health - amount <= 0.f) LogRing("a lethal hit");
     return sg::Verdict::Run;
 }
