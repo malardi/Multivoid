@@ -373,6 +373,7 @@ set(VOTVCOOP_SOURCES
     src/coop/world/blood_decal_sync.cpp
     src/coop/world/dig_hole_sync.cpp
     src/coop/props/pry_crowbar_sync.cpp
+    src/coop/world/pipe_burst_sync.cpp
     src/coop/world/dimension_travel.cpp
     src/coop/comms/log_mirror.cpp
     src/coop/dev/lab_cmd.cpp

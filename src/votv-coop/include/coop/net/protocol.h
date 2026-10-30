@@ -1169,6 +1169,10 @@ enum class ReliableKind : uint8_t {
     // its place, on the prier's screen alone, so to every other peer the crowbar vanished. The receivers
     // show or hide the same child. Not pre-world. Late join: none (a pry lasts seconds). PryCrowbarPayload.
     PryCrowbar = 207,
+    // HOST->CLIENT: a basement water pipe's burst state (burstWaterPipe_C.damaged), by the level actor's name.
+    // The burst roll and the fix are the host's; a client's roll is refused and its repair runs on the host.
+    // Sent on change and the whole set every few seconds (the late join's seed). Not relayed. PipeStatePayload.
+    PipeState = 208,
 };
 
 #pragma pack(push, 1)
@@ -1893,6 +1897,13 @@ struct PryCrowbarPayload {
 };
 static_assert(sizeof(PryCrowbarPayload) == 64, "PryCrowbarPayload must be 64 bytes");
 static_assert(sizeof(PryCrowbarPayload) <= 256 - 20 - 8, "PryCrowbarPayload must fit one datagram");
+
+// A burst pipe's state (PipeState): the level actor's object name (the same on every peer) and its damage.
+struct PipeStatePayload {
+    char    name[63];                  // 63 -- ASCII, zero-padded
+    uint8_t damaged;                   // 1  -- 1 burst, 0 whole
+};
+static_assert(sizeof(PipeStatePayload) == 64, "PipeStatePayload must be 64 bytes");
 
 // A swinging lid's pose (SwingerPose): the lid by the container lane's key, its world transform.
 struct SwingerPosePayload {

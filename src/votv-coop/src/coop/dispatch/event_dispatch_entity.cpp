@@ -9,6 +9,7 @@
 #include "coop/world/blood_decal_sync.h"
 #include "coop/world/dig_hole_sync.h"
 #include "coop/props/pry_crowbar_sync.h"
+#include "coop/world/pipe_burst_sync.h"
 #include "coop/world/dimension_travel.h"
 #include "coop/interactables/swinger_pose_sync.h"
 
@@ -141,6 +142,23 @@ bool HandleEntityEvent(net::Session& session,
         }
         p.component[sizeof(p.component) - 1] = 0;
         coop::pry_crowbar_sync::OnPryCrowbar(p);
+        break;
+    }
+    case net::ReliableKind::PipeState: {
+        // The host's burst pipe state; pipe_burst_sync applies it to this peer's pipe of that name.
+        if (msg.payloadLen < sizeof(net::PipeStatePayload)) {
+            UE_LOGW("event_feed: PipeState payload too short (%zu < %zu)",
+                    static_cast<size_t>(msg.payloadLen), sizeof(net::PipeStatePayload));
+            break;
+        }
+        net::PipeStatePayload p{};
+        std::memcpy(&p, msg.payload, sizeof(p));
+        if (p.damaged > 1) {
+            UE_LOGW("event_feed: PipeState fields out of bounds -- dropping");
+            break;
+        }
+        p.name[sizeof(p.name) - 1] = 0;
+        coop::pipe_burst_sync::OnPipeState(p);
         break;
     }
     case net::ReliableKind::BloodDecal: {
