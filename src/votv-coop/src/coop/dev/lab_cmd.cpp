@@ -153,6 +153,8 @@ std::string ReadValue(void* owner, void* base, const std::wstring& prop) {
         return Narrow(R::ToString(*reinterpret_cast<const ue_wrap::reflection::FName*>(p)));
     } else if (cls == L"StrProperty") {
         return Narrow(ue_wrap::field_io::ReadFStringAt(base, off));
+    } else if (cls == L"ArrayProperty") {
+        std::snprintf(buf, sizeof(buf), "array n=%d", *reinterpret_cast<const int32_t*>(p + 8));
     } else if (cls == L"StructProperty" && prop.size()) {
         const float* f = reinterpret_cast<const float*>(p);
         std::snprintf(buf, sizeof(buf), "struct %g %g %g", f[0], f[1], f[2]);
