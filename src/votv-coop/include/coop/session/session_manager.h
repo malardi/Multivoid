@@ -207,6 +207,16 @@ void EndHostedLobby();
 // brings up the session, the sync modules and the pump.
 bool TakePendingStart(coop::net::Config& out);
 
+// The resync a client asks for (the F1 menu's Network pane): its session ends and the same join is made again,
+// so the host's world is downloaded and loaded whole, as at the first join. Any thread; the play loop takes the
+// request. LastClientConfig is the join to repeat: false before any client join in this process.
+void RequestResync();
+bool TakeResyncRequest();
+bool LastClientConfig(coop::net::Config& out);
+// The repeat itself, once the old session has ended: the join's cover raised and its start queued. False with no
+// join to repeat.
+bool QueueResyncJoin();
+
 // The host-with-save seam: the queued Config and SaveChoice. The harness polls it, loads the
 // chosen world or creates the new save first, then starts the session. Distinct from
 // TakePendingStart, which starts on the loaded world.

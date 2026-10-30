@@ -142,10 +142,20 @@ namespace internal {
 // Refresh is not gated.
 std::atomic<bool> g_actionBusy{false};
 
+// The last client start, kept for the resync: the same join, made again from the menu, reloads the host's world
+// whole. Under g_pendMu.
+net::Config g_lastClient;
+bool g_hasLastClient = false;
+std::atomic<bool> g_resyncAsked{false};
+
 void QueueStart(const net::Config& cfg) {
     std::lock_guard<std::mutex> lk(g_pendMu);
     g_pending = cfg;
     g_hasPending = true;
+    if (cfg.role == net::Role::Client) {
+        g_lastClient = cfg;
+        g_hasLastClient = true;
+    }
 }
 
 }  // namespace internal
@@ -690,6 +700,25 @@ bool TakePendingHostWithSave(PendingHost& out) {
     if (!g_hasPendingHost) return false;
     out = g_pendingHost;
     g_hasPendingHost = false;
+    return true;
+}
+
+void RequestResync() { internal::g_resyncAsked.store(true, std::memory_order_release); }
+
+bool TakeResyncRequest() { return internal::g_resyncAsked.exchange(false, std::memory_order_acq_rel); }
+
+bool QueueResyncJoin() {
+    net::Config again;
+    if (!LastClientConfig(again)) return false;
+    coop::join_progress::BeginConnect("the host", coop::join_progress::Stage::Dialing);
+    internal::QueueStart(again);
+    return true;
+}
+
+bool LastClientConfig(net::Config& out) {
+    std::lock_guard<std::mutex> lk(g_pendMu);
+    if (!internal::g_hasLastClient) return false;
+    out = internal::g_lastClient;
     return true;
 }
 

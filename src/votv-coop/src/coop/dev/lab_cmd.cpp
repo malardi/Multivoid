@@ -5,6 +5,7 @@
 #include "coop/element/portable_identity.h"
 
 #include "coop/net/session.h"
+#include "coop/session/session_manager.h"
 #include "coop/player/players_registry.h"
 #include "coop/player/puppet_drive.h"
 #include "coop/player/remote_player.h"
@@ -394,6 +395,9 @@ void Run(long long id, const std::string& verb, const std::string& rest) {
         if (!obj) { Answer(id, false, "key: no target " + t); return; }
         Answer(id, true, "key " + t + " = '" + Narrow(coop::element::PortableIdentity(obj)) + "' wire '" +
                              Narrow(coop::element::PortableWireKey(obj)) + "'");
+    } else if (verb == "resync") {
+        coop::session_manager::RequestResync();
+        Answer(id, true, "resync asked");
     } else if (verb == "log") {
         UE_LOGI("[LAB] ---- %s ----", rest.c_str());
         Answer(id, true, "log");

@@ -5,6 +5,7 @@
 #include "l10n/l10n.h"
 
 #include "coop/net/net_stats.h"
+#include "coop/session/session_manager.h"
 #include "coop/config/config.h"
 #include "ui/fonts.h"
 #include "ui/scale.h"
@@ -270,6 +271,15 @@ void RenderMenuPref() {
         else
             l10n::Fmt(line, sizeof(line), l10n::T("Peers: %d"), s.peers);
         ImGui::TextUnformatted(line);
+        // The player's way out of a world that has drifted from the host's: the join made again, so the host's
+        // world is downloaded and loaded whole. A client's only; a host's press is ignored by the play loop.
+        ImGui::Spacing();
+        ImGui::SeparatorText(l10n::Label(l10n::T("Resync"), "resync"));
+        ImGui::TextWrapped("%s", l10n::T("Something looks different from the host's world? Rejoin the same host: "
+                                         "your session ends and the host's world is downloaded and loaded again. "
+                                         "Clients only; your inventory is kept by the host."));
+        if (ImGui::Button(l10n::Label(l10n::T("Resync with the host"), "resync_button")))
+            coop::session_manager::RequestResync();
     }
 }
 

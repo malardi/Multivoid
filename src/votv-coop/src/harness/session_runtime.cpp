@@ -571,6 +571,20 @@ void RunPlayLoop(bool bootedIntoGameplay) {
             // now rather than leave it in the buffered stream.
             ue_wrap::log::Flush();
         }
+        // The player's resync (the F1 menu): a client session ends and the same join is made again, so the
+        // host's world comes down and loads whole, as at the first join. The join is queued with its cover
+        // raised, so the return to the menu below does not open the browser and the start is not taken
+        // for a stale one; join_leave carries it from the menu.
+        if (coop::session_manager::TakeResyncRequest()) {
+            coop::net::Config again;
+            if (g_session.running() && g_session.role() == coop::net::Role::Client &&
+                coop::session_manager::LastClientConfig(again)) {
+                UE_LOGI("harness: RESYNC asked by the player -- the session ends and the join is made again");
+                if (EndClientSession("resync asked by the player")) coop::session_manager::QueueResyncJoin();
+            } else {
+                UE_LOGI("harness: resync asked with no client session to repeat -- ignored");
+            }
+        }
         if (!g_session.running() && !coop::shutdown::IsShuttingDown()) {
             // No start begins over an owed end: a session stopped without its game-thread teardown yet
             // -- a flee whose teardown is in flight on the game thread while this timeline thread
