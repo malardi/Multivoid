@@ -10,6 +10,7 @@
 #include "coop/world/dig_hole_sync.h"
 #include "coop/props/pry_crowbar_sync.h"
 #include "coop/world/pipe_burst_sync.h"
+#include "coop/creatures/kerfur_drip_sync.h"
 #include "coop/world/dimension_travel.h"
 #include "coop/interactables/swinger_pose_sync.h"
 
@@ -41,7 +42,9 @@
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/sdk_profile.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <string>
 
@@ -159,6 +162,24 @@ bool HandleEntityEvent(net::Session& session,
         }
         p.name[sizeof(p.name) - 1] = 0;
         coop::pipe_burst_sync::OnPipeState(p);
+        break;
+    }
+    case net::ReliableKind::KerfurDrip: {
+        // A kerfur Omega's accessories; kerfur_drip_sync dresses this peer's copy the same.
+        constexpr size_t kHead = offsetof(net::KerfurDripPayload, names);
+        if (msg.payloadLen < kHead) {
+            UE_LOGW("event_feed: KerfurDrip payload too short (%zu < %zu)", static_cast<size_t>(msg.payloadLen), kHead);
+            break;
+        }
+        net::KerfurDripPayload p{};
+        std::memcpy(&p, msg.payload, std::min(static_cast<size_t>(msg.payloadLen), sizeof(p)));
+        if (p.count > net::kKerfurDripMax ||
+            msg.payloadLen < kHead + static_cast<size_t>(p.count) * sizeof(p.names[0])) {
+            UE_LOGW("event_feed: KerfurDrip fields out of bounds -- dropping");
+            break;
+        }
+        for (int i = 0; i < net::kKerfurDripMax; ++i) p.names[i][sizeof(p.names[i]) - 1] = 0;
+        coop::kerfur_drip_sync::OnKerfurDrip(p, msg.senderPeerSlot);
         break;
     }
     case net::ReliableKind::BloodDecal: {

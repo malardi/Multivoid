@@ -1173,6 +1173,11 @@ enum class ReliableKind : uint8_t {
     // The burst roll and the fix are the host's; a client's roll is refused and its repair runs on the host.
     // Sent on change and the whole set every few seconds (the late join's seed). Not relayed. PipeStatePayload.
     PipeState = 208,
+    // ANY PEER, relayed by the host: a kerfur Omega's accessories (kerfurOmega_C.drip, the row names of what it
+    // wears), whole, by the npc lane's eid. Sent when a peer's updateDrip runs (an equip or an unequip), and by
+    // the host every few seconds for every Omega (a late joiner's and a fresh mirror's seed). Not pre-world.
+    // KerfurDripPayload, sent at its used length.
+    KerfurDrip = 209,
 };
 
 #pragma pack(push, 1)
@@ -1904,6 +1909,17 @@ struct PipeStatePayload {
     uint8_t damaged;                   // 1  -- 1 burst, 0 whole
 };
 static_assert(sizeof(PipeStatePayload) == 64, "PipeStatePayload must be 64 bytes");
+
+// A kerfur Omega's accessories (KerfurDrip): the robot by the npc lane's eid, and each worn row name.
+inline constexpr int kKerfurDripMax = 8;
+struct KerfurDripPayload {
+    uint32_t eid;                              // 4   -- the npc element id (the host's)
+    uint8_t  count;                            // 1   -- 0..kKerfurDripMax
+    uint8_t  _pad[3];                          // 3
+    char     names[kKerfurDripMax][24];        // 192 -- ASCII row names, zero-padded
+};
+static_assert(sizeof(KerfurDripPayload) == 200, "KerfurDripPayload must be 200 bytes");
+static_assert(sizeof(KerfurDripPayload) <= 256 - 20 - 8, "KerfurDripPayload must fit one datagram");
 
 // A swinging lid's pose (SwingerPose): the lid by the container lane's key, its world transform.
 struct SwingerPosePayload {

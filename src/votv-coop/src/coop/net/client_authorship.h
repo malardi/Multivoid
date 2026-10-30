@@ -117,6 +117,7 @@ constexpr ClientAuthorship AuthorshipOf(ReliableKind k) {
     case ReliableKind::BloodDecal:
     case ReliableKind::DirtHole:
     case ReliableKind::PryCrowbar:
+    case ReliableKind::KerfurDrip:
     case ReliableKind::PeerLevel:
     case ReliableKind::LogChunk:
     case ReliableKind::SwingerPose:
