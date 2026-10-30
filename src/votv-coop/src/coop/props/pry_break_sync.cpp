@@ -59,12 +59,16 @@ UE_FACT_FN(kRowBrokenFire, "pry_break_sync", nullptr, L"broken_fire", AnyClass);
 // fuel field.
 UE_FACT_FN(kRowFuelUp, "pry_break_sync", nullptr, L"fuelUp", AnyClass);
 UE_FACT_FN(kRowGascanFuel, "pry_break_sync", nullptr, L"gascanFuel", AnyClass);
+// A toolbox repairs through its target's toolboxFix (the ATV's health, the main desk's screen, and whatever else
+// implements the objects interface's verb) once its timer runs out.
+UE_FACT_FN(kRowToolboxFix, "pry_break_sync", nullptr, L"toolboxFix", AnyClass);
 
 constexpr int kTagPry        = 0x50425059;  // 'PBPY'
 constexpr int kTagBroken     = 0x50424252;  // 'PBBR'
 constexpr int kTagBrokenFire = 0x50424246;  // 'PBBF'
 constexpr int kTagFuelUp     = 0x50424655;  // 'PBFU'
 constexpr int kTagGascanFuel = 0x50424746;  // 'PBGF'
+constexpr int kTagToolboxFix = 0x50425446;  // 'PBTF'
 // The host pours from its own gas can nearest the target, within this of it: the client's can is in the
 // client's hand beside the target, and its copy on the host is driven there.
 constexpr float kFuelCanReachUU = 600.0f;
@@ -92,6 +96,7 @@ void* g_plankClass     = nullptr;  // prop_pryablePlank_C
 void* g_containerClass = nullptr;  // prop_container_C
 void* g_gascanClass    = nullptr;  // prop_gascan_C: its broken() is a fuel can's explosion
 void* g_barrelClass    = nullptr;  // prop_bombBarrel_C: its broken() is the barrel's explosion
+void* g_toolboxClass   = nullptr;  // prop_toolbox_C: the tool a toolboxFix is handed
 
 struct PendingPlank {
     void*    prop = nullptr;
@@ -254,13 +259,18 @@ sg::Verdict OnFuelPre(const sg::Call& call) {
                                                         : PR::GetInteractableKeyString(call.object);
     if (key.empty() || key == L"None") key = PR::GetKeyString(call.object);
     if (key.empty() || key == L"None") {
-        UE_LOGW("[FUEL] %ls %p has no key the host could resolve -- its fuel stays here alone",
-                R::ClassNameOf(call.object).c_str(), call.object);
-        return sg::Verdict::Run;
+        // No Key (a level fixture: the desk's screen, a pipe): named by its class, and the host takes its own
+        // instance of that class nearest the sender.
+        key = L"#" + R::ClassNameOf(call.object);
+        if (key.size() > 31) {
+            UE_LOGW("[FUEL] %ls %p has no key and too long a class name -- its verb stays here alone",
+                    R::ClassNameOf(call.object).c_str(), call.object);
+            return sg::Verdict::Run;
+        }
     }
     coop::net::ContainerBreakIntentPayload p{};
     coop::net::WireKeyFromString(key, p.key);
-    p.verb = (call.tag == kTagFuelUp) ? CB::kFuelUp : CB::kGascanFuel;
+    p.verb = (call.tag == kTagFuelUp) ? CB::kFuelUp : (call.tag == kTagToolboxFix) ? CB::kToolboxFix : CB::kGascanFuel;
     if (call.locals && call.function) {
         static R::ParamOffset sBack(L"back");
         const int32_t bo = sBack.Of(call.function);
@@ -268,7 +278,8 @@ sg::Verdict OnFuelPre(const sg::Call& call) {
     }
     if (s->SendReliable(coop::net::ReliableKind::ContainerBreakIntent, &p, sizeof(p))) {
         ++g_fuelsSent;
-        UE_LOGI("[FUEL] CLIENT SENT a pour%s into %ls key='%ls' (#%llu)", p._pad[0] ? " back" : "",
+        UE_LOGI("[FUEL] CLIENT SENT a %s%s into %ls key='%ls' (#%llu)",
+                p.verb == CB::kToolboxFix ? "toolbox repair" : "pour", p._pad[0] ? " back" : "",
                 R::ClassNameOf(call.object).c_str(), key.c_str(), static_cast<unsigned long long>(g_fuelsSent));
     }
     return sg::Verdict::Run;
@@ -276,13 +287,13 @@ sg::Verdict OnFuelPre(const sg::Call& call) {
 
 struct NearestCan { ue_wrap::FVector at; void* best; float bestD2; };
 
-void* NearestGascan(void* target) {
+// The live instance of exactly `cls` nearest `at`, within `reach`, or null.
+void* NearestOf(void* cls, const ue_wrap::FVector& at, float reach) {
     NearestCan n{};
-    if (!E::TryGetActorLocation(target, n.at)) return nullptr;
-    n.bestD2 = kFuelCanReachUU * kFuelCanReachUU;
-    if (!g_gascanClass) g_gascanClass = ue_wrap::object_index::ClassByName(L"prop_gascan_C");
-    if (!g_gascanClass) return nullptr;
-    ue_wrap::object_index::ForEachInstance(g_gascanClass, [](void* ctx, void* obj, int32_t) {
+    n.at = at;
+    n.bestD2 = reach * reach;
+    if (!cls) return nullptr;
+    ue_wrap::object_index::ForEachInstance(cls, [](void* ctx, void* obj, int32_t) {
         auto* nc = static_cast<NearestCan*>(ctx);
         ue_wrap::FVector a{};
         if (!E::TryGetActorLocation(obj, a)) return;
@@ -293,14 +304,32 @@ void* NearestGascan(void* target) {
     return n.best;
 }
 
+void* NearestGascan(void* target) {
+    ue_wrap::FVector at{};
+    if (!E::TryGetActorLocation(target, at)) return nullptr;
+    if (!g_gascanClass) g_gascanClass = ue_wrap::object_index::ClassByName(L"prop_gascan_C");
+    return NearestOf(g_gascanClass, at, kFuelCanReachUU);
+}
+
 bool ExecuteFuel(coop::net::Session& s, const coop::net::ContainerBreakIntentPayload& p, uint8_t slot) {
     const std::wstring key = coop::net::StringFromWireKey(p.key);
-    void* target = key.empty() ? nullptr : coop::prop_key_index::Find(key);
-    if (!target && !key.empty()) {
-        const coop::atv_sync::AtvEntry* atv = coop::atv_sync::FindEntry(key);
-        if (atv && atv->actor && R::IsLiveByIndex(atv->actor, atv->idx)) target = atv->actor;
+    void* target = nullptr;
+    if (!key.empty() && key[0] == L'#') {
+        // A fixture by its class: this host's instance nearest the sender's body.
+        coop::RemotePlayer* rp = coop::players::Registry::Get().Puppet(slot);
+        void* puppet = (rp && rp->valid()) ? rp->GetActor() : nullptr;
+        ue_wrap::FVector at{};
+        if (!puppet || !E::TryGetActorLocation(puppet, at)) return false;  // no body yet: wait
+        target = NearestOf(ue_wrap::object_index::ClassByName(key.c_str() + 1), at, kBreakReachUU);
+    } else {
+        target = key.empty() ? nullptr : coop::prop_key_index::Find(key);
+        if (!target && !key.empty()) {
+            const coop::atv_sync::AtvEntry* atv = coop::atv_sync::FindEntry(key);
+            if (atv && atv->actor && R::IsLiveByIndex(atv->actor, atv->idx)) target = atv->actor;
+        }
     }
-    const wchar_t* verb = (p.verb == CB::kFuelUp) ? L"fuelUp" : L"gascanFuel";
+    const bool fix = p.verb == CB::kToolboxFix;
+    const wchar_t* verb = (p.verb == CB::kFuelUp) ? L"fuelUp" : fix ? L"toolboxFix" : L"gascanFuel";
     void* fn = target ? R::FindDispatchFunctionCached(R::ClassOf(target), verb) : nullptr;
     if (!fn) {
         UE_LOGI("[FUEL] DENY slot=%u key='%ls' -- %s", static_cast<unsigned>(slot), key.c_str(),
@@ -315,8 +344,16 @@ bool ExecuteFuel(coop::net::Session& s, const coop::net::ContainerBreakIntentPay
                 coop::element::OutcomeName(subject.outcome), subject.distUU, subject.reachUU);
         return true;
     }
-    void* can = NearestGascan(target);
-    if (!can || can == target) {
+    void* can = nullptr;
+    if (fix) {
+        // The toolbox the sender worked with is the client's own; the host hands the verb its nearest one, or none.
+        ue_wrap::FVector at{};
+        if (!g_toolboxClass) g_toolboxClass = ue_wrap::object_index::ClassByName(L"prop_toolbox_C");
+        if (E::TryGetActorLocation(target, at)) can = NearestOf(g_toolboxClass, at, kBreakReachUU);
+    } else {
+        can = NearestGascan(target);
+    }
+    if (!fix && (!can || can == target)) {
         UE_LOGI("[FUEL] DENY slot=%u key='%ls' -- no gas can of the host's within %.0f uu of it",
                 static_cast<unsigned>(slot), key.c_str(), kFuelCanReachUU);
         return true;
@@ -337,7 +374,7 @@ bool ExecuteFuel(coop::net::Session& s, const coop::net::ContainerBreakIntentPay
             canSet = true;
         }
     }
-    const bool ran = canSet && ue_wrap::Call(target, f);
+    const bool ran = (canSet || fix) && ue_wrap::Call(target, f);
     if (ran) ++g_fuelsRan;
     UE_LOGI("[FUEL] host ran slot %u's %ls%s on key='%ls' from its can %p: %s", static_cast<unsigned>(slot), verb,
             p._pad[0] ? " (back)" : "", key.c_str(), can, ran ? "ran" : "did not run");
@@ -346,7 +383,7 @@ bool ExecuteFuel(coop::net::Session& s, const coop::net::ContainerBreakIntentPay
 
 // False keeps the break at its sender's queue head (no body to measure its reach from yet).
 bool ExecuteBreak(coop::net::Session& s, const coop::net::ContainerBreakIntentPayload& p, uint8_t slot) {
-    if (p.verb == CB::kFuelUp || p.verb == CB::kGascanFuel) return ExecuteFuel(s, p, slot);
+    if (p.verb == CB::kFuelUp || p.verb == CB::kGascanFuel || p.verb == CB::kToolboxFix) return ExecuteFuel(s, p, slot);
     const std::wstring key = coop::net::StringFromWireKey(p.key);
     void* box = key.empty() ? nullptr : coop::prop_key_index::Find(key);
     if (!box || !IsBreakable(box)) {
@@ -386,6 +423,7 @@ const Watch kWatches[] = {
     { &kRowBrokenFire,  kTagBrokenFire, &OnBreakPre, "broken_fire" },
     { &kRowFuelUp,      kTagFuelUp,     &OnFuelPre,  "fuelUp" },
     { &kRowGascanFuel,  kTagGascanFuel, &OnFuelPre,  "gascanFuel" },
+    { &kRowToolboxFix,  kTagToolboxFix, &OnFuelPre,  "toolboxFix" },
 };
 constexpr int kWatchCount = static_cast<int>(sizeof(kWatches) / sizeof(kWatches[0]));
 Reg  g_reg[kWatchCount] = {};

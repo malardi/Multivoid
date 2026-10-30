@@ -1842,7 +1842,8 @@ static_assert(sizeof(DoorVerbIntentPayload) <= 256 - 20 - 8,
 namespace container_break {
 constexpr uint8_t kBroken = 0; constexpr uint8_t kBrokenFire = 1;
 constexpr uint8_t kFuelUp = 2; constexpr uint8_t kGascanFuel = 3;
-constexpr uint8_t kLast = kGascanFuel;
+constexpr uint8_t kToolboxFix = 4;  // a toolbox's repair (toolboxFix); a key "#Class" names an unkeyed fixture by class
+constexpr uint8_t kLast = kToolboxFix;
 }
 struct ContainerBreakIntentPayload {
     WireKey  key;        // 32 -- the container's prop key
