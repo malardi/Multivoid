@@ -19,6 +19,7 @@
 #include "coop/session/net_pump.h"  // IsInAnnouncedWorld: a client's own world load runs natively
 
 #include "ue_wrap/actors/prop.h"
+#include "ue_wrap/devices/atv.h"             // an ATV's Key, as the ATV lane reads it
 #include "ue_wrap/actors/prop_flags.h"
 #include "ue_wrap/core/call.h"            // ParamFrame / Call (the host's pour)
 #include "ue_wrap/core/log.h"
@@ -249,7 +250,8 @@ sg::Verdict OnFuelPre(const sg::Call& call) {
     if (!s || !s->connected() || s->role() != coop::net::Role::Client) return sg::Verdict::Run;
     if (!call.object || !coop::net_pump::IsInAnnouncedWorld(call.object)) return sg::Verdict::Run;
     // An ATV is keyed by its prop Key (the ATV lane's own index names it so), which the interactable read misses.
-    std::wstring key = PR::GetInteractableKeyString(call.object);
+    std::wstring key = ue_wrap::atv::IsAtv(call.object) ? ue_wrap::atv::GetKeyString(call.object)
+                                                        : PR::GetInteractableKeyString(call.object);
     if (key.empty() || key == L"None") key = PR::GetKeyString(call.object);
     if (key.empty() || key == L"None") {
         UE_LOGW("[FUEL] %ls %p has no key the host could resolve -- its fuel stays here alone",
