@@ -88,6 +88,8 @@ UE_FACT_FN(kRowReceiveTickTentacleBallsFollower, "spawn_authority", L"tentacleBa
            Declared);
 UE_FACT_FN(kRowReceiveBeginPlaySuperEgger, "spawn_authority", L"superEgger_C", L"ReceiveBeginPlay", Declared);
 UE_FACT_FN(kRowSpwnSuperEgger, "spawn_authority", L"superEgger_C", L"spwn", Declared);
+UE_FACT_FN(kRowEatOverlapWoodchipper, "spawn_authority", L"woodchipper_C",
+           L"BndEvt__eat_K2Node_ComponentBoundEvent_0_ComponentBeginOverlapSignature__DelegateSignature", Declared);
 
 // One row: the facts row a client must not run, and the tag its refusal log carries.
 struct Row {
@@ -95,6 +97,10 @@ struct Row {
     const char* tag;
 };
 constexpr Row kRows[] = {
+    // The wood chipper's mouth: what falls in is destroyed there and its chips are minted by the chipper's own
+    // dropTrash, on the peer whose overlap fired. A client's chipping destroyed the prop for everyone but minted
+    // its chips for itself alone; the host's overlap does the eating, and its chips cross as host births.
+    {&kRowEatOverlapWoodchipper,          "woodchipper.eat"},
     {&kRowSpawnMushroomMaster,            "mushroomMaster.Spawn"},
     {&kRowSpawnMushroomSpawner,           "mushroomSpawner.Spawn"},
     // A late-game class: keyed by name, the watch holds from the class's first body, whenever it loads.

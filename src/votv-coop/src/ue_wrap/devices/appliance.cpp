@@ -59,6 +59,9 @@ Desc g_descs[] = {
     { L"kitchen_C",        L"Active",       L"upd",       nullptr, nullptr   },
     { L"serverBox_C",      L"active",       L"visual",    nullptr, L"active" },
     { L"wallunit_tapes_C", L"Active",       L"upd",       nullptr, nullptr   },
+    // The wood chipper: its red button (actionOptionIndex on button_del) flips `active` and calls checkActive,
+    // which starts or stops the motor from it and the fuel. Its chipping is the host's (coop/world/spawn_authority).
+    { L"woodchipper_C",    L"active",       L"checkActive", nullptr, nullptr },
 };
 constexpr int kNumDescs = sizeof(g_descs) / sizeof(g_descs[0]);
 
