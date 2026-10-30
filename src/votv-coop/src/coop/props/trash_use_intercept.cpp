@@ -76,6 +76,14 @@ bool g_grabObserverInstalled = false;  // InpActEvt_use PRE registration latch (
 // release. Game thread only.
 bool g_cancelPairedUseRelease = false;
 
+// The element id of a resting garbage clump the host drives here, or kInvalidId. A clump this
+// client sees is always the host's mirror (the client authors no trash morph), so an eid is the
+// whole test; a clump no eid owns is left to the native use. Game thread.
+coop::element::ElementId BoundClumpEid(void* aimed) {
+    if (!aimed || !ue_wrap::prop::IsGarbageClump(aimed)) return coop::element::kInvalidId;
+    return coop::remote_prop::ResolveMirrorEidByActor(aimed);
+}
+
 // The client-grab interceptor on the use input. A chip-pile grab is the use press, whose
 // handler calls the looked-at actor's grab (spawn a clump, pick it up, destroy the pile)
 // blueprint-internally, invisible to the ProcessEvent detour; the input event itself is
@@ -101,7 +109,7 @@ static bool OnPileUseDenySuppress(void* self, void* /*params*/) {
         // Any pile aim, bound or unbound, mirrors the grab interceptor, which cancels the unbound
         // press too; this seam must die with it or the deny plays alone.
         void* aimed = ue_wrap::engine::ReadMainPlayerLookAtActor(self);
-        cancel = aimed && ue_wrap::prop::IsChipPile(aimed);
+        cancel = (aimed && ue_wrap::prop::IsChipPile(aimed)) || BoundClumpEid(aimed) != coop::element::kInvalidId;
     }
     if (cancel) g_cancelPairedUseRelease = true;
     return cancel;  // false: not a pile interaction -> native use runs (devices, other interactions, SP deny)
@@ -204,6 +212,26 @@ static bool OnPileUseIntercept(void* self, void* /*params*/) {
                 UE_LOGW("[GRAB-INTENT] CLIENT E-PRESS on UNBOUND native pile %p -- native use CANCELLED "
                         "(no eid owns it: bind-window; it binds or retires shortly, re-press then)",
                         aimedNative);
+                g_cancelPairedUseRelease = true;
+                return true;
+            }
+        }
+        // A clump lying on the ground (kicked out of a pile, or a throw that came to rest before it
+        // re-piled) is the host's mirror here: kinematic, so the native pickup -- which takes only a
+        // simulating body -- does nothing, and the ball could never be collected. The grab goes to
+        // the host as the same intent; the host's puppet picks the clump up and the carry runs as
+        // one that began on a pile.
+        {
+            void* aimedNative = ue_wrap::engine::ReadMainPlayerLookAtActor(self);
+            const coop::element::ElementId ceid = BoundClumpEid(aimedNative);
+            if (ceid != coop::element::kInvalidId) {
+                coop::prop_sound::PlayUseClick(aimedNative);
+                ue_wrap::FVector cloc{};
+                const bool clocRead = ue_wrap::engine::TryGetActorLocation(aimedNative, cloc);
+                UE_LOGI("[GRAB-INTENT] CLIENT E-PRESS on a RESTING clump eid=%u at(%.1f,%.1f,%.1f)%s -> native use "
+                        "CANCELLED + requesting grab from host",
+                        static_cast<unsigned>(ceid), cloc.X, cloc.Y, cloc.Z, clocRead ? "" : " (unread)");
+                coop::trash_channel::SendGrabIntent(*s, static_cast<uint32_t>(ceid));
                 g_cancelPairedUseRelease = true;
                 return true;
             }

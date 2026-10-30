@@ -23,6 +23,7 @@
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/actors/prop.h"        // IsChipPile / IsGarbageClump / GetChipType
 #include "ue_wrap/core/reflection.h"  // ClassNameOf / ClassOf / FindFunction
+#include "ue_wrap/core/reflection_props.h"  // FindPropertyOffset (the clump's holdPlayer)
 #include "ue_wrap/core/types.h"       // FVector / FRotator
 
 #include <chrono>     // wrong-class deny heal debounce (per-eid, 5 s)
@@ -192,6 +193,64 @@ static void Refuse(coop::net::Session& s, uint8_t slot, uint32_t eid, uint16_t r
 
 static void LetGo(uint32_t eid, void* puppet, void* clump);   // below: the one release of a puppet-held clump
 
+// A client's grab of a clump lying on the ground: a ball kicked out of a pile by a body walking
+// through it, or a throw that came to rest before it re-piled. The client's copy is a kinematic
+// mirror the native pickup refuses, so without this lane such a ball could never be collected
+// there. The host's puppet picks the clump up with the player's own direct pickup -- the call a
+// pile's grab ends with on the clump it spawns -- and from there the carry is the one a pile grab
+// starts: the holder recorded, a to-clump convert that confirms the requester's carry, the
+// puppet's hand drive. Gates 1 and 2 and the reach check ran in the caller. Host, game thread.
+static void GrabRestingClump(coop::net::Session& s, uint32_t eid, uint16_t reqId, uint8_t senderSlot,
+                             void* puppet, void* clump) {
+    // The host's own hand opens no carry latch, so gate 1 cannot see it.
+    if (void* host = coop::players::Registry::Get().Local()) {
+        if (ue_wrap::engine::IsMainPlayerGrabbing(host, clump)) {
+            UE_LOGI("[GRAB-INTENT] DENIED eid=%u slot=%u -- the clump is in the host's hand", eid, senderSlot);
+            Refuse(s, senderSlot, eid, reqId, coop::net::GrabRefusedReason::AlreadyHeld);
+            return;
+        }
+    }
+    void* pcls = R::ClassOf(puppet);
+    void* pickFn = pcls ? R::FindFunction(pcls, L"pickupObjectDirect") : nullptr;
+    if (!pickFn) {
+        UE_LOGW("[GRAB-INTENT] DENIED eid=%u slot=%u -- pickupObjectDirect UFunction not found", eid, senderSlot);
+        Refuse(s, senderSlot, eid, reqId, coop::net::GrabRefusedReason::NoVerb);
+        return;
+    }
+    // The holder, as the pile's own grab writes it on the clump it spawns.
+    const int32_t holdOff = R::FindPropertyOffset(R::ClassOf(clump), L"holdPlayer");
+    if (holdOff >= 0) *reinterpret_cast<void**>(static_cast<uint8_t*>(clump) + holdOff) = puppet;
+    {
+        ue_wrap::ParamFrame pf(pickFn);
+        pf.Set<void*>(L"Actor", clump);
+        pf.Set<void*>(L"Component", nullptr);
+        ue_wrap::Call(puppet, pf);
+    }
+    ue_wrap::engine::MainPlayerGrabState gs{};
+    if (!ue_wrap::engine::ReadMainPlayerGrabState(puppet, gs) || gs.grabbingActor != clump) {
+        UE_LOGW("[GRAB-INTENT] DENIED eid=%u slot=%u -- pickupObjectDirect ran on the resting clump %p but the "
+                "puppet does not hold it (grabbing_actor=%p)", eid, senderSlot, clump, gs.grabbingActor);
+        if (holdOff >= 0) *reinterpret_cast<void**>(static_cast<uint8_t*>(clump) + holdOff) = nullptr;
+        Refuse(s, senderSlot, eid, reqId, coop::net::GrabRefusedReason::NoClump);
+        return;
+    }
+    ue_wrap::FVector loc{};
+    ue_wrap::FRotator rot{};
+    if (!ue_wrap::engine::TryGetActorLocation(clump, loc) || !ue_wrap::engine::TryGetActorRotation(clump, rot)) {
+        UE_LOGW("[GRAB-INTENT] DENIED eid=%u slot=%u -- the resting clump's pose could not be read; the puppet's "
+                "handle lets go", eid, senderSlot);
+        LetGo(eid, puppet, clump);
+        Refuse(s, senderSlot, eid, reqId, coop::net::GrabRefusedReason::NoClump);
+        return;
+    }
+    g_heldBy[eid] = senderSlot;
+    OnHostConvert(s, static_cast<coop::element::ElementId>(eid), coop::net::propconvert_kind::kToClump,
+                  clump, loc, rot, ue_wrap::prop::GetChipType(clump));
+    coop::puppet_carry_drive::NotePuppetHeld(static_cast<coop::element::ElementId>(eid), senderSlot, clump, rot);
+    UE_LOGI("[GRAB-INTENT] SUCCESS eid=%u clump=%p slot=%u -- a RESTING clump picked up by the puppet; ToClump "
+            "broadcast + hand-drive armed", eid, clump, senderSlot);
+}
+
 void OnGrabIntent(coop::net::Session& s, uint32_t eid, uint16_t reqId, uint8_t senderSlot) {
     if (eid == 0u || eid == coop::element::kInvalidId) return;
     // Gate 1, the door can-open analog: already carrying means mid-hold, so deny. Every refusal
@@ -275,6 +334,10 @@ void OnGrabIntent(coop::net::Session& s, uint32_t eid, uint16_t reqId, uint8_t s
         dp.elementId = eid;
         s.SendPropDestroy(dp);
         Refuse(s, senderSlot, eid, reqId, coop::net::GrabRefusedReason::Unresolvable);
+        return;
+    }
+    if (sub.outcome == coop::element::IntentOutcome::Ok && pile && ue_wrap::prop::IsGarbageClump(pile)) {
+        GrabRestingClump(s, eid, reqId, senderSlot, puppet, pile);
         return;
     }
     // The wrong-type outcome is checked first and short-circuits: an eid naming a non-prop Element
