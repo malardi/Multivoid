@@ -145,6 +145,10 @@ void* Target(const std::string& t) {
         return off < 0 ? nullptr : *reinterpret_cast<void**>(static_cast<char*>(gi) + off);
     }
     if (t.rfind("C:", 0) == 0) return R::FindObjectByClass(Wide(t.substr(2)).c_str());
+    if (t.rfind("puppet:", 0) == 0) {  // a peer's body here, by slot
+        auto& p = coop::puppet_drive::Puppet(std::atoi(t.substr(7).c_str()));
+        return p.valid() ? p.GetActor() : nullptr;
+    }
     if (t.rfind("near:", 0) == 0) {  // the nearest live actor whose class name holds the text
         const auto v = ActorsAround(Lower(t.substr(5)), 1e9f);
         return v.empty() ? nullptr : v.front().obj;
@@ -346,6 +350,24 @@ void Run(long long id, const std::string& verb, const std::string& rest) {
         if (verb == "fields") { Answer(id, true, Fields(obj, Lower(prop))); return; }
         if (verb == "set" && !WriteValue(R::ClassOf(obj), obj, Wide(prop), val)) { Answer(id, false, "set failed " + prop); return; }
         Answer(id, true, t + "." + prop + " = " + ReadValue(R::ClassOf(obj), obj, Wide(prop)));
+    } else if (verb == "rows" || verb == "addrow") {
+        // rows <target> <field>: a TArray<FString> read out; addrow <target> <field> <text>: one row appended
+        // ('+' for a space), as a device writes a file onto a disc.
+        std::string t, prop, text;
+        in >> t >> prop >> text;
+        for (char& c : text) if (c == '+') c = ' ';
+        void* obj = Target(t);
+        if (!obj) { Answer(id, false, verb + ": no target " + t); return; }
+        const int32_t off = R::FindPropertyOffset(R::ClassOf(obj), Wide(prop).c_str());
+        if (off < 0) { Answer(id, false, verb + ": no field " + prop); return; }
+        std::vector<std::wstring> v = ue_wrap::field_io::ReadFStringArrayField(obj, off);
+        if (verb == "addrow") {
+            v.push_back(Wide(text));
+            if (!ue_wrap::field_io::WriteFStringArrayField(obj, off, v)) { Answer(id, false, "addrow: write failed"); return; }
+        }
+        std::string all;
+        for (const auto& w : v) all += (all.empty() ? "" : " | ") + Narrow(w);
+        Answer(id, true, t + "." + prop + " n=" + std::to_string(v.size()) + " [" + all.substr(0, 300) + "]");
     } else if (verb == "call") {
         std::string t, fn;
         in >> t >> fn;

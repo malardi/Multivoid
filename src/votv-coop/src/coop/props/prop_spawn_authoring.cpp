@@ -52,6 +52,11 @@ void*    g_sawUberFn = nullptr;
 // hand. Without this a client's pry took the crowbar out of everyone else's world for good.
 R::FName g_pryEndName{0, 0};      // "end" on pryingCrowbar_C
 void*    g_pryEndFn = nullptr;
+// A snack eaten to its last use: prop_snack_C::eat mints the leftover (the empty bottle, the wrapper, the core)
+// and puts it in the eater's hand, on the eater's machine alone. A client's empty beer bottle existed for that
+// client only, held, dropped and thrown where no one else could see it.
+R::FName g_eatName{0, 0};         // "eat" on prop_snack_C
+void*    g_eatFn = nullptr;
 
 // Is `fn` a function named `name` whose owner (a UFunction's Outer is its declaring class) is
 // called `className`? Both compares are allocation-free: the FName pair is two ints, and the
@@ -124,6 +129,8 @@ void Install(bool isClient) {
         g_sawUberName = ue_wrap::fname_utils::StringToFName(L"ExecuteUbergraph_prop_hacksaw");
     if (g_pryEndName.ComparisonIndex == 0)
         g_pryEndName = ue_wrap::fname_utils::StringToFName(L"end");
+    if (g_eatName.ComparisonIndex == 0)
+        g_eatName = ue_wrap::fname_utils::StringToFName(L"eat");
 
     ue_wrap::facts::Resolved gamemodeSpawn;
     if (!g_gamemodeSpawnFn) {
@@ -163,6 +170,13 @@ bool BirthIsPlayerAuthored() {
     if (caller == g_toolUberFn) return true;
     if (caller == g_sawUberFn) return true;
     if (caller == g_pryEndFn) return true;
+    if (caller == g_eatFn) return true;
+    if (!g_eatFn && FunctionIs(const_cast<void*>(caller), g_eatName, L"prop_snack_C")) {
+        g_eatFn = const_cast<void*>(caller);
+        UE_LOGI("prop_spawn_authoring: a snack's eat() is the calling frame -- the leftover of an eaten snack is a "
+                "player's birth");
+        return true;
+    }
     if (!g_pryEndFn && FunctionIs(const_cast<void*>(caller), g_pryEndName, L"pryingCrowbar_C")) {
         g_pryEndFn = const_cast<void*>(caller);
         UE_LOGI("prop_spawn_authoring: a plank crowbar's end() is the calling frame -- the crowbar a pry gives "
