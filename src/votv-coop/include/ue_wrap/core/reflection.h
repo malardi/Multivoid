@@ -50,6 +50,8 @@ void NoteDispatchFault(void* object, void* function);
 // mod-originated calls from the game's own; the context object cannot, since our re-arms target
 // game objects.
 bool InCoopDispatch();
+// DEV ONLY: dispatches up to `depth` deep read as the game's own in InCoopDispatch (0 restores). Game thread.
+void SetGameAttributedDepth(int depth);
 
 // The call-attribution census (a dev instrument): when armed, CallFunction tallies its target
 // UFunction so the dispatches our code authors per frame can be attributed to the polls that

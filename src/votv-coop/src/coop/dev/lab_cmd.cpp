@@ -357,7 +357,9 @@ void Run(long long id, const std::string& verb, const std::string& rest) {
         in >> t >> x >> y >> z;
         void* obj = Target(t);
         if (!obj) { Answer(id, false, "move: no target " + t); return; }
-        const bool ok = ue_wrap::engine::TeleportTo(obj, ue_wrap::FVector{x, y, z}, ue_wrap::FRotator{0.f, 0.f, 0.f});
+        // The engine's teleport refuses some actors (a simulating prop far from where it was): a snap then.
+        const bool ok = ue_wrap::engine::TeleportTo(obj, ue_wrap::FVector{x, y, z}, ue_wrap::FRotator{0.f, 0.f, 0.f}) ||
+                        ue_wrap::engine::SetActorLocation(obj, ue_wrap::FVector{x, y, z});
         Answer(id, ok, "move " + t);
     } else if (verb == "rows" || verb == "addrow") {
         // rows <target> <field>: a TArray<FString> read out; addrow <target> <field> <text>: one row appended
@@ -404,15 +406,19 @@ void Run(long long id, const std::string& verb, const std::string& rest) {
         std::string all;
         for (int32_t i = 0; i < arr->num && i < 32; ++i) all += (i ? " | " : "") + Narrow(R::ToString(arr->data[i]));
         Answer(id, true, t + "." + prop + " n=" + std::to_string(arr->num) + " [" + all + "]");
-    } else if (verb == "call") {
+    } else if (verb == "call" || verb == "gcall") {
         std::string t, fn;
         in >> t >> fn;
         for (char& c : fn) if (c == '+') c = ' ';  // a function name with spaces is written with '+'
         void* obj = Target(t);
         if (!obj) { Answer(id, false, "call: no target " + t); return; }
         std::string out;
+        // gcall: the call stands for the game's own (a player's verb), so the lanes that ignore our own
+        // applies see it as a change to send.
+        if (verb == "gcall") R::SetGameAttributedDepth(1);
         const bool ok = CallWithArgs(obj, fn, in, out);
-        Answer(id, ok, "call " + t + "." + fn + out);
+        if (verb == "gcall") R::SetGameAttributedDepth(0);
+        Answer(id, ok, verb + " " + t + "." + fn + out);
     } else if (verb == "look" || verb == "face") {
         // look <yaw> [pitch]: turn this player's view; face <slot>: turn it toward that peer's puppet.
         float yaw = 0.f, pitch = 0.f;

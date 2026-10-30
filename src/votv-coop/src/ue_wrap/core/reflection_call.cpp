@@ -22,7 +22,11 @@ struct CoopDispatchScope {
 };
 }  // namespace
 
-bool InCoopDispatch() { return t_coopDispatchDepth > 0; }
+// A dev caller (the lab's gcall) can have its outermost dispatch stand for the game's own: the depths up to
+// this one then read as the game's, and only calls nested deeper (our handlers' own) as ours.
+thread_local int t_gameAttributedDepth = 0;
+bool InCoopDispatch() { return t_coopDispatchDepth > t_gameAttributedDepth; }
+void SetGameAttributedDepth(int depth) { t_gameAttributedDepth = depth; }
 
 // Coop-call attribution: which reflected calls make up the blueprint dispatches per frame our
 // code authors, keyed on the target UFunction, since that is what names the polling (a

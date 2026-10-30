@@ -258,6 +258,11 @@ sg::Verdict OnFuelPre(const sg::Call& call) {
     std::wstring key = ue_wrap::atv::IsAtv(call.object) ? ue_wrap::atv::GetKeyString(call.object)
                                                         : PR::GetInteractableKeyString(call.object);
     if (key.empty() || key == L"None") key = PR::GetKeyString(call.object);
+    // A key only names the target if the prop index holds it (a level fixture such as a pipe carries an
+    // interactable key no peer indexes, and the host would find nothing under it): otherwise the class names it.
+    if (!key.empty() && key != L"None" && !ue_wrap::atv::IsAtv(call.object) &&
+        coop::prop_key_index::Find(key) != call.object)
+        key.clear();
     if (key.empty() || key == L"None") {
         // No Key (a level fixture: the desk's screen, a pipe): named by its class, and the host takes its own
         // instance of that class nearest the sender.
