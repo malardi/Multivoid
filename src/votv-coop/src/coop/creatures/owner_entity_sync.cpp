@@ -51,8 +51,8 @@ std::atomic<coop::net::Session*> g_session{nullptr};
 // any case: the observer matches the engine's own name, read from the loaded class (the spawner references it).
 constexpr const wchar_t* kOwnerEntityClasses[] = {
     L"eyer_C",                  // classId 0: the night "Eyes" stalker (ticker_eyers)
-    L"grayboar_C",              // 1: the gray boar (grayBoarSpawner, around the local camera)
-    L"grayBoar_overcharged_C",  // 2: its overcharged form (the same spawner)
+    L"grayboar_C",              // 1: the gray boar -- a prop: the prop lane carries it, so the observer passes it by
+    L"grayBoar_overcharged_C",  // 2: its overcharged form -- likewise, when it is a prop
     L"ghostcar_C",              // 3: the ghost car (ghostcarSpawner)
     L"susDirtHole_C",           // 4: the suspicious dirt hole (ticker_susHoleSpawner, around the local camera)
     L"NewBlueprint7_C",         // 5: bp7 (ticker_bp7Spawner, around the local camera)
@@ -173,6 +173,16 @@ void OnSpawnPost(void* /*self*/, void* /*function*/, void* params) {
     void* actor = *reinterpret_cast<void**>(
         reinterpret_cast<uint8_t*>(params) + g_returnParamOff);
     if (!actor || !R::IsLive(actor)) return;
+    // A prop is the prop lane's (a gray boar is a prop_C): mirrored here too it would stand twice on the others.
+    static void* s_propCls = nullptr;
+    if (!s_propCls) s_propCls = ue_wrap::object_index::ClassByName(L"prop_C");
+    if (s_propCls && R::IsDescendantOfAny(actorClass, &s_propCls, 1)) {
+        static uint32_t s_saidProp = 0;
+        if (s_saidProp++ < 4)
+            UE_LOGI("owner_entity: '%ls' is a prop -- the prop lane carries it, not this one",
+                    kOwnerEntityClasses[classId]);
+        return;
+    }
     if (g_owned.size() >= kMaxOwned) {
         UE_LOGW("owner_entity: owned cap %zu hit -- NOT broadcasting this '%ls' spawn",
                 kMaxOwned, kOwnerEntityClasses[classId]);

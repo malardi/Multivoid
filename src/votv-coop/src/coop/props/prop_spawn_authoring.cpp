@@ -57,6 +57,11 @@ void*    g_pryEndFn = nullptr;
 // client only, held, dropped and thrown where no one else could see it.
 R::FName g_eatName{0, 0};         // "eat" on prop_snack_C
 void*    g_eatFn = nullptr;
+// A hole dug into a loot mound: the hole's BeginPlay (its ubergraph) mints the buried item from the mound's name
+// (or a rune) on the machine whose real mound it overlaps, the mound's owner. A client's treasure existed for that
+// client only.
+R::FName g_holeUberName{0, 0};    // "ExecuteUbergraph_dirthole" on dirthole_C
+void*    g_holeUberFn = nullptr;
 
 // Is `fn` a function named `name` whose owner (a UFunction's Outer is its declaring class) is
 // called `className`? Both compares are allocation-free: the FName pair is two ints, and the
@@ -131,6 +136,8 @@ void Install(bool isClient) {
         g_pryEndName = ue_wrap::fname_utils::StringToFName(L"end");
     if (g_eatName.ComparisonIndex == 0)
         g_eatName = ue_wrap::fname_utils::StringToFName(L"eat");
+    if (g_holeUberName.ComparisonIndex == 0)
+        g_holeUberName = ue_wrap::fname_utils::StringToFName(L"ExecuteUbergraph_dirthole");
 
     ue_wrap::facts::Resolved gamemodeSpawn;
     if (!g_gamemodeSpawnFn) {
@@ -171,6 +178,13 @@ bool BirthIsPlayerAuthored() {
     if (caller == g_sawUberFn) return true;
     if (caller == g_pryEndFn) return true;
     if (caller == g_eatFn) return true;
+    if (caller == g_holeUberFn) return true;
+    if (!g_holeUberFn && FunctionIs(const_cast<void*>(caller), g_holeUberName, L"dirthole_C")) {
+        g_holeUberFn = const_cast<void*>(caller);
+        UE_LOGI("prop_spawn_authoring: a dug hole's graph is the calling frame -- what a loot mound gives up is a "
+                "player's birth");
+        return true;
+    }
     if (!g_eatFn && FunctionIs(const_cast<void*>(caller), g_eatName, L"prop_snack_C")) {
         g_eatFn = const_cast<void*>(caller);
         UE_LOGI("prop_spawn_authoring: a snack's eat() is the calling frame -- the leftover of an eaten snack is a "
