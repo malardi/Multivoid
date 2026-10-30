@@ -355,7 +355,26 @@ void Run(long long id, const std::string& verb, const std::string& rest) {
         // look <yaw> [pitch]: turn this player's view; face <slot>: turn it toward that peer's puppet.
         float yaw = 0.f, pitch = 0.f;
         if (verb == "look") {
-            in >> yaw >> pitch;
+            // look <yaw> [pitch], or look at <target>: the camera turned onto that actor's origin.
+            std::string first;
+            in >> first;
+            if (first == "at") {
+                std::string t;
+                in >> t;
+                void* obj = Target(t);
+                ue_wrap::FVector there{};
+                if (!obj || !ue_wrap::engine::TryGetActorLocation(obj, there)) {
+                    Answer(id, false, "look: no target " + t);
+                    return;
+                }
+                const ue_wrap::FVector cam = ue_wrap::engine::GetCameraLocation();
+                const double dx = there.X - cam.X, dy = there.Y - cam.Y, dz = there.Z - cam.Z;
+                yaw = static_cast<float>(std::atan2(dy, dx) * 180.0 / 3.14159265358979);
+                pitch = static_cast<float>(std::atan2(dz, std::sqrt(dx * dx + dy * dy)) * 180.0 / 3.14159265358979);
+            } else {
+                yaw = static_cast<float>(std::atof(first.c_str()));
+                in >> pitch;
+            }
         } else {
             int slot = -1;
             in >> slot;
@@ -420,8 +439,9 @@ void Poll() {
     WIN32_FILE_ATTRIBUTE_DATA a{};
     if (!::GetFileAttributesExW(PathOf(L"_cmd.txt").c_str(), GetFileExInfoStandard, &a)) return;
     if (::CompareFileTime(&a.ftLastWriteTime, &g_lastWrite) == 0) return;
-    g_lastWrite = a.ftLastWriteTime;
     std::ifstream f(PathOf(L"_cmd.txt"));
+    if (!f.is_open()) return;   // mid-write by the sender: the next poll reads it whole
+    g_lastWrite = a.ftLastWriteTime;
     std::string line;
     while (std::getline(f, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
