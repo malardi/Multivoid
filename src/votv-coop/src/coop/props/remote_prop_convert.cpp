@@ -75,6 +75,22 @@ void* OnConvert(const coop::net::PropConvertPayload& payload, void* /*localPlaye
         if (wantClump) {
             UE_LOGI("[PILE] CLIENT convert %s eid=%u ctx=%u -- already a clump, idempotent no-op (echo/dup)",
                     edge, E, static_cast<unsigned>(payload.ctx));
+            // A ball that is not ours to carry and has drifted from the host's: a pile the host saw
+            // kicked into a ball and roll away arrives as one more to-clump at the ball's rest, and
+            // without the move the ball stayed where this client last saw it. Our own carry is left
+            // alone, as the comment above says why.
+            if (coop::trash_channel::ClientCarryEid() != static_cast<coop::element::ElementId>(E)) {
+                ue_wrap::FVector got{};
+                if (E::TryGetActorLocation(cur, got)) {
+                    const float dx = got.X - loc.X, dy = got.Y - loc.Y, dz = got.Z - loc.Z;
+                    const float drift = std::sqrt(dx * dx + dy * dy + dz * dz);
+                    if (drift > 50.f) {
+                        E::TeleportTo(cur, loc, rot);
+                        UE_LOGI("[PILE] CLIENT clump eid=%u moved to the host's rest (%.1f,%.1f,%.1f), drift was %.0f cm",
+                                E, loc.X, loc.Y, loc.Z, drift);
+                    }
+                }
+            }
             coop::trash_channel::NoteClientConvertObserved(E, true);
             return cur;
         }
