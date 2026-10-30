@@ -469,4 +469,8 @@ void OnGamemodeSpawn(void* gamemode) {
     LogGi("the gamemode's first spawn of this world (the entry pass is checked one frame later)");
 }
 
+bool TravelAsGameEntry(const std::wstring& level) {
+    return CallTravel(level, false, true, EqualsNoCase(level, kGameplayLevel) ? std::wstring() : std::wstring(kEntryPass));
+}
+
 }  // namespace coop::dimension_travel

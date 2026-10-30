@@ -53,6 +53,10 @@ bool PeerLevelKnown(int slot);                 // the peer has said its level at
 // walk is read there, and a client's runaway array emptied in a dimension.
 void OnGamemodeSpawn(void* gamemode);
 
+// The test lab's travel: lib_C::loadLevel(level) by this peer's player with the game's entry pass and
+// clearSubArea, the call the game's own entries make. Game thread.
+bool TravelAsGameEntry(const std::wstring& level);
+
 // Session start and end reset the state.
 void OnSessionStart();
 void OnDisconnect();

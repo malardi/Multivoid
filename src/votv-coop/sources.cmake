@@ -373,6 +373,7 @@ set(VOTVCOOP_SOURCES
     src/coop/world/blood_decal_sync.cpp
     src/coop/world/dimension_travel.cpp
     src/coop/comms/log_mirror.cpp
+    src/coop/dev/lab_cmd.cpp
     src/coop/creatures/walker_mirror.cpp
     src/coop/props/prop_synth_key.cpp
     src/coop/props/prop_fresh_spawn.cpp

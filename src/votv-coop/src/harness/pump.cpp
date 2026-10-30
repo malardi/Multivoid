@@ -1,6 +1,7 @@
 // harness/pump.cpp -- see harness/pump.h.
 
 #include "harness/pump.h"
+#include "coop/dev/lab_cmd.h"
 #include "ue_wrap/core/game_thread.h"  // TasksRun: the stall reporter's liveness count
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/walk_timer.h"   // the walk the game thread is inside
@@ -86,6 +87,7 @@ void PostMenuTick() {
 }
 
 void TickFrameTail() {
+    coop::dev::lab_cmd::Tick();  // the test lab's command channel; inert without its environment
     // Self-clearing and cheap when idle: an empty nameplate snapshot hides the HUD at the menu.
     coop::nameplate::Update();
     coop::dev::object_overlay::Update(); coop::dev::ragdoll_bone_overlay::Update();
