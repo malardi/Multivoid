@@ -85,6 +85,9 @@ void OnBeginPlayPost(const sg::Call& call) {
     auto* s = g_session.load(std::memory_order_acquire);
     if (!s || !s->running() || !s->connected()) return;
     if (!call.object || !IsHole(call.object)) return;
+    // A hole that is another actor's part (the suspicious hole carries one as its child actor) is built with its
+    // parent on every peer that has the parent: not a dig.
+    if (E::IsChildActor(call.object)) return;
     // A client's world load lays the save's holes: not a dig.
     if (s->role() == coop::net::Role::Client && !coop::net_pump::IsInAnnouncedWorld(call.object)) return;
     const uint64_t now = NowMs();
