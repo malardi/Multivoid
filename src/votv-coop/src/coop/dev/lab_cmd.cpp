@@ -149,6 +149,8 @@ void* Target(const std::string& t) {
 }
 
 // A property of `owner` (a UClass* or UFunction*) at `base`, as text.
+void* Target(const std::string& t);
+
 std::string ReadValue(void* owner, void* base, const std::wstring& prop) {
     int32_t off = -1;
     std::wstring cls;
@@ -189,6 +191,7 @@ bool WriteValue(void* owner, void* base, const std::wstring& prop, const std::st
     if (cls == L"FloatProperty") *reinterpret_cast<float*>(p) = std::strtof(v.c_str(), nullptr);
     else if (cls == L"IntProperty") *reinterpret_cast<int32_t*>(p) = std::atoi(v.c_str());
     else if (cls == L"ByteProperty") *reinterpret_cast<uint8_t*>(p) = static_cast<uint8_t>(std::atoi(v.c_str()));
+    else if (cls == L"ObjectProperty") *reinterpret_cast<void**>(p) = (v == "null") ? nullptr : Target(v);
     else if (cls == L"BoolProperty") {
         int32_t bo = 0; uint8_t mask = 0;
         if (!R::FindBoolProperty(owner, prop.c_str(), bo, mask)) return false;
