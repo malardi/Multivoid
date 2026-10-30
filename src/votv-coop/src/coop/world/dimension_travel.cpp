@@ -430,8 +430,12 @@ void OnPeerLevel(int slot, const coop::net::PeerLevelPayload& p) {
         if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_')) return;
         level.push_back(static_cast<wchar_t>(c));
     }
+    // Only a change is news: the answer below is itself a PeerLevel, so answering every word made two peers in
+    // one level trade it back and forth for as long as they stayed (~55 a second each way, seen in the labyrinth).
+    const bool changed = !g_peer[slot].known || !EqualsNoCase(g_peer[slot].level, level.c_str());
     g_peer[slot].known = true;
     g_peer[slot].level = level;
+    if (!changed) return;
     UE_LOGI("[DIMENSION] peer slot %d %ls%ls", slot, level.empty() ? L"is travelling" : L"stands in '",
             level.empty() ? L"" : (level + L"'").c_str());
     if (!PoseAccepted(slot)) DropPuppetOf(slot);
