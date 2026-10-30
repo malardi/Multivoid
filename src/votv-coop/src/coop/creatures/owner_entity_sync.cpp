@@ -45,8 +45,21 @@ std::atomic<coop::net::Session*> g_session{nullptr};
 
 // ---- the member-class table (classId = index). Extend here for the next
 // stalker-entity member; every row is per-peer-owned + cross-peer mirrored.
+// The rows past eyer_C are the creatures their spawners place around THE player -- each spawner reads the local
+// camera or player, so every peer rolls its own around itself and the others never saw them ("each has their own
+// enemies"). Rolled where they were, they stay that player's, and every other peer sees a display mirror. Spelled
+// any case: the observer matches the engine's own name, read from the loaded class (the spawner references it).
 constexpr const wchar_t* kOwnerEntityClasses[] = {
-    L"eyer_C",   // classId 0: the night "Eyes" stalker (ticker_eyers)
+    L"eyer_C",                  // classId 0: the night "Eyes" stalker (ticker_eyers)
+    L"grayboar_C",              // 1: the gray boar (grayBoarSpawner, around the local camera)
+    L"grayBoar_overcharged_C",  // 2: its overcharged form (the same spawner)
+    L"ghostcar_C",              // 3: the ghost car (ghostcarSpawner)
+    L"susDirtHole_C",           // 4: the suspicious dirt hole (ticker_susHoleSpawner, around the local camera)
+    L"NewBlueprint7_C",         // 5: bp7 (ticker_bp7Spawner, around the local camera)
+    // 6: a loot mound (undergroundGarbageSpawner, around gamemode.mainPlayer). Its mirror is shown to the others,
+    // and a hole one of them digs at it is dug on every peer (dig_hole_sync), so the owner's real mound answers
+    // the dig and what it gives up crosses as a dug-out item (dig_hole_sync's pullOut watch).
+    L"dirtHole_item_C",
 };
 constexpr size_t kOwnerEntityClassCount =
     sizeof(kOwnerEntityClasses) / sizeof(kOwnerEntityClasses[0]);
@@ -55,12 +68,34 @@ constexpr size_t kOwnerEntityClassCount =
 // the class loads and no class pointer is held. Resolved by Install before the observer arms, read by
 // the POST observer, both on the game thread. The receiver looks the class up where it spawns.
 R::FName g_classNames[kOwnerEntityClassCount] = {};
+bool g_classResolved[kOwnerEntityClassCount] = {};
+
+// The class by the row's text, in any case: the exact index first, the reflection walk (case-blind) after.
+void* ResolveClass(size_t i) {
+    void* cls = ue_wrap::object_index::ClassByName(kOwnerEntityClasses[i]);
+    return cls ? cls : R::FindClass(kOwnerEntityClasses[i]);
+}
+
+// A row's name is taken from its loaded class, the engine's own spelling, so no name of ours enters the name
+// table first; a row whose class is not loaded yet matches nothing and is asked again. Game thread.
+void ResolveClassNames() {
+    for (size_t i = 0; i < kOwnerEntityClassCount; ++i) {
+        if (g_classResolved[i]) continue;
+        void* cls = ResolveClass(i);
+        if (!cls) continue;
+        g_classNames[i] = R::NameOf(cls);
+        g_classResolved[i] = true;
+        UE_LOGI("owner_entity: member '%ls' resolved as '%ls' (classId %zu)", kOwnerEntityClasses[i],
+                R::ToString(g_classNames[i]).c_str(), i);
+    }
+}
 
 int ClassIdOf(void* cls) {
     if (!cls) return -1;
     const R::FName& name = R::NameOf(cls);
     for (size_t i = 0; i < kOwnerEntityClassCount; ++i)
-        if (name.ComparisonIndex == g_classNames[i].ComparisonIndex && name.Number == g_classNames[i].Number)
+        if (g_classResolved[i] && name.ComparisonIndex == g_classNames[i].ComparisonIndex &&
+            name.Number == g_classNames[i].Number)
             return static_cast<int>(i);
     return -1;
 }
@@ -73,7 +108,7 @@ int32_t g_xformParamOff   = -1;
 bool    g_observerArmed   = false;   // also the permanent give-up latch
 void*   g_k2DestroyFn     = nullptr; // AActor::K2_DestroyActor (mirror teardown)
 
-constexpr long long kTickPeriodMs      = 250;    // 4 Hz driver
+constexpr long long kTickPeriodMs      = 100;    // 10 Hz driver (a ghost car is fast)
 constexpr long long kKeepaliveMs       = 10000;  // Spawn re-announce (late-join delivery)
 constexpr float     kPoseSendDist      = 5.f;    // movement threshold
 constexpr float     kPoseSendYawDeg    = 5.f;
@@ -94,7 +129,7 @@ struct Owned {
 };
 std::vector<Owned> g_owned;
 uint16_t g_nextSeq = 1;
-constexpr size_t kMaxOwned = 8;   // eyers are rare singletons; runaway backstop
+constexpr size_t kMaxOwned = 64;  // a boar herd, the loot mounds around a player; runaway backstop
 
 // ---- RECEIVER side: mirrors of other peers' entities ----
 struct Mirror {
@@ -212,14 +247,7 @@ void Install(coop::net::Session* session) {
             return;
         }
     }
-    for (size_t i = 0; i < kOwnerEntityClassCount; ++i) {
-        g_classNames[i] = ue_wrap::fname_utils::StringToFName(kOwnerEntityClasses[i]);
-        if (g_classNames[i].ComparisonIndex == 0) {
-            UE_LOGW("owner_entity: the name '%ls' did not convert -- lane disabled", kOwnerEntityClasses[i]);
-            g_observerArmed = true;
-            return;
-        }
-    }
+    ResolveClassNames();
 
     if (!GT::RegisterPostObserver(g_beginDeferredFn, &OnSpawnPost)) {
         UE_LOGE("owner_entity: RegisterPostObserver FAILED (table full?) -- lane disabled");
@@ -227,7 +255,7 @@ void Install(coop::net::Session* session) {
         return;
     }
     g_observerArmed = true;
-    UE_LOGI("owner_entity: armed (%zu member class(es); eyer_C classId=0) -- per-peer owned, "
+    UE_LOGI("owner_entity: armed (%zu member class(es)) -- per-peer owned, "
             "cross-peer mirrored", kOwnerEntityClassCount);
 }
 
@@ -239,6 +267,8 @@ void Tick() {
     const long long now = NowMs();
     if (now - sLastMs < kTickPeriodMs) return;
     sLastMs = now;
+    static long long sLastResolveMs = 0;
+    if (now - sLastResolveMs >= 2000) { sLastResolveMs = now; ResolveClassNames(); }
 
     // OWNER: death-watch + keepalive re-announce + pose stream.
     for (size_t i = 0; i < g_owned.size();) {
@@ -331,7 +361,7 @@ void OnSpawnMsg(const coop::net::OwnerEntitySpawnPayload& p, int senderPeerSlot)
             return;
         }
     }
-    void* cls = ue_wrap::object_index::ClassByName(kOwnerEntityClasses[p.classId]);
+    void* cls = ResolveClass(p.classId);
     if (!cls) return;  // not loaded on this peer yet: the keepalive re-delivers
     // Resolve-once statics (GT-only path): the GameplayStatics CDO + Finish fn.
     static void* s_gsCdo = R::FindClassDefaultObject(P::name::GameplayStaticsClass);
@@ -383,7 +413,14 @@ void OnSpawnMsg(const coop::net::OwnerEntitySpawnPayload& p, int senderPeerSlot)
     }
     // PARK the mirror: no AI (actor + CMC ticks off -> no isLooking/anger/dash
     // loop). Collision was already dropped pre-Finish (F-4).
-    ue_wrap::puppet::DisableCharacterTicks(spawned);
+    // A character's movement component is parked with its tick; a plain actor (a dirt hole) has none to read.
+    static void* s_charCls = nullptr;
+    if (!s_charCls) s_charCls = ue_wrap::object_index::ClassByName(L"Character");
+    void* spawnedCls = R::ClassOf(spawned);
+    if (s_charCls && spawnedCls && R::IsDescendantOfAny(spawnedCls, &s_charCls, 1))
+        ue_wrap::puppet::DisableCharacterTicks(spawned);
+    else
+        E::SetActorTickEnabled(spawned, false);
     g_mirrors[key] = Mirror{spawned, R::InternalIndexOf(spawned)};
     UE_LOGI("owner_entity: mirror '%ls' materialized for slot=%d seq=%u at (%.0f,%.0f,%.0f) "
             "(brain-parked, collision-off)",

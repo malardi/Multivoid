@@ -406,6 +406,24 @@ void Run(long long id, const std::string& verb, const std::string& rest) {
         std::string all;
         for (int32_t i = 0; i < arr->num && i < 32; ++i) all += (i ? " | " : "") + Narrow(R::ToString(arr->data[i]));
         Answer(id, true, t + "." + prop + " n=" + std::to_string(arr->num) + " [" + all + "]");
+    } else if (verb == "classes") {
+        // classes <text>: every loaded class whose name holds the text (any case), spelled as the engine has it.
+        std::string sub;
+        in >> sub;
+        const std::string want = Lower(sub);
+        std::string all;
+        int n = 0;
+        const int32_t count = R::NumObjects();
+        for (int32_t i = 0; i < count && n < 40; ++i) {
+            void* obj = R::ObjectAt(i);
+            if (!obj) continue;
+            const std::wstring cn = R::ClassNameOf(obj);
+            if (cn != L"BlueprintGeneratedClass" && cn != L"Class") continue;
+            const std::string nm = Narrow(R::ToString(R::NameOf(obj)));
+            if (Lower(nm).find(want) == std::string::npos) continue;
+            all += (n++ ? " | " : "") + nm;
+        }
+        Answer(id, true, "classes '" + sub + "': " + all);
     } else if (verb == "call" || verb == "gcall") {
         std::string t, fn;
         in >> t >> fn;

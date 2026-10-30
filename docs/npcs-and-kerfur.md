@@ -132,7 +132,7 @@ on [players.md](players.md).
 | State | Owner | Shape |
 |---|---|---|
 | a shared-world character: existence, pose, death | the host | an interceptor on the spawn, a pose batch, a destroy broadcast; the client's spawns are cancelled |
-| a stalker creature | the peer it rolled for | native on the owner, a display mirror elsewhere |
+| a stalker creature, or one its spawner places around the local player (gray boars, the ghost car, the suspicious hole, bp7, loot mounds) | the peer it rolled for | native on the owner, a display mirror elsewhere |
 | the killer wisp's kill | the host detects, the victim dies | a grab message to the victim, the tear to all |
 | the roach infestation | the host | a paged snapshot; a client's stomp is an intent |
 | the kerfur's identity across forms | the host | one id, rebound in place, one transition signal |
@@ -165,7 +165,7 @@ wisp in flight is transient and owes nothing.
 |---|---|
 | The Omega's take-object, pat, equipment, kill and sit-on-the-ATV verbs are not synced | `[V]` `coop/creatures/kerfur_command`, the verb table |
 | The Omega's floppy state is not synced, so a relayed get-reports diverges on its result; its carried object likewise. Its accessories are synced (`coop/creatures/kerfur_drip_sync`) | `[V]` no lane under `coop/creatures` carries the first two |
-| Only one stalker class is owned per peer so far | `[V]` `coop/creatures/owner_entity_sync`, the member table |
+| The owned classes are the eyer, the gray boars, the ghost car, the suspicious dirt hole, bp7 and the loot mounds; another peer sees a display mirror it cannot touch (a hole it digs at a mound is dug on the owner's copy too) | `[V]` `coop/creatures/owner_entity_sync`, the member table |
 | The conversion is detected by a poll, five times a second, not at the verb | `[V]` `coop/creatures/kerfur_convert`; the lane reads the result rather than the call, because a peer's own conversion has already happened by the time any watch of ours runs |
 | Nine ambient spawner families are neither mirrored nor refused, so each peer grows its own deer, hexahives, walking trees and the rest | `[V]` they appear in no lane under `coop/creatures` and in no row of `coop/world/spawn_authority` |
 
