@@ -121,6 +121,12 @@ R::FName GetKey(void* prop) {
 
 std::wstring GetKeyString(void* prop) {
     if (!prop) return {};
+    // Only a prop keeps its key at the prop's offset. Anything else read there is not a name: a
+    // cremator (an actor_save, the parent of its door's child actor) handed here by the swinger lane's
+    // key faulted the engine's name table on every scan-hub pass, which ended each such session tick
+    // on every peer and left the lane's index without the doors past it. An actor_save answers with
+    // its own key; any other class has none here.
+    if (!IsDescendantOfProp(prop)) return GetActorSaveKeyString(prop);
     const R::FName key = GetKey(prop);
     return R::ToString(key);
 }
