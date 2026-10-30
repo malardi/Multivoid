@@ -251,8 +251,11 @@ void Tick() {
 
     if (!s->connected()) return;
 
-    // A client holds its nightmare rolls off for the session: a nightmare is the host's machine's roll alone.
-    if (!g_dreamProbSuppressed && SLP::SetDreamProbability(0.f)) g_dreamProbSuppressed = true;
+    // A client rolls its own nightmares, as the host rolls its own: a dream is an actor the gamemode spawns
+    // in this world and a teleport of this machine's player into it, nothing another peer shares, and the
+    // way back (leaveDream) is the same local teleport. Tested in the lab: a client's createDream put it in
+    // the dream room, the host saw it as dreaming, and leaveDream put it back where it slept. The players
+    // asked for nightmares for everyone who sleeps, each at the game's own chance.
 
     if (g_localState != g_sentState || !SameBed(g_localBed, g_sentBed)) SendClientRest(s);
 }

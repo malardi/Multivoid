@@ -178,8 +178,10 @@ the game's own factor, with food and coffee settled to the rate they would have 
 in a bed or fainted, dreaming in a nightmare) with the bed's class name goes from a client to the
 host, which relays it to every other client; the host's own sleeping flag goes to the clients, which show
 one chat line naming the host when it rises. A joiner is sent the host's flag and every peer's
-state that is not awake, and a leaver is told to every client as awake. A client holds its
-nightmare chance at zero, so a nightmare is a roll of the host's machine alone. `[?]`
+state that is not awake, and a leaver is told to every client as awake. Every peer rolls its own
+nightmares at the game's chance: a dream is an actor its gamemode spawns in that peer's world and a
+teleport of that peer's player into it and back, which nothing else shares (lab-tested: a client's dream
+and its way back).
 
 ### Inventory
 
