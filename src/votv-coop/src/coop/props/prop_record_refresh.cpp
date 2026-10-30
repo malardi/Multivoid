@@ -350,6 +350,15 @@ void HostMinerBeat() {
 }
 }  // namespace
 
+bool HoldsLocalChange(void* actor) {
+    if (!actor) return false;
+    auto* s = g_session.load(std::memory_order_acquire);
+    if (!s || !s->connected() || s->role() != coop::net::Role::Client) return false;
+    if (g_trailing.count(actor)) return true;
+    const auto it = g_lastPublish.find(actor);
+    return it != g_lastPublish.end() && Clock::now() - it->second < std::chrono::milliseconds(800);
+}
+
 void OnDisconnect() {
     if (g_cPublished || g_cCoalesced || g_cRelooked)
         UE_LOGI("prop_record_refresh: session end -- published=%llu coalesced=%llu relooked=%llu",

@@ -1,6 +1,7 @@
 // coop/props/prop_save_data.cpp -- see coop/props/prop_save_data.h.
 
 #include "coop/props/prop_save_data.h"
+#include "coop/props/prop_record_refresh.h"
 
 #include "coop/dev/food_clock_probe.h"   // [dev] the food catch-up's two clocks, read at these seams
 #include "coop/props/prop_record_gates.h"          // a class's say over who writes its record and when it lands
@@ -366,6 +367,12 @@ bool LandRecord(const std::wstring& key, SR::SaveRecord&& rec, uint8_t senderSlo
     // of the close once the class lets go.
     if (actor && !coop::prop_record_gates::ApplyAllows(actor)) {
         UE_LOGI("prop_save_data: record for key '%ls' is not applied -- a gate on its class refuses it here",
+                key.c_str());
+        return false;
+    }
+    // A change made here a moment ago and not yet through the host: an older host record must not undo it.
+    if (actor && !intent && coop::props::prop_record_refresh::HoldsLocalChange(actor)) {
+        UE_LOGI("prop_save_data: record for key '%ls' is not applied -- a newer change made here is on its way",
                 key.c_str());
         return false;
     }

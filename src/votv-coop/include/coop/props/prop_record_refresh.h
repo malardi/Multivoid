@@ -25,6 +25,12 @@ namespace coop::props::prop_record_refresh {
 void Install(coop::net::Session* session);
 
 // Session teardown: the per-actor coalescing state is dropped.
+// CLIENT: `actor` changed here a moment ago and this peer's record of it is still on its way (a trailing publish
+// pending, or one sent within the last ~0.8 s). A record from the host arriving now predates that change -- the
+// host's slow beat, or its echo of an earlier step -- and landing it would undo the change before it reaches the
+// host (three quick fan installs became one). The host's republish of the newer state lands after. Game thread.
+bool HoldsLocalChange(void* actor);
+
 void OnDisconnect();
 
 }  // namespace coop::props::prop_record_refresh
