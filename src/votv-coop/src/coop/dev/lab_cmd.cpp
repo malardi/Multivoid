@@ -24,6 +24,7 @@
 #include "ue_wrap/core/script_fingerprint.h"
 #include "ue_wrap/actors/vitals.h"
 #include "ue_wrap/core/types.h"
+#include "ue_wrap/core/fname_utils.h"
 #include "ue_wrap/engine/engine.h"
 #include "ue_wrap/engine/engine_pawn.h"
 #include "ue_wrap/engine/world_identity.h"
@@ -195,6 +196,7 @@ bool WriteValue(void* owner, void* base, const std::wstring& prop, const std::st
     else if (cls == L"IntProperty") *reinterpret_cast<int32_t*>(p) = std::atoi(v.c_str());
     else if (cls == L"ByteProperty") *reinterpret_cast<uint8_t*>(p) = static_cast<uint8_t>(std::atoi(v.c_str()));
     else if (cls == L"ObjectProperty") *reinterpret_cast<void**>(p) = (v == "null") ? nullptr : Target(v);
+    else if (cls == L"NameProperty") *reinterpret_cast<R::FName*>(p) = ue_wrap::fname_utils::StringToFName(Wide(v).c_str());
     else if (cls == L"BoolProperty") {
         int32_t bo = 0; uint8_t mask = 0;
         if (!R::FindBoolProperty(owner, prop.c_str(), bo, mask)) return false;
