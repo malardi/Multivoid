@@ -403,10 +403,18 @@ void* ParentActorOf(void* actor, std::wstring* outComponentName) {
         sOff.store(off, std::memory_order_release);
     }
     if (off < 0) return nullptr;
+    // A class default or an archetype is no placed child: a child actor's template (the
+    // "..._GEN_VARIABLE_..._CAT" object a UChildActorComponent spawns from) carries a ParentComponent
+    // that names nothing live, and rendering the name it led to faulted the engine inside the scan
+    // hub's pass every two seconds, which ended that whole session tick (RF_ClassDefaultObject 0x10,
+    // RF_ArchetypeObject 0x2).
+    const int32_t objFlags = *reinterpret_cast<const int32_t*>(reinterpret_cast<const uint8_t*>(actor) +
+                                                               P::off::UObject_ObjectFlags);
+    if ((objFlags & (0x10 | 0x2)) != 0) return nullptr;
     struct { int32_t idx; int32_t serial; } weak{};
     std::memcpy(&weak, reinterpret_cast<uint8_t*>(actor) + off, sizeof(weak));
     void* comp = R::ResolveWeakObject(weak.idx, weak.serial);
-    if (!comp) return nullptr;
+    if (!comp || !R::IsLive(comp)) return nullptr;
     if (outComponentName) *outComponentName = R::ToString(R::NameOf(comp));
     return R::OuterOf(comp);   // a UActorComponent's Outer IS its owning AActor
 }
