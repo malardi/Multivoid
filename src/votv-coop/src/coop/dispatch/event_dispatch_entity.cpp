@@ -7,6 +7,7 @@
 #include "event_dispatch.h"  // co-located private header (src tree, not include/)
 #include "coop/comms/log_mirror.h"  // OnChunk: a client's log on the host's machine
 #include "coop/world/blood_decal_sync.h"
+#include "coop/world/dig_hole_sync.h"
 #include "coop/world/dimension_travel.h"
 #include "coop/interactables/swinger_pose_sync.h"
 
@@ -101,6 +102,27 @@ bool HandleEntityEvent(net::Session& session,
             break;
         }
         coop::swinger_pose_sync::OnSwingerPose(p);
+        break;
+    }
+    case net::ReliableKind::DirtHole: {
+        // A peer's shovel hole; dig_hole_sync digs the same one here. Bounds checked before any engine write.
+        if (msg.payloadLen < sizeof(net::DirtHolePayload)) {
+            UE_LOGW("event_feed: DirtHole payload too short (%zu < %zu)",
+                    static_cast<size_t>(msg.payloadLen), sizeof(net::DirtHolePayload));
+            break;
+        }
+        net::DirtHolePayload p{};
+        std::memcpy(&p, msg.payload, sizeof(p));
+        const float vals[6] = {p.locX, p.locY, p.locZ, p.rotPitch, p.rotYaw, p.rotRoll};
+        bool bad = false;
+        for (float v : vals) if (!std::isfinite(v)) bad = true;
+        if (std::fabs(p.locX) > 1.0e6f || std::fabs(p.locY) > 1.0e6f || std::fabs(p.locZ) > 1.0e6f) bad = true;
+        if (p.matType < 0 || p.matType > 16) bad = true;
+        if (bad) {
+            UE_LOGW("event_feed: DirtHole fields out of bounds -- dropping");
+            break;
+        }
+        coop::dig_hole_sync::OnDirtHole(p);
         break;
     }
     case net::ReliableKind::BloodDecal: {

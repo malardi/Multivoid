@@ -30,7 +30,7 @@ inline constexpr uint32_t kMagic = 0x564D5450u;
 // This file is past the 1500-line hard cap and stays there: it is the single-feature exception the
 // rule names. One wire format, whose enum, payload structs and static_asserts are read together;
 // splitting it would put a kind's number in one file and its bytes in another.
-inline constexpr uint16_t kProtocolVersion = 281;
+inline constexpr uint16_t kProtocolVersion = 282;
 
 // Default LAN port (overridable via multivoid.ini "net.port=").
 inline constexpr uint16_t kDefaultPort = 47621;
@@ -1159,6 +1159,11 @@ enum class ReliableKind : uint8_t {
     // so the host's machine holds both peers' logs. Bulk lane; not relayed; a dimension lets it through.
     // LogChunkPayload, sent at its used length.
     LogChunk = 205,
+    // ANY PEER, relayed by the host: this peer's player dug a hole with the shovel (a dirtHole_C: an actor,
+    // not a prop, so no prop lane carried it, and a dig was seen by the digger alone). Every other peer spawns
+    // the same hole at that transform with its ground material. Not pre-world. Late join: none (the host's
+    // save carries the host's holes). DirtHolePayload.
+    DirtHole = 206,
 };
 
 #pragma pack(push, 1)
@@ -1862,6 +1867,15 @@ struct BloodDecalPayload {
 namespace blood_op { constexpr uint8_t kSpawn = 0; constexpr uint8_t kErase = 1; }
 static_assert(sizeof(BloodDecalPayload) == 44, "BloodDecalPayload must be 44 bytes");
 static_assert(sizeof(BloodDecalPayload) <= 256 - 20 - 8, "BloodDecalPayload must fit one datagram");
+
+// A shovel's hole (DirtHole): where it was dug, its facing, and the ground material the dig met.
+struct DirtHolePayload {
+    float   locX, locY, locZ;          // 12 -- world position (cm)
+    float   rotPitch, rotYaw, rotRoll; // 12 -- the hole's facing
+    int32_t matType;                   // 4  -- dirtHole_C.matType (0 dirt, 1 gravel, 2 sand)
+};
+static_assert(sizeof(DirtHolePayload) == 28, "DirtHolePayload must be 28 bytes");
+static_assert(sizeof(DirtHolePayload) <= 256 - 20 - 8, "DirtHolePayload must fit one datagram");
 
 // A swinging lid's pose (SwingerPose): the lid by the container lane's key, its world transform.
 struct SwingerPosePayload {
