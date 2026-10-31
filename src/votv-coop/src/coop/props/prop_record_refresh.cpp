@@ -11,6 +11,7 @@
 #include "coop/session/net_pump.h"
 
 #include "ue_wrap/actors/prop.h"
+#include "ue_wrap/actors/prop_use.h"   // ReadFoodUse: the bite a food's eat took
 #include "ue_wrap/core/call.h"
 #include "ue_wrap/core/fname_utils.h"
 #include "ue_wrap/core/game_thread.h"
@@ -187,6 +188,8 @@ void BucketBeat();     // below: a bucket's water, the host's and a holder's
 void ArmBucketTick(); // below: a client's copy of a bucket spills nothing on its own
 void ArmMaterialWatches(); // below: a client copy of a concrete bucket does not tick; a player's verb marks a prop
 void MaterialBeat();       // below: a concrete bucket's and a cement bag's stock, the host's and a toucher's
+void ArmFoodBite();   // below: a bite of a world food republishes its record
+void ForgetFoodBites();  // below: the bites in flight, at teardown
 
 // The trailing publishes whose window has closed. Game thread, from the per-tick pump.
 void FlushTrailing() {
@@ -283,6 +286,7 @@ void Install(coop::net::Session* session) {
     if (!GT::IsGameThread()) return;
     HostMinerBeat();
     ArmBucketTick();
+    ArmFoodBite();
     BucketBeat();
     ArmMaterialWatches();
     MaterialBeat();
@@ -383,6 +387,7 @@ void OnDisconnect() {
                 g_cPublished, g_cCoalesced, g_cRelooked);
     g_lastPublish.clear();
     g_trailing.clear();
+    ForgetFoodBites();
     g_cPublished = 0;
     g_cCoalesced = 0;
     g_cRelooked  = 0;
@@ -715,6 +720,99 @@ void MaterialBeat() {
                     dry ? 1 : 0, host ? "host" : "client verb");
         }
     }
+}
+// ---- a food's bite ----------------------------------------------------------------------------------
+// A bite that leaves something to eat changes only the food's own record (its use count), and nothing
+// carried it: the eater's copy lost a portion and every other copy kept it, so a meal two players
+// shared was eaten twice over and a half-eaten one stayed whole for the other. The last bite is the
+// act lane's (coop/props/prop_act_request), which destroys the food everywhere; every bite before it
+// publishes the record here -- from the host, or from the client that ate, as an intent the host
+// re-publishes. The food in a player's hotbar hand is that player's inventory, not a world prop, and is
+// left to the profile. Adapted from ElvardFIC/WatchersOfTheVoid
+// (MIT), on our record lane rather than a lane of its own:
+// https://github.com/ElvardFIC/WatchersOfTheVoid/blob/HEAD/src/votv-coop/src/coop/props/prop_food_sync.cpp
+UE_FACT_FN(kRowFoodAction, "prop_record_refresh", L"prop_food_C", L"actionOptionIndex", Declared);
+constexpr int kFoodBiteTag = 0x46444254;  // 'FDBT'
+constexpr uint8_t kFoodEatAction = 4;
+bool g_foodArmed = false;
+R::ParamOffset g_foodActionParam{L"action"};
+
+struct FoodBite { void* actor; int32_t idx; int32_t uses; };
+std::vector<FoodBite> g_foodBites;   // the eats whose body is running, normally none or one
+
+void ForgetFoodBites() { g_foodBites.clear(); }
+
+void EraseFoodBite(void* actor) {
+    for (auto it = g_foodBites.begin(); it != g_foodBites.end(); ++it)
+        if (it->actor == actor) { g_foodBites.erase(it); return; }
+}
+
+sg::Verdict OnFoodActionPre(const sg::Call& c) {
+    // Our own calls are replays whose effects travel on their own lanes.
+    if (c.fromOurCode || !c.object || !c.function || !c.locals) return sg::Verdict::Run;
+    auto* s = g_session.load(std::memory_order_acquire);
+    if (!s || !s->connected()) return sg::Verdict::Run;
+    const int32_t off = g_foodActionParam.Of(c.function);
+    if (off < 0 || off >= R::FunctionFrameSize(c.function)) return sg::Verdict::Run;
+    if (c.locals[off] != kFoodEatAction) return sg::Verdict::Run;
+    if (coop::hand_item::IsHandAxisActor(c.object)) return sg::Verdict::Run;
+    int32_t uses = 0;
+    bool notEdible = false;
+    if (!ue_wrap::prop_use::ReadFoodUse(c.object, uses, notEdible) || notEdible || uses <= 1)
+        return sg::Verdict::Run;   // nothing to eat, or the last bite: the act lane's
+    EraseFoodBite(c.object);
+    if (g_foodBites.size() >= 16) g_foodBites.erase(g_foodBites.begin());
+    g_foodBites.push_back(FoodBite{c.object, R::InternalIndexOf(c.object), uses});
+    return sg::Verdict::Run;
+}
+
+void OnFoodActionPost(const sg::Call& c) {
+    if (c.fromOurCode || !c.object) return;
+    FoodBite bite{};
+    bool found = false;
+    for (auto it = g_foodBites.begin(); it != g_foodBites.end(); ++it) {
+        if (it->actor != c.object) continue;
+        bite = *it;
+        g_foodBites.erase(it);
+        found = true;
+        break;
+    }
+    if (!found || !R::IsLiveByIndex(bite.actor, bite.idx)) return;
+    int32_t uses = 0;
+    bool notEdible = false;
+    if (!ue_wrap::prop_use::ReadFoodUse(bite.actor, uses, notEdible) || uses >= bite.uses || uses <= 0)
+        return;   // not a bite after all (refused by the game), or the food is gone
+    auto* s = g_session.load(std::memory_order_acquire);
+    if (!s || !s->connected()) return;
+    void* actor = bite.actor;
+    const auto now = Clock::now();
+    auto it = g_lastPublish.find(actor);
+    if (it != g_lastPublish.end() && now - it->second < kCoalesce) {
+        // A second bite inside the window: the window's end publishes whatever the food holds then.
+        ++g_cCoalesced;
+        g_trailing[actor] = Trailing{bite.idx, it->second + kCoalesce};
+        return;
+    }
+    // Evict what the window has passed, as the upd() path does: an address the allocator reuses must
+    // not inherit a dead food's window.
+    for (auto e = g_lastPublish.begin(); e != g_lastPublish.end();)
+        e = (now - e->second >= kCoalesce) ? g_lastPublish.erase(e) : std::next(e);
+    const std::wstring key = ue_wrap::prop::GetInteractableKeyString(actor);
+    if (key.empty() || key == L"None") return;   // a keyless food has no record to address
+    // Stamped for HoldsLocalChange as well: the host's echo of an earlier bite must not undo this one.
+    g_lastPublish[actor] = now;
+    if (coop::prop_save_data::Publish(s, actor, key)) {
+        ++g_cPublished;
+        UE_LOGI("prop_record_refresh: a bite of food key='%ls' (%d -> %d uses) -- published (%s)",
+                key.c_str(), bite.uses, uses,
+                s->role() == coop::net::Role::Client ? "client intent" : "host broadcast");
+    }
+}
+
+void ArmFoodBite() {
+    if (g_foodArmed) return;
+    g_foodArmed = sg::WatchName(kRowFoodAction, kFoodBiteTag, &OnFoodActionPre, &OnFoodActionPost);
+    if (g_foodArmed) UE_LOGI("prop_record_refresh: a bite of a world food republishes its record");
 }
 }  // namespace
 

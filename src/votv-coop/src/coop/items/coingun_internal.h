@@ -93,6 +93,9 @@ void SweepSoldSet();
 // resolve depends on the sale lane's class resolution having run. Both are idempotent + retrying.
 void InstallCollect();
 void OnDisconnectCollect();
+// Per tick, from the sale lane's Tick: the host destroys a credited coin that outlived its credit
+// again until it is gone; a client re-asks for a forward the transport or the identity refused.
+void TickCollect();
 
 // True once BOTH collect entries are live. The sale lane's Install reads it so its own success latch
 // cannot stop driving this lane's retry -- the two have DIFFERENT dependencies (the sale lane needs
