@@ -303,6 +303,8 @@ void ResolveAndStartDrive(int slot, const coop::net::PropPoseSnapshot& pose) {
 void Tick(coop::net::Session& session) {
     // Every game-thread tick, from net_pump::Tick.
     UE_ASSERT_GAME_THREAD("g_drives (remote_prop::Tick)");
+    // Before anything binds or drives: mirrors a solo travel left in the old world let go of it.
+    coop::trash_mirror::SweepDepartedWorlds();
     if (!session.connected()) {
         ForceRelease();
         return;

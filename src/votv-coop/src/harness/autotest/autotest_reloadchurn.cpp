@@ -507,4 +507,11 @@ void RunProbe() {
 void RunReloadChurnProbe() { RunProbe(); }
 DWORD WINAPI ReloadChurnProbeThread(LPVOID) { RunReloadChurnProbe(); return 0; }
 
+// The census and the forced collection on their own, for the lab's `worlds` and `gc` verbs: the
+// same instrument the reload-churn scenario grades by, run inline on the game thread at whatever
+// moment the lab picks (after a solo dimension trip, say), so a held dead world is named without a
+// scenario around it.
+void WorldCensusNowGT(const char* tag) { CensusGT(tag, 0, ResolveOffsetsGT()); }
+bool ForceCollectionNowGT() { return ForceGcGT(); }
+
 }  // namespace harness::autotest

@@ -13,6 +13,7 @@
 #include "coop/props/remote_prop.h"     // ResolveMirrorEidByActor (grabintent)
 #include "coop/props/trash_channel.h"   // SendGrabIntent / SendThrowIntent / ClientCarryEid
 #include "coop/world/dimension_travel.h"
+#include "harness/autotest.h"     // WorldCensusNowGT / ForceCollectionNowGT (worlds, gc)
 #include "harness/screenshot.h"
 #include "harness/session_runtime.h"
 
@@ -25,6 +26,7 @@
 #include "ue_wrap/actors/vitals.h"
 #include "ue_wrap/core/types.h"
 #include "ue_wrap/core/fname_utils.h"
+#include "ue_wrap/core/gc_pin.h"       // ReportWorldScopedPins (pins)
 #include "ue_wrap/engine/engine.h"
 #include "ue_wrap/engine/engine_pawn.h"
 #include "ue_wrap/engine/world_identity.h"
@@ -533,6 +535,19 @@ void Run(long long id, const std::string& verb, const std::string& rest) {
     } else if (verb == "resync") {
         coop::session_manager::RequestResync();
         Answer(id, true, "resync asked");
+    } else if (verb == "worlds") {
+        // Every UWorld and level with its WorldSettings, and the root-set holders of a dead one,
+        // into the log under the given tag: the instrument for a world a travel left behind.
+        const std::string tag = rest.empty() ? std::string("lab") : rest;
+        UE_LOGI("[LAB] ---- worlds %s ----", tag.c_str());
+        harness::autotest::WorldCensusNowGT(tag.c_str());
+        Answer(id, true, "worlds " + tag + " (see log: reloadchurn[" + tag + " c0])");
+    } else if (verb == "gc") {
+        Answer(id, harness::autotest::ForceCollectionNowGT(), "gc armed");
+    } else if (verb == "pins") {
+        const size_t n = ue_wrap::GcPin::ReportWorldScopedPins("lab");
+        Answer(id, true, "world-scoped pins " + std::to_string(n) + " of " +
+                             std::to_string(ue_wrap::GcPin::Outstanding()));
     } else if (verb == "log") {
         UE_LOGI("[LAB] ---- %s ----", rest.c_str());
         Answer(id, true, "log");

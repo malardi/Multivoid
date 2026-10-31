@@ -76,4 +76,10 @@ void OnDisconnectForSlot(int slot);
 // thread.
 void OnDisconnect();
 
+// Every game-thread tick, session or not: lets go of each mirror made in a world that is no longer
+// the current one (a solo travel keeps the session, so no disconnect path runs), releasing its GC
+// pin so the departed UWorld can be collected, and dropping its binding while that still names it.
+// On a world change it also reports any world-scoped GC pin still outstanding.
+void SweepDepartedWorlds();
+
 }  // namespace coop::trash_mirror

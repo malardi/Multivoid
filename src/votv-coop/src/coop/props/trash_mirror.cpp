@@ -20,6 +20,7 @@
 #include "ue_wrap/actors/prop.h"            // SetChipTypeAndRebuild / IsGarbageClump
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/core/types.h"
+#include "ue_wrap/engine/world_identity.h"  // CurrentWorld (a mirror belongs to the world it was made in)
 
 #include <cstdint>
 #include <string>
@@ -65,8 +66,18 @@ struct MadeMirror {
     // The actor's object-array slot at the spawn. A pinned actor's address cannot be recycled, but
     // an entry whose pin failed has no such guarantee, so the address alone does not name it.
     int32_t idx = -1;
+    // The world the mirror was made in. A peer that travels on its own (a client walking into a
+    // dimension while the host stays on the map) keeps its session, so neither disconnect path
+    // runs, and a pin still held when the engine tears that world down anchors the whole UWorld
+    // through the actor's Outer chain. The leaked world is then re-adopted by the next LoadMap of
+    // the same map with its WorldSettings nulled by the collector, and CreateGameModeForURL reads
+    // DefaultGameMode through null: the client's crash on coming back from the labyrinth.
+    void* world = nullptr;
 };
 std::unordered_map<void*, MadeMirror> g_made;
+
+// The world SweepDepartedWorlds last saw as current, so a travel is logged once.
+void* g_lastWorld = nullptr;
 
 // Destroy one mirror we made and release its pin, in that order: the destroy marks pending kill
 // and the un-root is what makes that memory reapable. Pairing them under one liveness guard is
@@ -110,6 +121,7 @@ void* Materialize(coop::element::ElementId eid, const std::wstring& className, u
     made.eid = eid;
     made.ownerSlot = senderSlot;
     made.idx = R::InternalIndexOf(native);
+    made.world = ue_wrap::world_identity::CurrentWorld();  // null while unknown: then kept until a disconnect
     if (!made.pin.Pin(native)) {                    // GC-pin -- a runtime spawn has no save/world ref
         // A failed pin voids the mirror's whole rules-of-existence argument (rooted -> never
         // GC'd -> never a stale index), so it must never fail silently. The entry STAYS, with an
@@ -213,6 +225,44 @@ void OnDisconnectForSlot(int slot) {
     if (eids.empty()) return;
     for (auto eid : eids) Retire(eid, /*authoritative=*/false);
     UE_LOGI("[PILE] trash_mirror: OnDisconnectForSlot(%d) retired %zu mirror(s)", slot, eids.size());
+}
+
+void SweepDepartedWorlds() {
+    UE_ASSERT_GAME_THREAD("trash_mirror::SweepDepartedWorlds");
+    void* const cur = ue_wrap::world_identity::CurrentWorld();
+    if (!cur) return;  // mid-travel or unresolved: nothing is known to have departed
+    const bool flipped = (g_lastWorld && cur != g_lastWorld);
+    g_lastWorld = cur;
+    if (g_made.empty()) {
+        if (flipped) ue_wrap::GcPin::ReportWorldScopedPins("world change");
+        return;
+    }
+    // A mirror made in a world that is no longer current: its world is being torn down (or
+    // already was) by the engine, which marks every actor in it pending kill, so there is nothing
+    // to destroy -- only the pin to let go, so the collector can take the world, and the binding
+    // to drop, but only while it still names this actor: the eid may already be bound to a mirror
+    // of the world this peer arrived in, and that one is not ours to touch.
+    size_t n = 0;
+    for (auto it = g_made.begin(); it != g_made.end();) {
+        const MadeMirror& m = it->second;
+        if (!m.world || m.world == cur) { ++it; continue; }
+        void* const actor = it->first;
+        const coop::element::ElementId eid = m.eid;
+        coop::remote_prop::ClearAnyDriveFor(actor);
+        coop::trash_clump_pose_stream::ClearDriveForEid(eid);
+        if (auto* el = coop::element::Registry::Get().Get(eid); el && el->GetActor() == actor) {
+            coop::element::ElementDeleter::Get().Enqueue(
+                coop::element::MirrorManager<coop::element::Prop>::Instance().Take(eid));
+            coop::pile_look::Forget(static_cast<uint32_t>(eid));
+        }
+        it = g_made.erase(it);  // the GcPin's destructor un-roots the actor
+        ++n;
+    }
+    if (n) {
+        UE_LOGI("[PILE] trash_mirror: %zu mirror(s) made in a departed world let go (pins released, "
+                "bindings dropped) -- the old world can be collected", n);
+    }
+    if (flipped || n) ue_wrap::GcPin::ReportWorldScopedPins("world change");
 }
 
 void OnDisconnect() {
