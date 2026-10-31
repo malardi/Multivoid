@@ -351,6 +351,48 @@ std::vector<void*> InputEvents(void* obj, bool axis, const std::string& name) {
     return out;
 }
 
+// The press and release events of an action, read from the blueprint's own input bindings: each
+// class in the chain keeps its InputActionDelegateBinding objects in DynamicBindingObjects, and each
+// row names the action, the edge (IE_Pressed 0, IE_Released 1) and the event function it calls. A
+// node number says nothing about the edge (the player's use has three events from two nodes), so the
+// rows decide; only when none are found does the lowest-number-first guess stand.
+struct ActionPair { void* press = nullptr; void* release = nullptr; int rows = 0; };
+
+ActionPair ActionEvents(void* obj, const std::string& action) {
+    ActionPair out;
+    if (!obj) return out;
+    const std::string want = Lower(action);
+    for (void* cls = R::ClassOf(obj); cls; cls = R::SuperStructOf(cls)) {
+        void* meta = R::ClassOf(cls);
+        const int32_t dynOff = meta ? R::FindPropertyOffset(meta, L"DynamicBindingObjects") : -1;
+        if (dynOff < 0) break;  // a native class: no blueprint bindings above it
+        struct Arr { void** data; int32_t num; int32_t max; };
+        const Arr& objs = *reinterpret_cast<const Arr*>(static_cast<uint8_t*>(cls) + dynOff);
+        for (int32_t i = 0; i < objs.num && i < 64; ++i) {
+            void* b = objs.data ? objs.data[i] : nullptr;
+            if (!b || R::ClassNameOf(b) != L"InputActionDelegateBinding") continue;
+            const int32_t rowsOff = R::FindPropertyOffset(R::ClassOf(b), L"InputActionDelegateBindings");
+            if (rowsOff < 0) continue;
+            struct RowArr { uint8_t* data; int32_t num; int32_t max; };
+            const RowArr& rows = *reinterpret_cast<const RowArr*>(static_cast<uint8_t*>(b) + rowsOff);
+            // FBlueprintInputActionDelegateBinding (4.27): the flag byte, InputActionName @4,
+            // InputKeyEvent @12, FunctionNameToBind @16; 24 bytes a row.
+            for (int32_t r = 0; r < rows.num && r < 512; ++r) {
+                const uint8_t* row = rows.data + 24 * r;
+                const R::FName an = *reinterpret_cast<const R::FName*>(row + 4);
+                if (Lower(Narrow(R::ToString(an))) != want) continue;
+                const uint8_t edge = row[12];
+                const R::FName fnName = *reinterpret_cast<const R::FName*>(row + 16);
+                void* fn = R::FindDispatchFunction(R::ClassOf(obj), R::ToString(fnName).c_str(), nullptr);
+                ++out.rows;
+                if (edge == 0 && !out.press) out.press = fn;
+                else if (edge == 1 && !out.release) out.release = fn;
+            }
+        }
+    }
+    return out;
+}
+
 // One input event, as the game's own call (the sync hooks treat it as the player's act).
 bool CallInput(void* obj, void* fn, bool axis, float value) {
     ue_wrap::ParamFrame f(fn);
@@ -707,18 +749,25 @@ void Run(long long id, const std::string& verb, const std::string& rest) {
         in >> t >> action;
         if (!(in >> secs)) secs = 0.15f;
         void* obj = Target(t);
-        const auto ev = InputEvents(obj, false, action);
-        if (ev.empty()) { Answer(id, false, "press: no InpActEvt_" + action + " on " + t); return; }
-        const bool ok = CallInput(obj, ev[0], false, 0.f);
-        if (ev.size() > 1) {
+        ActionPair ap = ActionEvents(obj, action);
+        std::string how = "bindings";
+        if (!ap.press && !ap.release) {
+            const auto ev = InputEvents(obj, false, action);
+            if (!ev.empty()) ap.press = ev[0];
+            if (ev.size() > 1) ap.release = ev[1];
+            how = "node order";
+        }
+        if (!ap.press && !ap.release) { Answer(id, false, "press: no InpActEvt_" + action + " on " + t); return; }
+        const bool ok = ap.press ? CallInput(obj, ap.press, false, 0.f) : true;
+        if (ap.release) {
             Timed tm;
-            tm.obj = obj; tm.idx = R::InternalIndexOf(obj); tm.fn = ev[1]; tm.axis = false;
+            tm.obj = obj; tm.idx = R::InternalIndexOf(obj); tm.fn = ap.release; tm.axis = false;
             tm.until = Clock::now() + std::chrono::milliseconds(static_cast<int>(secs * 1000.f));
             tm.what = "press " + t + " " + action;
             g_timed.push_back(tm);
         }
-        Answer(id, ok, "press " + t + " " + action + " (" + std::to_string(ev.size()) + " event(s), held " +
-                           std::to_string(secs) + " s)");
+        Answer(id, ok, "press " + t + " " + action + " (" + how + ": press " + (ap.press ? "yes" : "no") +
+                           ", release " + (ap.release ? "yes" : "no") + ", held " + std::to_string(secs) + " s)");
     } else if (verb == "axis") {
         // axis <target> <name> <value> <seconds>: the axis event every tick with that value, then 0.
         std::string t, name;
