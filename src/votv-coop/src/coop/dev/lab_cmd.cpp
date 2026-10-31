@@ -694,7 +694,7 @@ void Run(long long id, const std::string& verb, const std::string& rest) {
             Answer(id, false, "daytime: the day-night cycle is not resolved");
             return;
         }
-        const float want = maxTime * std::fmod(std::max(0.f, hour), 24.f) / 24.f;
+        const float want = maxTime * std::fmod((std::max)(0.f, hour), 24.f) / 24.f;
         DNC::ApplyClock(total + (want - day), want);
         Answer(id, true, "daytime " + std::to_string(hour) + " (day " + std::to_string(day) + " -> " +
                              std::to_string(want) + " of " + std::to_string(maxTime) + ")");
