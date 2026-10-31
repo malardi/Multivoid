@@ -14,6 +14,7 @@
 #include "ue_wrap/core/sdk_profile.h"
 
 #include <cwchar>
+#include <vector>
 
 namespace ue_wrap::script_gate {
 using namespace detail;
@@ -226,17 +227,21 @@ void ResolvePendingNames() {
     // The string-to-name conversion dispatches ProcessEvent, so it runs OUTSIDE the registration
     // mutex: a registration reached from inside that dispatch would otherwise wait on itself.
     // Under the mutex only the pending literals are collected, and the re-key is done after.
+    // On the heap: every keyed slot at most is 48 KiB at this table size, too much for a frame that
+    // runs inside the consumers' ticks. Allocated only while a name is pending (the early return above).
     struct Pending { const wchar_t* name; const wchar_t* className; };
-    Pending pending[kMaxKeyed];   // every keyed slot at most
-    int n = 0;
+    std::vector<Pending> pending;
     {
         std::lock_guard<std::mutex> lk(g_regMutex);
-        for (int i = 0; i < kSlots && n < kMaxKeyed; ++i) {
+        const int want = g_namesPending.load(std::memory_order_relaxed);
+        if (want > 0) pending.reserve(static_cast<size_t>(want < kMaxKeyed ? want : kMaxKeyed));
+        for (int i = 0; i < kSlots && static_cast<int>(pending.size()) < kMaxKeyed; ++i) {
             const Entry& e = g_nameTable[i];
             if (e.key.load(std::memory_order_relaxed) != 0 && !e.resolved.load(std::memory_order_relaxed) && e.name)
-                pending[n++] = {e.name, e.className};
+                pending.push_back({e.name, e.className});
         }
     }
+    const int n = static_cast<int>(pending.size());
     for (int j = 0; j < n; ++j) {
         const Pending& p = pending[j];
         const R::FName f = ue_wrap::fname_utils::StringToFName(p.name);

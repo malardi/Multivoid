@@ -1,4 +1,7 @@
 // ue_wrap/core/ufunction_hook.cpp -- see ue_wrap/core/ufunction_hook.h.
+//
+// The post thunk's return-size read and its game-thread guard are adapted from
+// ElvardFIC/WatchersOfTheVoid src/votv-coop/src/ue_wrap/core/ufunction_hook.cpp (MIT).
 
 #include "ue_wrap/core/ufunction_hook.h"
 
@@ -47,6 +50,9 @@ struct Slot {
     int     paramCount = 0;
     int16_t paramOffsets[kMaxPreParams] = {};
     bool    streamMismatchLogged = false;
+    // A post hook's return value size in bytes (its CPF_ReturnParm property), 0 for a function that
+    // returns nothing. Read once at install; the thunk never reads more of *Result than this.
+    int     resultBytes = 0;
 };
 
 // This facility is the STANDARD seam for every dispatch our ProcessEvent detour cannot see
@@ -146,8 +152,12 @@ void __fastcall NativeThunk(void* context, void* stack, void* result) {
     Slot& s = g_slots[N];
     // Transparent forward: steps the params, runs the impl, writes *result.
     s.original(context, stack, result);
-    // Disarmed, or a re-entrant cb -> skip (no double-convert from a nested spawn).
-    if (!s.armed.load(std::memory_order_relaxed) || !s.cb || t_inCb) return;
+    // Disarmed, or a re-entrant cb -> skip (no double-convert from a nested spawn). Off the game
+    // thread too, as the pre thunk does: an animation worker's update reaches hooked natives, and
+    // every callback is game-thread code (they read the registries and post to the game thread).
+    if (!s.armed.load(std::memory_order_relaxed) || !s.cb || t_inCb ||
+        !ue_wrap::game_thread::IsGameThread())
+        return;
     // FFrame::Object is the actor whose bytecode is executing -- the SOURCE entity for a spawn
     // issued from its ubergraph -- and Node and Locals are the function and storage of that
     // frame. Read after the forward: stepping the parameters moves the frame's code pointer and
@@ -160,11 +170,15 @@ void __fastcall NativeThunk(void* context, void* stack, void* result) {
         frame.codeOffset = CodeOffsetOf(stack);
     }
     // *Result = the native fn's RESULT_PARAM (the spawned actor for BeginDeferred). NULL-safe:
-    // a failed spawn leaves it null -> the cb gets null + logs it (never derefs blind).
-    void* spawned = result ? *reinterpret_cast<void**>(result) : nullptr;
+    // a failed spawn leaves it null -> the cb gets null + logs it (never derefs blind). Read only
+    // for a pointer-sized return: a bool query's storage is one byte and a void function's may be
+    // none at all, so an unconditional eight-byte read ran past it. Other returns reach their
+    // callback through CurrentResult alone, and a function with no return publishes no storage.
+    void* spawned = nullptr;
+    if (result && s.resultBytes == static_cast<int>(sizeof(void*))) std::memcpy(&spawned, result, sizeof(spawned));
     t_inCb = true;
     t_frame = frame;
-    t_result = result;
+    t_result = s.resultBytes > 0 ? result : nullptr;
     const int rc = RunCbSEH(s.cb, context, srcObj, spawned);
     t_result = nullptr;
     t_frame = CallerFrame{nullptr, nullptr};
@@ -356,6 +370,9 @@ bool InstallPostHookFn(void* ufunction, PostNativeCallback cb, bool armed) {
     g_slots[n].ufunction = ufunction;
     g_slots[n].original  = original;
     g_slots[n].cb        = cb;
+    g_slots[n].resultBytes = 0;
+    for (const R::ParamInfo& p : R::FunctionParams(ufunction))
+        if (p.flags & P::cpf::ReturnParm) g_slots[n].resultBytes = p.size;
     g_slots[n].armed.store(armed, std::memory_order_relaxed);
     g_slotCount = n + 1;     // slot fully populated before the thunk can be reached
     // An 8-byte aligned pointer swap: the Func slot is 8-aligned and the UFunction lives in the
