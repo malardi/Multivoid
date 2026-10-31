@@ -41,6 +41,16 @@ that the sender holds the claim and the index is one of its own tabs, writes it 
 it on. A peer that does not hold the claim writes the switcher's index and nothing else: the game's own
 tab call also binds that peer's keys to a remote drone. A joiner gets the host's index at its world-ready.
 
+### The laptop's screen
+
+The rest of the desktop crosses as its operator sees it: each switcher's page, what is shown or collapsed,
+where a list is scrolled, what a text says (`coop/interactables/shared_screen_sync`). The operator is the
+peer holding the laptop claim, or the host while nobody does. The host mints a lease for each holder, a
+client operator reports its screen under that lease, and every other peer applies the host's canonical.
+The boot page is never read or written: the laptop's own startup drives it. Presentation only -- no press
+or verb is replayed. A new operator first repaints the screen it inherits, and a client keeps the claim
+until its final screen has been sent. A text-only change travels at most once a second.
+
 ### The laptop's inbox
 
 The laptop's messages -- the hash-collection task mails, the scientist and alien replies, the
@@ -191,6 +201,7 @@ disc under another peer's hold on every peer; the holder's own insert is the one
 | Kind | Direction | Carries |
 |---|---|---|
 | `LaptopTabReport`, `LaptopTabState` | the claim holder to the host; the host to the other clients | the switcher's index |
+| `SharedScreen` | the laptop's operator to the host; the host to every ready client | the desktop's rows under the operator's lease |
 | `BalanceSync` | the host to all | the absolute balance |
 | `UpgradeLevels` | the host to all | the eighteen levels, whole |
 | `UpgradeIntent` | a client to the host | the panel row's index and whether it is a buy or a sell |
@@ -233,6 +244,7 @@ an error line.
 | Concept | Files |
 |---|---|
 | the laptop's tab | `coop/interactables/laptop_tab` |
+| the laptop's screen | `coop/interactables/shared_screen_sync`, `ue_wrap/desk/shared_screen` |
 | the floppy slot | `coop/interactables/floppy_slot_sync`, `coop/interactables/laptop_buffer_sync`, `ue_wrap/devices/floppy_slot`, `ue_wrap/devices/serverbox`, `ue_wrap/devices/laptop` |
 | the inbox | `coop/world/email_sync`, `ue_wrap/world/email`, `coop/session/join_seed` |
 | the economy | `coop/world/balance_sync`, `coop/items/order_sync`, `coop/items/order_queue_sync`, `coop/items/coingun_sync`, `coop/interactables/upgrade_sync`, `ue_wrap/world/economy`, `ue_wrap/world/order_economy`, `ue_wrap/world/store_catalog`, `ue_wrap/world/upgrades` |

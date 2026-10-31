@@ -1178,6 +1178,12 @@ enum class ReliableKind : uint8_t {
     // the host every few seconds for every Omega (a late joiner's and a fresh mirror's seed). Not pre-world.
     // KerfurDripPayload, sent at its used length.
     KerfurDrip = 209,
+    // CLIENT->HOST and HOST->CLIENT: the base computer's desktop as its operator sees it -- each switcher's page,
+    // what is shown, where a list is scrolled, what a text says (coop/interactables/shared_screen_sync). The
+    // laptop's holder reports to the host under the host's lease; the host sends the canonical to each ready
+    // client. Chunked blob (BlobChunkPayload; coop/interactables/shared_screen_wire.h). Not relayed, not
+    // pre-world. Late join: the canonical at the joiner's world-ready.
+    SharedScreen = 247,
 };
 
 #pragma pack(push, 1)
