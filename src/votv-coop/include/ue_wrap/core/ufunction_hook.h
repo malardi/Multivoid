@@ -27,12 +27,14 @@ namespace ue_wrap::ufunction_hook {
 // executing, so the caller: the re-piling clump that issued a spawn. `spawnedResult` is *Result,
 // the native function's RESULT_PARAM -- for BeginDeferred the new actor, and possibly null on a
 // failed spawn. Fires AFTER the original Func returns, so `spawnedResult` is populated. Raw
-// UObject*s.
+// UObject*s. Only a pointer-sized return is passed this way; any other return (a bool, a vector,
+// none) passes null, and its storage is reached through CurrentResult.
 //
-// THREADING: native UFunction dispatch, UWorld::SpawnActor among it, is GAME-THREAD only, so this
-// runs on the game thread -- but DEEP inside an engine call, so it MUST be cheap and MUST NOT
-// throw. The facility SEH-wraps it as a crash backstop, the same firewall contract the ProcessEvent
-// observers have.
+// THREADING: the callback runs on the game thread only. Most native dispatch is game-thread, but an
+// animation worker's update reaches some hooked natives too; such a call runs the original and skips
+// the callback, as a pre hook's does. On the game thread it runs DEEP inside an engine call, so it
+// MUST be cheap and MUST NOT throw. The facility SEH-wraps it as a crash backstop, the same firewall
+// contract the ProcessEvent observers have.
 using PostNativeCallback = void(*)(void* context, void* sourceObject, void* spawnedResult);
 
 // The frame the call a callback (post or pre) is reporting executes in: for a call from bytecode
