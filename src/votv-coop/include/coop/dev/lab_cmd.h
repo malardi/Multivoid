@@ -26,6 +26,10 @@
 //   vitals food=100 sleep=100 ...   write the player's vital rows
 //   keepfed 1|0                     keep food, sleep and health full every 5 s
 //   worlds [tag] / gc / pins        the UWorld census, a forced collection, the world-scoped GC pins
+// Looking:
+//   cam <target> [d] [yaw] [h]      a camera d cm from the target at compass yaw, h up, aimed at it;
+//                                   the view goes to it until `cam off` (shot then shows the target)
+//   funcs <target|Class> [text]     the class's functions and their parameters into <tag>_funcs.txt
 
 #pragma once
 

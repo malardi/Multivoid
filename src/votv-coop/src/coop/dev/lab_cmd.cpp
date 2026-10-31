@@ -404,6 +404,60 @@ void Feed() {
     V::Write(V::Field::Health, maxHealth > 0.f ? maxHealth : 100.f);
 }
 
+
+// ---- the lab camera: a CameraActor the player's view is handed to, for screenshots from outside ----
+void* g_cam = nullptr;
+int32_t g_camIdx = -1;
+
+void* LocalController() {
+    void* local = coop::players::Registry::Get().Local();
+    return local ? ue_wrap::engine::GetController(local) : nullptr;
+}
+
+bool SetViewTarget(void* ctrl, void* target) {
+    if (!ctrl || !target) return false;
+    void* fn = R::FindDispatchFunction(R::ClassOf(ctrl), L"SetViewTargetWithBlend", nullptr);
+    if (!fn) return false;
+    ue_wrap::ParamFrame f(fn);
+    if (!f.valid() || !f.SetRaw(L"NewViewTarget", &target, sizeof(target))) return false;
+    return ue_wrap::Call(ctrl, f);  // BlendTime 0: a cut
+}
+
+// The listing of a class's functions (its own and its parents' up to Actor), with their parameters.
+std::string Funcs(const std::string& t, const std::string& filter) {
+    void* cls = nullptr;
+    if (void* obj = Target(t)) cls = R::ClassOf(obj);
+    if (!cls) cls = R::FindClass(Wide(t).c_str());
+    if (!cls) return "";
+    std::ostringstream o;
+    int n = 0;
+    const std::string want = Lower(filter);
+    for (int depth = 0; cls && depth < 8; ++depth, cls = R::SuperStructOf(cls)) {
+        const std::string cn = Narrow(R::ToString(R::NameOf(cls)));
+        if (cn == "Actor" || cn == "Object" || cn == "Pawn" || cn == "Character") break;
+        o << "== " << cn << "\r\n";
+        void* f = *reinterpret_cast<void**>(static_cast<uint8_t*>(cls) + 0x48);  // UStruct::Children
+        for (int hops = 0; f && hops < 65536; ++hops) {
+            if (R::ClassNameOf(f) == L"Function") {
+                const std::string fn = Narrow(R::ToString(R::NameOf(f)));
+                if (want.empty() || Lower(fn).find(want) != std::string::npos) {
+                    o << fn << "(";
+                    bool first = true;
+                    for (const auto& prm : R::FunctionParams(f)) {
+                        o << (first ? "" : ", ") << Narrow(prm.name) << ((prm.flags & 0x400) ? ":ret" : (prm.flags & 0x100) ? ":out" : "");
+                        first = false;
+                    }
+                    o << ")\r\n";
+                    ++n;
+                }
+            }
+            f = *reinterpret_cast<void**>(static_cast<uint8_t*>(f) + 0x28);  // UField::Next
+        }
+    }
+    WriteText(PathOf(L"_funcs.txt"), o.str());
+    return std::to_string(n) + " function(s) in " + Narrow(g_tag) + "_funcs.txt";
+}
+
 void Run(long long id, const std::string& verb, const std::string& rest) {
     std::istringstream in(rest);
     void* local = coop::players::Registry::Get().Local();
@@ -716,6 +770,47 @@ void Run(long long id, const std::string& verb, const std::string& rest) {
         g_keepFed = (v != "0" && v != "off");
         if (g_keepFed) Feed();
         Answer(id, true, std::string("keepfed ") + (g_keepFed ? "on" : "off"));
+    } else if (verb == "funcs") {
+        // funcs <target|Class> [text]: the functions (and their parameters) into <tag>_funcs.txt.
+        std::string t, filter;
+        in >> t >> filter;
+        const std::string r = Funcs(t, filter);
+        Answer(id, !r.empty(), r.empty() ? "funcs: no class " + t : "funcs " + t + ": " + r);
+    } else if (verb == "cam") {
+        // cam <target> [dist] [yaw] [height]: a camera `dist` cm from the target at compass `yaw`, `height` up,
+        // looking at it, and the view handed to it. cam off: the view back to the player.
+        std::string t;
+        in >> t;
+        void* ctrl = LocalController();
+        if (t == "off") {
+            const bool ok = SetViewTarget(ctrl, coop::players::Registry::Get().Local());
+            Answer(id, ok, "cam off");
+            return;
+        }
+        float dist = 300.f, yaw = 0.f, height = 100.f;
+        if (!(in >> dist)) dist = 300.f;
+        if (!(in >> yaw)) yaw = 0.f;
+        if (!(in >> height)) height = 100.f;
+        void* obj = Target(t);
+        ue_wrap::FVector at{};
+        if (!obj || !ue_wrap::engine::TryGetActorLocation(obj, at)) { Answer(id, false, "cam: no target " + t); return; }
+        const double rad = yaw * 3.14159265358979 / 180.0;
+        const ue_wrap::FVector eye{at.X + static_cast<float>(std::cos(rad) * dist),
+                                   at.Y + static_cast<float>(std::sin(rad) * dist), at.Z + height};
+        if (!g_cam || !R::IsLiveByIndex(g_cam, g_camIdx)) {
+            g_cam = ue_wrap::engine::SpawnActor(R::FindClass(L"CameraActor"), eye, false);
+            g_camIdx = g_cam ? R::InternalIndexOf(g_cam) : -1;
+        }
+        if (!g_cam) { Answer(id, false, "cam: no CameraActor"); return; }
+        const float dx = at.X - eye.X, dy = at.Y - eye.Y, dz = at.Z - eye.Z;
+        const ue_wrap::FRotator rot{static_cast<float>(std::atan2(dz, std::sqrt(dx * dx + dy * dy)) * 180.0 / 3.14159265358979),
+                                    static_cast<float>(std::atan2(dy, dx) * 180.0 / 3.14159265358979), 0.f};
+        ue_wrap::engine::SetActorLocation(g_cam, eye);
+        ue_wrap::engine::SetActorRotation(g_cam, rot);
+        const bool ok = SetViewTarget(ctrl, g_cam);
+        char b[160];
+        std::snprintf(b, sizeof(b), "cam %s at (%.0f,%.0f,%.0f) yaw %.0f pitch %.0f", t.c_str(), eye.X, eye.Y, eye.Z, rot.Yaw, rot.Pitch);
+        Answer(id, ok, b);
     } else if (verb == "log") {
         UE_LOGI("[LAB] ---- %s ----", rest.c_str());
         Answer(id, true, "log");
