@@ -7,6 +7,7 @@
 #include "coop/player/remote_player.h"
 
 #include "ue_wrap/actors/kerfur.h"
+#include "ue_wrap/actors/puppet.h"
 #include "ue_wrap/core/game_thread.h"
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/reflection.h"
@@ -18,6 +19,7 @@
 #include <atomic>
 #include <cstdint>
 #include <unordered_map>
+#include <vector>
 
 namespace coop::served_player {
 namespace {
@@ -28,10 +30,13 @@ namespace P  = ue_wrap::profile;
 namespace R  = ue_wrap::reflection;
 namespace sg = ue_wrap::script_gate;
 namespace UH = ue_wrap::ufunction_hook;
+namespace UP = ue_wrap::puppet;
 
 UE_FACT_FN(kRowGetMainPlayer, "served_player", L"lib_C", L"getMainPlayer", Declared);
 UE_FACT_FN(kRowGetPlayerCharacter, "served_player", L"GameplayStatics", L"GetPlayerCharacter", Declared);
 UE_FACT_FN(kRowGetPlayerPawn, "served_player", L"GameplayStatics", L"GetPlayerPawn", Declared);
+// The kerfur AnimBP's update, on the class a served Omega's body actually runs (known at run time).
+UE_FACT_FN(kRowAnimUpdate, "served_player", nullptr, L"BlueprintUpdateAnimation", RuntimeClass);
 constexpr int kTagMainPlayer = 0x53505001;  // 'SPP' 1
 
 std::atomic<coop::net::Session*> g_session{nullptr};
@@ -40,9 +45,11 @@ struct Rec {
     int32_t idx;
     uint8_t slot;
     uint8_t seams;
+    bool    gazeSaid = false;  // the first head-look aimed at this record's player, said once
 };
 std::unordered_map<void*, Rec> g_records;
 unsigned long long g_answered = 0;
+unsigned long long g_gazed = 0;
 
 // A native player-0 read, post-hooked: the result is rewritten when the calling object is a robot served
 // through this seam.
@@ -104,6 +111,93 @@ void OnPawnPost(void* /*context*/, void* source, void* /*result*/) { AnswerNativ
 
 NativeSeam g_gpc{&kRowGetPlayerCharacter, kPlayerCharacter, &OnCharacterPost};
 NativeSeam g_gpp{&kRowGetPlayerPawn, kPlayerPawn, &OnPawnPost};
+
+// ---- the gaze: where a served Omega's head looks ------------------------------------------------
+// The Omega's body turns toward its player through a GetPlayerPawn read the pawn seam answers (receivetick
+// @68-@88: FindLookAtRotation from the robot to the pawn, while the pawn is behind it), but its head does
+// not: the AnimBP's own update aims `lookAt` at the local PlayerCameraManager -- on the host, the host's
+// camera -- and the pose stream carries that target to every client's mirror, so a client's Omega walked
+// to the client with its head turned to the host. A puppet has no camera manager to answer that read with,
+// so this seam answers the update instead: a post-hook on the AnimBP's BlueprintUpdateAnimation, on the
+// class the served Omega's body runs, re-aims `lookAt` at the served player's eye once the update wrote
+// it, before the graph copies it into the LookAt nodes (ue_wrap::puppet::AimKerfurAnimLookAt). A custom
+// look the robot's own graph set (the spooky stare, the punch) keeps its target. Where the head turns at
+// all stays each peer's own: `lookingAtPlayer`, the state gate the update recomputes from the local
+// camera's angle, is left alone, so a client sees its Omega's head follow it whenever it stands in front.
+//
+// Cosmetic: it gates no record. A robot is served through its reads whether or not the gaze hooks, and
+// a class whose update cannot be hooked is said once and leaves that head looking at the host. The hook
+// is installed on the game thread from Tick, outside any engine callback, for each class a record's
+// robot runs (the skins are data-only subclasses, so one class in practice), and is armed only while a
+// record lives: the same AnimBP animates every puppet and the local body. One GT pointer chase and one
+// map probe per update of each of its instances while armed.
+struct GazeHook {
+    void* fn;
+    bool  armed;
+};
+constexpr size_t kMaxGazeHooks = 4;
+std::vector<GazeHook> g_gaze;
+// Every body class already looked at, hooked or refused, so a refusal is said once and not asked again.
+constexpr size_t kMaxGazeClasses = 16;
+std::vector<void*> g_gazeClasses;
+
+void OnGazePost(void* /*context*/, void* anim, void* /*result*/) {
+    if (g_records.empty() || !anim) return;
+    void* robot = UP::KerfurAnimActor(anim);
+    if (!robot) return;
+    auto it = g_records.find(robot);
+    if (it == g_records.end() || !(it->second.seams & kPlayerPawn)) return;
+    if (!R::IsLiveByIndex(robot, it->second.idx)) return;  // Tick drops it; nothing is erased mid-update
+    coop::RemotePlayer* rp = coop::players::Registry::Get().Puppet(it->second.slot);
+    if (!rp || !rp->valid() || !rp->HasPose()) return;  // no body: the update's own aim stands
+    ue_wrap::FVector eye{};
+    if (!rp->TryGetEyePosition(eye)) return;
+    if (!UP::AimKerfurAnimLookAt(anim, eye)) return;
+    ++g_gazed;
+    if (!it->second.gazeSaid) {
+        it->second.gazeSaid = true;
+        UE_LOGI("served_player: Omega %p's head looks at slot %u's eye (%.0f,%.0f,%.0f) -- the gaze seam answered "
+                "its AnimBP's aim at the host's camera", robot, static_cast<unsigned>(it->second.slot), eye.X,
+                eye.Y, eye.Z);
+    }
+}
+
+// Hook the update of the class `robot`'s body runs, once per class. Game thread, outside any callback.
+void EnsureGaze(void* robot) {
+    void* cls = UP::KerfurBodyAnimClass(robot);
+    if (!cls) return;  // no kerfur-family body (a Kerfus), or not animated yet: asked again next tick
+    for (void* seen : g_gazeClasses)
+        if (seen == cls) return;
+    if (g_gazeClasses.size() >= kMaxGazeClasses) return;
+    g_gazeClasses.push_back(cls);
+    const std::wstring clsName = R::ClassNameOf(cls);
+    const ue_wrap::facts::Resolved resolved = ue_wrap::facts::ResolveOn(kRowAnimUpdate, cls);
+    void* fn = resolved.Fn();
+    // The Blueprint's own override, never the native UAnimInstance declaration, which would hook every
+    // AnimInstance in the game; an override a kerfur-family super declares serves this class too.
+    if (!fn || !UP::IsKerfurAnimClass(R::OuterOf(fn))) {
+        UE_LOGW("served_player: %ls has no kerfur AnimBP update of its own (fn=%p) -- an Omega of that body keeps "
+                "its head on the host while it serves a client", clsName.c_str(), fn);
+        return;
+    }
+    for (const GazeHook& g : g_gaze)
+        if (g.fn == fn) return;  // a subclass of a class already hooked, running the same update
+    if (g_gaze.size() >= kMaxGazeHooks || !UH::InstallPostHook(resolved, &OnGazePost, /*armed=*/false)) {
+        UE_LOGE("served_player: the gaze hook on %ls's update did not install -- an Omega serving a client keeps "
+                "its head on the host", clsName.c_str());
+        return;
+    }
+    g_gaze.push_back(GazeHook{fn, false});
+    UE_LOGI("served_player: the gaze hook is on %ls's update -- a served Omega's head looks at its player",
+            clsName.c_str());
+}
+
+void ArmGaze(bool want) {
+    for (GazeHook& g : g_gaze) {
+        if (g.armed == want) continue;
+        if (UH::SetArmed(g.fn, &OnGazePost, want)) g.armed = want;
+    }
+}
 
 // lib.getMainPlayer(__WorldContext, out AsMain Player): the library's default object runs the body, so the
 // calling robot is the caller frame's object. Of a served robot's calls only the Omega's disc insert reads
@@ -210,6 +304,7 @@ void UpdateArm() {
     const uint8_t want = WantedSeams();
     ArmSeam(g_gpc, (want & kPlayerCharacter) != 0);
     ArmSeam(g_gpp, (want & kPlayerPawn) != 0);
+    ArmGaze((want & kPlayerPawn) != 0);
 }
 
 }  // namespace
@@ -256,10 +351,15 @@ uint8_t ServedSlot(void* robot) {
 }
 
 void Tick() {
+    // Every record change re-arms (UpdateArm), so with no record and every seam disarmed the gaze is too.
     if (g_records.empty() && !g_mainWatched && !g_gpc.armed && !g_gpp.armed) return;
     for (auto it = g_records.begin(); it != g_records.end();) {
-        if (!R::IsLiveByIndex(it->first, it->second.idx)) it = g_records.erase(it);
-        else ++it;
+        if (!R::IsLiveByIndex(it->first, it->second.idx)) {
+            it = g_records.erase(it);
+            continue;
+        }
+        if (it->second.seams & kPlayerPawn) EnsureGaze(it->first);
+        ++it;
     }
     UpdateArm();
 }
@@ -274,11 +374,13 @@ void OnPeerLeft(uint8_t slot) {
 }
 
 void OnDisconnect() {
-    if (g_answered)
-        UE_LOGI("served_player: session end -- %llu player-0 reads answered with a served client", g_answered);
+    if (g_answered || g_gazed)
+        UE_LOGI("served_player: session end -- %llu player-0 reads answered with a served client, %llu head-look "
+                "updates aimed at one", g_answered, g_gazed);
     g_records.clear();
     UpdateArm();
     g_answered = 0;
+    g_gazed = 0;
 }
 
 }  // namespace coop::served_player

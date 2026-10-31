@@ -304,6 +304,33 @@ void Install(coop::net::Session* session) {
     SettleKillWatch();
 }
 
+bool ServiceSettling() { return Settling(); }
+
+bool ServeActivator(void* omega, uint8_t slot) {
+    auto* s = LoadSession();
+    if (!omega || !s || !s->running() || s->role() != coop::net::Role::Host) return false;
+    if (slot == coop::players::kPeerIdHost || slot >= coop::players::kMaxPeers) return false;
+    if (!g_killLive) {
+        // The same refusal a client's command takes: an Omega that serves a client when its murder mode
+        // starts would chase that client, and only the live watch ends the service first.
+        if (!g_saidUnserved) {
+            g_saidUnserved = true;
+            UE_LOGW("kerfur_command: the Omega's startKill watch is not live -- an Omega a client turns on, or "
+                    "commands, serves the host");
+        }
+        return false;
+    }
+    if (!SP::Serve(omega, slot, kOmegaSeams)) {
+        UE_LOGW("kerfur_command: Omega %p, turned on by slot %u, serves the host -- its seams are not ready",
+                omega, static_cast<unsigned>(slot));
+        return false;
+    }
+    UE_LOGI("kerfur_command: Omega %p turned on by slot %u's request -- it follows, turns to and looks at that "
+            "player until a command, murder mode, its turn-off or the player's leave ends it", omega,
+            static_cast<unsigned>(slot));
+    return true;
+}
+
 void OnCommandRequest(const coop::net::KerfurCommandPayload& payload, uint8_t senderPeerSlot) {
     auto* s = LoadSession();
     if (!s || s->role() != coop::net::Role::Host) {

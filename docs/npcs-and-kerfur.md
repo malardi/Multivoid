@@ -117,7 +117,11 @@ relayed host-authoritatively (`coop/creatures/kerfur_command`): the host cancels
 dispatch on both roles and re-runs the game's own verb with the kerfur serving the peer who asked
 (`coop/creatures/served_player`), so its reads of the player answer that peer: follow follows it,
 patrol circles it. A request waits while the host has no body for its sender, and a verb the game
-refuses changes nobody's service. Nothing writes a puppet's hand yet, so a client's get the reports
+refuses changes nobody's service. Turning the robot on is a claim of the same kind: an Omega a client turns on serves that client from its
+birth, inside the host's turn-on verb, so it follows, turns to and looks at whoever turned it on; the host's own
+turn-on, a later command, murder mode, its turn-off and the client's leave end or hand back the service, and a robot
+loaded on from a save serves the host. Its head is aimed by its AnimBP at the local camera, which no puppet
+can answer, so `served_player` re-aims it after the update while the robot serves a client. Nothing writes a puppet's hand yet, so a client's get the reports
 gets the game's refusal hint, shown on the host. On a client the chosen verb is read at the E-input seam, the
 one dispatched through the engine, before the local dispatch runs
 (`coop/creatures/kerfur_menu_input`). At a join a save-loaded kerfur prop is adopted by class and

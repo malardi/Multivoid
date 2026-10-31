@@ -5,6 +5,7 @@
 
 #include "coop/creatures/kerfur_convert_host.h"
 
+#include "coop/creatures/kerfur_command.h"   // ServeActivator: the client who turns an Omega on is served
 #include "coop/creatures/kerfur_entity.h"
 #include "coop/creatures/kerfur_form_assembler.h"
 #include "coop/creatures/npc_sync.h"
@@ -60,7 +61,14 @@ constexpr size_t kMaxPending = 4;
 
 struct Slot {
     coop::net::IntentQueue<coop::net::KerfurConvertPayload> queue;
+    uint64_t settleSinceMs = 0;  // when the head turn-on began waiting for the Omega's service to settle, or 0
 };
+
+// A client's turn-on waits at the head while the Omega's service is still settling (the startKill watch or
+// the Omega's seams not yet live), since the robot it makes would otherwise serve the host from its first
+// read. Bounded: the settling is the first seconds of a session, and a watch that never settles must not
+// hold a client's turn-on for good -- past the bound the verb runs and the robot serves the host.
+constexpr uint64_t kSettleWaitMs = 5000;
 coop::roster_ledger::PerSlotState<Slot> g_slots;
 coop::net::RefusalTally g_tally{"kerfur_convert"};
 
@@ -172,6 +180,13 @@ int RequestSlotFor(void* object) {
     return (object && object == g_runningObject) ? g_runningSlot : -1;
 }
 
+void OnTurnOnSuccessor(void* npc, void* verbObject) {
+    if (!npc) return;
+    const int slot = RequestSlotFor(verbObject);
+    if (slot < 1 || slot >= coop::net::kMaxPeers) return;  // the host's own press, or no request running here
+    coop::kerfur_command::ServeActivator(npc, static_cast<uint8_t>(slot));
+}
+
 void ConvergeAtReturn(void* oldActor, int32_t oldIdx, EL::ElementId oldEid, bool toProp, int requestSlot) {
     char who[32];
     if (requestSlot >= 0) std::snprintf(who, sizeof(who), "slot %d's request", requestSlot);
@@ -274,7 +289,20 @@ void Tick() {
     auto* s = g_session.load(std::memory_order_acquire);
     if (!s || !s->running() || s->role() != coop::net::Role::Host) return;
     for (uint8_t slot = 1; slot < coop::net::kMaxPeers; ++slot) {
-        g_slots[slot].queue.Serve(kBudget, coop::net::NowMs, [&](const coop::net::KerfurConvertPayload& p) {
+        Slot& sl = g_slots[slot];
+        sl.queue.Serve(kBudget, coop::net::NowMs, [&](const coop::net::KerfurConvertPayload& p) {
+            if (!p.toProp && coop::kerfur_command::ServiceSettling()) {
+                const uint64_t now = coop::net::NowMs();
+                if (sl.settleSinceMs == 0) {
+                    sl.settleSinceMs = now;
+                    UE_LOGI("kerfur_convert: slot %u's turn-on waits -- the Omega's service is still settling",
+                            static_cast<unsigned>(slot));
+                }
+                if (now - sl.settleSinceMs < kSettleWaitMs) return coop::net::Served::Wait;
+                UE_LOGW("kerfur_convert: slot %u's turn-on runs unsettled after %llu ms -- the Omega serves the host",
+                        static_cast<unsigned>(slot), static_cast<unsigned long long>(now - sl.settleSinceMs));
+            }
+            sl.settleSinceMs = 0;
             RunRequest(p, slot);
             return coop::net::Served::Done;
         });

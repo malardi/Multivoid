@@ -82,6 +82,22 @@ uint32_t RefusedFor(int slot);
 // slot is the router's, 0xFF for an unknown sender. Game thread.
 void NoteRefused(uint8_t senderPeerSlot, const char* why);
 
+// HOST: an Omega a client turned on serves that client, as a command it gave would: its follow, its turn
+// toward the player and its patrol read that player's puppet through served_player, and its head looks at
+// that player's eye. Called inside the turn-on verb, at the new robot's spawn (kerfur_convert_host), so
+// whatever the rest of the verb has it read already reads the client. False, the robot serving the host as the game wrote it,
+// for the host's own slot, while the startKill watch is not live (murder mode's chase would read the client),
+// or while a seam is not ready; each refusal is said. The service then lasts as a command's does: until a
+// later command (the host's own hands it back), murder mode, its turn-off (the robot dies; a turn-on mints a
+// new one, served by whoever turns it on), or the client's leave. A robot loaded from a save, on before the
+// save, serves the host: the save names no player. Game thread.
+bool ServeActivator(void* omega, uint8_t slot);
+
+// HOST: whether an Omega's service is still settling -- the startKill watch or the Omega's seams not yet
+// live, and not refused either -- so a turn-on run now could not serve its client. The turn-on lane holds a
+// client's request for a bounded while meanwhile. Game thread.
+bool ServiceSettling();
+
 // Clear the recorded actions and the tally. Net disconnect (all peers gone); served_player drops the served
 // kerfurs, and a sender's queue goes with its slot's occupant.
 void OnDisconnect();

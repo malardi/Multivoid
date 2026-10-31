@@ -340,6 +340,39 @@ void DriveKerfurBodyYaw(void* npcActor, float yaw) {
     ue_wrap::engine::SetComponentWorldRotation(mesh, ue_wrap::FRotator{0.f, yaw, 0.f});
 }
 
+void* KerfurBodyAnimClass(void* npcActor) {
+    void* anim = NpcBodyAnimInstance(npcActor);
+    return IsKerfurAnimBP(anim) ? R::ClassOf(anim) : nullptr;
+}
+
+bool IsKerfurAnimClass(void* cls) {
+    if (!cls) return false;
+    static void* kerfurAnimClass = nullptr;
+    if (!kerfurAnimClass) kerfurAnimClass = R::FindClass(P::name::AnimBPKerfurRegularClass);
+    if (!kerfurAnimClass) return false;
+    if (cls == kerfurAnimClass) return true;
+    void* bases[1] = { kerfurAnimClass };
+    return R::IsDescendantOfAny(cls, bases, 1);
+}
+
+void* KerfurAnimActor(void* anim) {
+    // UAnimInstance's outer is its USkeletalMeshComponent, the component's outer the owning actor: the
+    // chain puppet_spawn's head-gate hook walks for the same AnimBP.
+    if (!IsKerfurAnimBP(anim)) return nullptr;
+    void* comp = R::OuterOf(anim);
+    return comp ? R::OuterOf(comp) : nullptr;
+}
+
+bool AimKerfurAnimLookAt(void* anim, const FVector& worldTarget) {
+    if (!IsKerfurAnimBP(anim)) return false;
+    const int32_t lookOff   = ue_wrap::reflected_offset::AnimBP_kerfur_lookAt();
+    const int32_t customOff = ue_wrap::reflected_offset::AnimBP_kerfur_customLookAt();
+    if (lookOff < 0 || customOff < 0) return false;
+    if (ReadAt<bool>(anim, customOff)) return false;  // a custom look: the graph's own target, or a mirror's drive
+    WriteAt<FVector>(anim, lookOff, worldTarget);
+    return true;
+}
+
 void DriveCharacterMovement(void* puppetActor,
                             const FVector& worldVelocity,
                             bool inAir) {
