@@ -99,6 +99,14 @@ void ReleaseNpcElementSilent(coop::element::ElementId eid);
 // NPC bases, by a SuperStruct walk. False while the allowlist is not fully resolved.
 bool IsAllowlistedClass(void* cls);
 
+// The late allowlist classes (P::name::kNpcLateAllowlist), which load with their own events after the lane went
+// live. RefreshLateAllowlist looks each up in the object index (the install pump calls it every couple of
+// seconds); AdmitLateClass holds `cls`, or the class above it, whose name is a late entry, and is true when it
+// did -- for a caller that meets a late class before the index lists it (the console's catch, a client's mirror
+// spawn), asked before IsAllowlistedClass. A held class is kept. Game thread.
+void RefreshLateAllowlist();
+bool AdmitLateClass(void* cls);
+
 // Clear the per-session state: the tracked-NPC map, the counter, the bypass slot. The
 // interceptor stays installed; the cached classes and the function pointer remain valid across
 // a disconnect.

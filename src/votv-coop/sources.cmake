@@ -161,6 +161,7 @@ set(VOTVCOOP_SOURCES
     src/ue_wrap/actors/kerfus.cpp
     src/ue_wrap/actors/zombie.cpp
     src/ue_wrap/actors/fossilhound.cpp
+    src/ue_wrap/actors/rufus.cpp
     src/ue_wrap/actors/int_objects.cpp
     src/ue_wrap/world/votv_lib.cpp
     src/ue_wrap/world/economy.cpp

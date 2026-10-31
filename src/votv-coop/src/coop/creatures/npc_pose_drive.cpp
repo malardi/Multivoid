@@ -14,6 +14,7 @@
 #include "coop/net/protocol.h"
 #include "ue_wrap/engine/engine.h"
 #include "ue_wrap/actors/fossilhound.h"  // DriveBodyYaw -- the hound's body facing
+#include "ue_wrap/actors/rufus.h"        // DriveBodyYaw -- Rufus's body facing
 #include "ue_wrap/actors/kerfur.h"   // DriveKerfurState -- host-authoritative command and spooky flag
 #include "ue_wrap/actors/puppet.h"
 #include "ue_wrap/core/reflection.h"
@@ -193,6 +194,7 @@ bool Npc::ApplyToEngine() {
     if (hasBodyYaw_) {
         Pup::DriveKerfurBodyYaw(actor, curBodyYaw_);
         ue_wrap::fossilhound::DriveBodyYaw(actor, curBodyYaw_);
+        ue_wrap::rufus::DriveBodyYaw(actor, curBodyYaw_);
     }
     // Write the host-authoritative kerfur command and spooky flag so the parked mirror's AnimBP
     // state machine matches the host (the mirror runs no AI -> it can't pick its own). Class-gated

@@ -23,6 +23,7 @@
 #include "coop/net/session.h"
 #include "ue_wrap/engine/engine.h"
 #include "ue_wrap/actors/fossilhound.h"  // ReadBodyYaw -- the hound's body hangs on its SpringArm's end
+#include "ue_wrap/actors/rufus.h"        // ReadBodyYaw -- Rufus's body hangs on its SpringArm too
 #include "ue_wrap/actors/kerfur.h"  // HasSaveKey (savePersisted flag) + ReadKerfurState (mirror fidelity)
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/actors/puppet.h"
@@ -186,9 +187,11 @@ void TickPoseStream() {
         // so the mirror reproduces the host's body facing (its actor tick is off -> it cannot
         // compute it).
         // The fossil hound's body turns apart from its root too: its mesh hangs on the SpringArm's end, which the
-        // host's copy turns (the graph's tick, toward the velocity) and a mirror never does.
+        // host's copy turns (the graph's tick, toward the velocity) and a mirror never does. Rufus's mesh hangs on a
+        // SpringArm the same way, and its mirror's graph is refused whole.
         float bodyYaw = 0.f;
-        if (ue_wrap::puppet::ReadKerfurBodyYaw(actor, bodyYaw) || ue_wrap::fossilhound::ReadBodyYaw(actor, bodyYaw)) {
+        if (ue_wrap::puppet::ReadKerfurBodyYaw(actor, bodyYaw) || ue_wrap::fossilhound::ReadBodyYaw(actor, bodyYaw) ||
+            ue_wrap::rufus::ReadBodyYaw(actor, bodyYaw)) {
             snap.bodyYaw = ue_wrap::NormalizeAxis(bodyYaw);
             snap.stateBits |= coop::net::kEntityPoseBitHasBodyYaw;
             static bool s_loggedBody = false;

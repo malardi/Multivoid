@@ -49,6 +49,11 @@ constexpr EntryTable kTables[] = {
     {L"npc_zombie_corpse_C", nullptr, 0},
     {L"npc_zombie_skerfuro_C", nullptr, 0},
     {P::name::NpcClass_Fossilhound, kFossilhound, sizeof(kFossilhound) / sizeof(kFossilhound[0])},
+    // rufus_C (and thiccfus_C, which runs its graph) allows none of it: its BeginPlay, tick, AI, sensing, HUD,
+    // grab and damage bodies are all entries of the one graph, and each acts on the client's own player or world.
+    // The presentation its BeginPlay set up is ue_wrap::rufus's. Adapted from ElvardFIC/WatchersOfTheVoid's
+    // rufus_birth_guard.h (MIT), which refuses the whole graph of a mirror.
+    {P::name::NpcClass_Rufus, nullptr, 0},
 };
 
 constexpr size_t kTableCount = sizeof(kTables) / sizeof(kTables[0]);

@@ -8,6 +8,7 @@
 #include "coop/element/element.h"
 
 #include "ue_wrap/actors/fossilhound.h"
+#include "ue_wrap/actors/rufus.h"
 #include "ue_wrap/actors/zombie.h"
 #include "ue_wrap/core/hot_path_guard.h"
 #include "ue_wrap/core/log.h"
@@ -38,12 +39,16 @@ UE_FACT_FN(kRowCorpse, "npc_mirror_brain", L"npc_zombie_corpse_C", L"ExecuteUber
 UE_FACT_FN(kRowSkerfuro, "npc_mirror_brain", L"npc_zombie_skerfuro_C", L"ExecuteUbergraph_npc_zombie_skerfuro",
            Declared);
 UE_FACT_FN(kRowHound, "npc_mirror_brain", L"fossilhound_C", L"ExecuteUbergraph_fossilhound", Declared);
+// Rufus: thiccfus_C runs this graph too (it inherits rufus_C). Adapted from ElvardFIC/WatchersOfTheVoid's
+// rufus_birth_guard.h (MIT).
+UE_FACT_FN(kRowRufus, "npc_mirror_brain", L"rufus_C", L"ExecuteUbergraph_rufus", Declared);
 
 constexpr int kTagZombie   = 0x4D505A30;  // 'MPZ0'
 constexpr int kTagSummoner = 0x4D505A41;  // 'MPZA'
 constexpr int kTagCorpse   = 0x4D505A43;  // 'MPZC'
 constexpr int kTagSkerfuro = 0x4D505A53;  // 'MPZS'
 constexpr int kTagHound    = 0x4D504630;  // 'MPF0'
+constexpr int kTagRufus    = 0x4D505230;  // 'MPR0'
 
 // ---- The mark ----
 
@@ -135,6 +140,7 @@ Watch g_watches[] = {
     {&kRowCorpse, kTagCorpse, R::ParamOffset{L"EntryPoint"}},
     {&kRowSkerfuro, kTagSkerfuro, R::ParamOffset{L"EntryPoint"}},
     {&kRowHound, kTagHound, R::ParamOffset{L"EntryPoint"}},
+    {&kRowRufus, kTagRufus, R::ParamOffset{L"EntryPoint"}},
 };
 constexpr size_t kWatches = sizeof(g_watches) / sizeof(g_watches[0]);
 
@@ -326,9 +332,14 @@ void SetUpPresentation(void* actor, Origin origin) {
     void* const cls = R::ClassOf(actor);
     static const EntryTable* const zombieTable = TableNamed(P::name::NpcClass_Zombie);
     static const EntryTable* const houndTable = TableNamed(P::name::NpcClass_Fossilhound);
+    static const EntryTable* const rufusTable = TableNamed(P::name::NpcClass_Rufus);
     bool ok = true;
     if (zombieTable && ChainHasTable(cls, *zombieTable)) {
         ok = ue_wrap::zombie::ApplyBeginPlayPresentation(actor);
+    } else if (rufusTable && ChainHasTable(cls, *rufusTable)) {
+        // Only the mesh on its arm and the AnimBP's pawn: the rest of its BeginPlay is HUD, AI and sound, the
+        // host's alone. An adopted twin's own BeginPlay ran already; running the two steps again is harmless.
+        ok = ue_wrap::rufus::ApplyBeginPlayPresentation(actor);
     } else if (houndTable && ChainHasTable(cls, *houndTable)) {
         // An adopted twin's own BeginPlay ran as the client's creature and already started the per-viewer loop.
         const bool ownBeginPlayRan = origin == Origin::Adopted;
