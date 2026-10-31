@@ -12,6 +12,9 @@
 // and the impact component call too, so it is identified by its CALLER, through a script-body gate
 // watch. The TOOLGUN: tool_spawn_C::init enters ExecuteUbergraph_tool_spawn, which finishes its
 // own spawns and holds no other FinishSpawningActor, so the native seam's caller frame names it.
+// The same caller-frame test admits the player-run graphs that finish their own output: the
+// hacksaw's scrap, the plank crowbar's return, a snack's leftover, a dug hole's loot and the
+// workbench's crafted item (ExecuteUbergraph_prop_workbench).
 
 // Gameplay layer (principle 7): reaches the engine only through ue_wrap. Game thread only -- the
 // gate and the native seam both hand their callbacks the VM's live frame.

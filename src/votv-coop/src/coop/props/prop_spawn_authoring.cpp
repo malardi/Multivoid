@@ -62,6 +62,13 @@ void*    g_eatFn = nullptr;
 // client only.
 R::FName g_holeUberName{0, 0};    // "ExecuteUbergraph_dirthole" on dirthole_C
 void*    g_holeUberFn = nullptr;
+// The workbench: a craft finishes its output inside the bench's own ubergraph (@6085 in 0.9.0n), outside the
+// menu's gamemode bracket, on the crafting player's machine alone. Without this a client's crafted item was
+// refused by the drop-intent whitelist and existed for that client only until it picked it up. Portable
+// benches inherit the same graph, whose declaring class is still prop_workbench_C. Adapted from
+// ElvardFIC/WatchersOfTheVoid src/votv-coop/src/coop/props/prop_spawn_authoring.cpp (MIT).
+R::FName g_benchUberName{0, 0};   // "ExecuteUbergraph_prop_workbench" on prop_workbench_C
+void*    g_benchUberFn = nullptr;
 
 // Is `fn` a function named `name` whose owner (a UFunction's Outer is its declaring class) is
 // called `className`? Both compares are allocation-free: the FName pair is two ints, and the
@@ -138,6 +145,8 @@ void Install(bool isClient) {
         g_eatName = ue_wrap::fname_utils::StringToFName(L"eat");
     if (g_holeUberName.ComparisonIndex == 0)
         g_holeUberName = ue_wrap::fname_utils::StringToFName(L"ExecuteUbergraph_dirthole");
+    if (g_benchUberName.ComparisonIndex == 0)
+        g_benchUberName = ue_wrap::fname_utils::StringToFName(L"ExecuteUbergraph_prop_workbench");
 
     ue_wrap::facts::Resolved gamemodeSpawn;
     if (!g_gamemodeSpawnFn) {
@@ -179,6 +188,13 @@ bool BirthIsPlayerAuthored() {
     if (caller == g_pryEndFn) return true;
     if (caller == g_eatFn) return true;
     if (caller == g_holeUberFn) return true;
+    if (caller == g_benchUberFn) return true;
+    if (!g_benchUberFn && FunctionIs(const_cast<void*>(caller), g_benchUberName, L"prop_workbench_C")) {
+        g_benchUberFn = const_cast<void*>(caller);
+        UE_LOGI("prop_spawn_authoring: the workbench's ubergraph is the calling frame -- a crafted item is a "
+                "player's birth");
+        return true;
+    }
     if (!g_holeUberFn && FunctionIs(const_cast<void*>(caller), g_holeUberName, L"dirthole_C")) {
         g_holeUberFn = const_cast<void*>(caller);
         UE_LOGI("prop_spawn_authoring: a dug hole's graph is the calling frame -- what a loot mound gives up is a "
