@@ -2,12 +2,18 @@
 // neutering and rig, the public SpawnPuppet wrapper, and the head-look state-gate hook whose only
 // install site is this path. The shared privates (the raw read and write templates, the
 // mesh-component cache, LiveAnimInstance) come from puppet_internal.h. Game thread only.
+//
+// The puppet's QueryOnly collision, its parked gravity-gun component and its canRagdoll=false are
+// adapted from ElvardFIC/WatchersOfTheVoid src/votv-coop/src/ue_wrap/actors/puppet_spawn.cpp (MIT).
 
 #include "ue_wrap/actors/puppet.h"
 #include "puppet_internal.h"  // ReadPtr/ReadAt/WriteAt + g_meshComp + LiveAnimInstance
 
 #include "ue_wrap/core/call.h"
 #include "ue_wrap/engine/engine.h"
+#include "ue_wrap/engine/engine_attach.h"      // SetActorRootCollisionEnabled (the capsule's QueryOnly)
+#include "ue_wrap/engine/engine_component.h"   // SetComponentTickEnabled (the gravity-gun component)
+#include "ue_wrap/engine/engine_mainplayer.h"  // SetMainPlayerCanRagdoll
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/world/world_singleton.h"
@@ -86,6 +92,37 @@ void InstallHeadGateHook(void* animClass) {
     }
 }
 
+// The puppet's four body meshes (ACharacter::Mesh, mesh_playerVisible, the arms, playermodel) set
+// QueryOnly, as its capsule is: traces and overlaps still see them, simulated bodies are not pushed.
+// A skeletal mesh's bone bodies take their collision from the component, so the setting survives the
+// skin being set or swapped; it is applied once the spawn's skins are in place all the same.
+void SetBodyMeshesQueryOnly(void* actor) {
+    static void* sSetCollisionFn = nullptr;
+    if (!sSetCollisionFn) {
+        if (void* prim = R::FindClass(L"PrimitiveComponent"))
+            sSetCollisionFn = R::FindFunction(prim, P::name::SetCollisionEnabledFn);
+    }
+    if (!sSetCollisionFn) {
+        UE_LOGE("puppet[MainPlayer]: SetCollisionEnabled unresolved -- the body meshes keep physics contacts "
+                "and can shove simulated props");
+        return;
+    }
+    int present = 0, set = 0;
+    for (const size_t off : {P::off::ACharacter_Mesh, P::off::AmainPlayer_mesh_playerVisible,
+                             P::off::AmainPlayer_arms, P::off::AmainPlayer_playermodel}) {
+        void* component = ReadPtr(actor, off);
+        if (!component || !R::IsLive(component)) continue;
+        ++present;
+        ue_wrap::ParamFrame f(sSetCollisionFn);
+        if (f.valid() && f.Set<uint8_t>(L"NewType", uint8_t{1}) && ue_wrap::Call(component, f)) ++set;
+    }
+    if (set == present)
+        UE_LOGI("puppet[MainPlayer]: %d body mesh(es) collision QueryOnly", set);
+    else
+        UE_LOGE("puppet[MainPlayer]: only %d of %d body meshes set QueryOnly -- the rest can shove simulated props",
+                set, present);
+}
+
 }  // namespace
 
 // The mainPlayer_C orphan spawn: the class's mesh_playerVisible carries the body, the IK bones
@@ -137,6 +174,29 @@ static void* SpawnPuppetMainPlayer(const FVector& loc,
     // and return) neither re-overwrite gamemode.mainPlayer nor invoke gamemode methods.
     E::WriteObjectField(actor, P::off::AmainPlayer_GameMode, nullptr);
     UE_LOGI("puppet[MainPlayer]: nulled orphan.GameMode @0x0C80 (disconnected from gamemode)");
+    // canRagdoll off: it is the first test ragdollMode makes, and native code (an explosion) can call
+    // ragdollMode on this body directly, which ran the single-player ragdoll and death path on a
+    // peer's puppet. The script-gate refusal in coop/player/player_damage stops it only while that
+    // watch is live (a full watch table leaves it dead) and never inside a dimension's pass-through;
+    // the flag holds on every route. A puppet's flop is shown by RagdollDisplay's own playerRagdoll_C
+    // body, which never calls ragdollMode, and the ragdoll gate (the wisp false-grab window) addresses
+    // the local player only, so nothing turns it back on here.
+    if (E::SetMainPlayerCanRagdoll(actor, false))
+        UE_LOGI("puppet[MainPlayer]: canRagdoll=false (native ragdoll and death disabled on the orphan)");
+    else
+        UE_LOGE("puppet[MainPlayer]: could not clear canRagdoll -- a native ragdollMode on this puppet runs the "
+                "single-player ragdoll/death here");
+    // QueryOnly on the capsule: the puppet is moved to delayed snapshots by teleport, and with physics
+    // contacts its capsule shoved the simulated prop the real player was standing on, in this
+    // machine's world. Queries stay: line traces, sweeps and overlaps by every channel still see the
+    // puppet (hit judging and PvP, the wisp grab overlaps, the nameplate occlusion trace, a walking
+    // player's movement sweep against it); simulated bodies pass through it. The body meshes follow
+    // once their skin is set (SetBodyMeshesQueryOnly).
+    if (E::SetActorRootCollisionEnabled(actor, /*QueryOnly=*/1))
+        UE_LOGI("puppet[MainPlayer]: capsule collision QueryOnly (traces see the puppet; props are not shoved)");
+    else
+        UE_LOGE("puppet[MainPlayer]: capsule collision could not be set QueryOnly -- this puppet can shove "
+                "simulated props");
 
     // mesh_playerVisible by direct offset: mainPlayer_C has several SkeletalMeshComponents
     // (ACharacter::Mesh, mesh_playerVisible, the arms, playermodel), and a child search returns
@@ -144,6 +204,7 @@ static void* SpawnPuppetMainPlayer(const FVector& loc,
     void* meshComp = ReadPtr(actor, P::off::AmainPlayer_mesh_playerVisible);
     if (!meshComp) {
         UE_LOGE("puppet[MainPlayer]: actor %p has no mesh_playerVisible @0x04F8", actor);
+        SetBodyMeshesQueryOnly(actor);
         return actor;
     }
     // Cached for GetSkeletalMeshComponent.
@@ -162,6 +223,16 @@ static void* SpawnPuppetMainPlayer(const FVector& loc,
     // (SetAnimTickAlways below).
     E::SetActorTickEnabled(actor, false);
     UE_LOGI("puppet[MainPlayer]: disabled orphan actor tick (ReceiveTick BP graph suppressed; AnimBP still ticks on mesh)");
+    // The gravity-gun component's tick off too: the actor's tick does not cover its components, and
+    // the component's Blueprint reads player 0, so a puppet's ticking copy acted on this machine's
+    // player's gravity-gun input alongside the player's own.
+    static R::InstanceOffset sGravityGunOff{L"weaponComp_gravityGun"};
+    if (const int32_t gunOff = sGravityGunOff.Of(actor); gunOff >= 0) {
+        if (void* gun = ReadPtr(actor, gunOff); gun && R::IsLive(gun)) {
+            const bool stopped = E::SetComponentTickEnabled(gun, false);
+            UE_LOGI("puppet[MainPlayer]: gravity-gun component %p tick disabled=%d", gun, stopped ? 1 : 0);
+        }
+    }
 
     // Both PostProcessComponents destroyed: they drive the local camera's colour, exposure and
     // gamma, and alive on a puppet they corrupt whichever screen renders it.
@@ -280,6 +351,8 @@ static void* SpawnPuppetMainPlayer(const FVector& loc,
                     "unsettled (footsteps stay silent; actor will ride +%.0f)", -relLoc.Z);
         }
     }
+    // The spawn's skins are in place.
+    SetBodyMeshesQueryOnly(actor);
     for (void* seedComp : {meshComp, meshSlotComp}) {
         if (!seedComp || !R::IsLive(seedComp)) continue;
         void* anim = LiveAnimInstance(seedComp);
