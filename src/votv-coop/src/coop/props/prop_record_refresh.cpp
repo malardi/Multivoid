@@ -5,6 +5,7 @@
 #include "coop/net/session.h"
 #include "coop/props/join_membership_sweep.h"
 #include "coop/props/prop_save_data.h"
+#include "coop/props/remote_prop.h"
 #include "coop/player/hand_item.h"
 #include "coop/player/local_streams.h"
 #include "coop/session/net_pump.h"
@@ -184,6 +185,8 @@ ue_wrap::facts::Resolved g_watchedFn[std::size(kWatched)] = {};  // game thread 
 void HostMinerBeat();  // below: the host's slow republish of every live miner
 void BucketBeat();     // below: a bucket's water, the host's and a holder's
 void ArmBucketTick(); // below: a client's copy of a bucket spills nothing on its own
+void ArmMaterialWatches(); // below: a client copy of a concrete bucket does not tick; a player's verb marks a prop
+void MaterialBeat();       // below: a concrete bucket's and a cement bag's stock, the host's and a toucher's
 
 // The trailing publishes whose window has closed. Game thread, from the per-tick pump.
 void FlushTrailing() {
@@ -281,6 +284,8 @@ void Install(coop::net::Session* session) {
     HostMinerBeat();
     ArmBucketTick();
     BucketBeat();
+    ArmMaterialWatches();
+    MaterialBeat();
     FlushTrailing();
     // Throttle the class walks while a class is unresolved, the shape prop_spawn_authoring and
     // prop_drop_intent use: this Install is the per-tick retry pump, a FindClass MISS is not cached
@@ -369,7 +374,10 @@ bool HoldsLocalChange(void* actor) {
     return it != g_lastPublish.end() && Clock::now() - it->second < std::chrono::milliseconds(800);
 }
 
+void ClearMaterialState();  // below
+
 void OnDisconnect() {
+    ClearMaterialState();
     if (g_cPublished || g_cCoalesced || g_cRelooked)
         UE_LOGI("prop_record_refresh: session end -- published=%llu coalesced=%llu relooked=%llu",
                 g_cPublished, g_cCoalesced, g_cRelooked);
@@ -411,6 +419,11 @@ float ReadF(void* b, int32_t off) { float v = 0.f; std::memcpy(&v, static_cast<c
 
 bool IsMine(void* b) {
     return b == coop::local_streams::LastHeldActor() || coop::hand_item::IsHandAxisActor(b);
+}
+
+// A display mirror of another player's hand item: no world prop, and its state is that player's.
+bool IsRemoteMirror(void* a) {
+    return a && coop::hand_item::IsHandAxisActor(a) && a != coop::hand_item::LocalHandActor();
 }
 
 // The tick's height before the body, per object (a tick does not nest on one object).
@@ -502,7 +515,9 @@ void BucketBeat() {
         const bool first = !seen.have;
         seen.height = h; seen.soap = soap; seen.alcohol = alc; seen.have = true;
         if (first || !changed) continue;   // a first sighting is the save both peers loaded
-        // Who speaks for the water: the host, and a client for the bucket in its own hand.
+        // Who speaks for the water: the host, and a client for the bucket in its own hand. Never a mirror of
+        // another player's hand, whose water is a display of that player's and no world prop's.
+        if (IsRemoteMirror(b)) continue;
         if (!host && !IsMine(b)) continue;
         const std::wstring key = ue_wrap::prop::GetInteractableKeyString(b);
         if (key.empty() || key == L"None") continue;
@@ -515,6 +530,197 @@ void BucketBeat() {
         }
     }
 }
+
+// ---- building material: the concrete bucket and the cement bag ----------------------------------------
+// Adapted from ElvardFIC/WatchersOfTheVoid src/votv-coop/src/coop/props/bucket_sync.cpp (MIT): the stock a
+// prop keeps in its save record travels on that record, from the peer that changed it.
+//
+// A concrete bucket's portions and its dry flag, and a cement bag's units, are their save records, and
+// nothing carried them. A trowel's scoop or a bag's pour into a world bucket changed the copy of the peer
+// whose player did it, and nobody else's, so the friend's trowel scooped from a bucket the other player
+// saw empty, and a bag stayed full on the host however much a client poured from it. And every peer's
+// copy of a concrete bucket ran its own tick, which ONLY spills, spawns, replaces and dries (its cooked
+// ReceiveTick has no parent call): each copy dried on its own clock and spilled against the pose it was
+// shown, so a client's copy set and spawned spill and replacement props of its own.
+//
+// So: a client's copy of a concrete bucket does not tick (the host's does, and its stock travels on the
+// record); a remote hand mirror's never ticks, on any peer; the local hand's runs as the game's. The host
+// publishes a world copy's record when its stock changes. A client publishes it (an intent the host takes
+// and re-publishes) for a prop its own player's verb just changed: takeConcrete and updStage/updDry on the
+// bucket, transferUnit on the bag, each read in its post, outside our own record applies.
+UE_FACT_FN(kRowConcreteTick,     "prop_record_refresh", L"prop_concreteBucket_C", L"ReceiveTick", Declared);
+UE_FACT_FN(kRowConcreteStage,    "prop_record_refresh", L"prop_concreteBucket_C", L"updStage", Declared);
+UE_FACT_FN(kRowConcreteDry,      "prop_record_refresh", L"prop_concreteBucket_C", L"updDry", Declared);
+UE_FACT_FN(kRowConcreteTake,     "prop_record_refresh", L"prop_concreteBucket_C", L"takeConcrete", Declared);
+UE_FACT_FN(kRowBagTransfer,      "prop_record_refresh", L"prop_cementBag_C", L"transferUnit", Declared);
+constexpr int kMaterialTag = 0x4D41544C;  // 'MATL'
+bool g_concreteTickArmed = false, g_concreteStageArmed = false, g_concreteDryArmed = false;
+bool g_concreteTakeArmed = false, g_bagTransferArmed = false;
+
+// CLIENT: props this player's own verb changed a moment ago, and until when their change is this peer's
+// to publish. Keyed by address with the slot index beside it, so a recycled address is not taken for it.
+struct Touch { int32_t idx; Clock::time_point until; };
+std::unordered_map<void*, Touch> g_touched;
+constexpr auto kTouchWindow = std::chrono::milliseconds(1500);
+
+void MarkTouched(void* a) {
+    if (!a || !R::IsLive(a) || coop::hand_item::IsHandAxisActor(a)) return;  // a hand item is no world prop
+    g_touched[a] = Touch{R::InternalIndexOf(a), Clock::now() + kTouchWindow};
+}
+
+bool Touched(void* a, Clock::time_point now) {
+    const auto it = g_touched.find(a);
+    return it != g_touched.end() && now < it->second.until && R::IsLiveByIndex(a, it->second.idx);
+}
+
+sg::Verdict OnConcreteTickPre(const sg::Call& c) {
+    auto* s = g_session.load(std::memory_order_acquire);
+    if (!s || !s->connected() || !c.object || c.fromOurCode) return sg::Verdict::Run;
+    // A display mirror of another player's hand: spilling, drying or replacing it is that player's game's.
+    if (IsRemoteMirror(c.object)) return sg::Verdict::Cancel;
+    if (s->role() == coop::net::Role::Host) return sg::Verdict::Run;
+    if (c.object == coop::hand_item::LocalHandActor()) return sg::Verdict::Run;  // the hand item is this player's
+    if (!coop::net_pump::IsInAnnouncedWorld(c.object) || !coop::join_membership_sweep::HasLoadTailQuiesced())
+        return sg::Verdict::Run;
+    static int sSaid = 0;
+    if (sSaid++ < 3) UE_LOGI("prop_record_refresh: a client copy of concrete bucket %p does not tick (the host's does)", c.object);
+    return sg::Verdict::Cancel;
+}
+
+// CLIENT: a player's verb changed this prop's stock, so its record is this peer's to send.
+void OnMaterialVerbPost(const sg::Call& c) {
+    auto* s = g_session.load(std::memory_order_acquire);
+    if (!s || !s->connected() || s->role() != coop::net::Role::Client || c.fromOurCode || !c.object) return;
+    MarkTouched(c.object);
+}
+
+// CLIENT: a bag's transferUnit moves units between its `from` and `to`, either of which may be a world
+// prop that is not the one the call ran on.
+void OnBagTransferPost(const sg::Call& c) {
+    auto* s = g_session.load(std::memory_order_acquire);
+    if (!s || !s->connected() || s->role() != coop::net::Role::Client || c.fromOurCode || !c.object) return;
+    MarkTouched(c.object);
+    if (!c.function || !c.locals) return;
+    const int32_t size = R::FunctionFrameSize(c.function);
+    for (const wchar_t* name : {L"from", L"to"}) {
+        const int32_t off = R::FindParamOffset(c.function, name);
+        if (off < 0 || off + static_cast<int32_t>(sizeof(void*)) > size) continue;
+        void* end = nullptr;
+        std::memcpy(&end, c.locals + off, sizeof end);
+        if (end && R::IsLive(end)) MarkTouched(end);
+    }
+}
+
+void ArmMaterialWatches() {
+    if (!g_concreteTickArmed)
+        g_concreteTickArmed = sg::WatchName(kRowConcreteTick, kMaterialTag, &OnConcreteTickPre, nullptr);
+    if (!g_concreteStageArmed)
+        g_concreteStageArmed = sg::WatchName(kRowConcreteStage, kMaterialTag, nullptr, &OnMaterialVerbPost);
+    if (!g_concreteDryArmed)
+        g_concreteDryArmed = sg::WatchName(kRowConcreteDry, kMaterialTag, nullptr, &OnMaterialVerbPost);
+    if (!g_concreteTakeArmed)
+        g_concreteTakeArmed = sg::WatchName(kRowConcreteTake, kMaterialTag, nullptr, &OnMaterialVerbPost);
+    if (!g_bagTransferArmed) {
+        g_bagTransferArmed = sg::WatchName(kRowBagTransfer, kMaterialTag, nullptr, &OnBagTransferPost);
+        if (g_bagTransferArmed)
+            UE_LOGI("prop_record_refresh: concrete buckets and cement bags carry their stock on their record");
+    }
+}
+
+enum class MaterialKind : uint8_t { Concrete, Bag };
+struct MaterialSeen { int32_t units = 0; bool dry = false; bool have = false; };
+std::unordered_map<void*, MaterialSeen> g_materials;
+
+// The stock as the record carries it: the portions (`units`) and, for the bucket, `dry`.
+bool ReadMaterial(void* a, MaterialKind kind, int32_t& units, bool& dry) {
+    void* cls = R::ClassOf(a);
+    if (!cls) return false;
+    const int32_t uo = R::FindPropertyOffset(cls, L"units");
+    if (uo < 0) return false;
+    std::memcpy(&units, static_cast<const char*>(a) + uo, sizeof units);
+    dry = false;
+    if (kind == MaterialKind::Concrete) {
+        int32_t dOff = -1;
+        uint8_t dMask = 0;
+        if (!R::FindBoolProperty(cls, L"dry", dOff, dMask) || dOff < 0 || !dMask) return false;
+        dry = (static_cast<const uint8_t*>(a)[dOff] & dMask) != 0;
+    }
+    return true;
+}
+
+void MaterialBeat() {
+    auto* s = g_session.load(std::memory_order_acquire);
+    if (!s || !s->connected()) { g_materials.clear(); g_touched.clear(); return; }
+    static Clock::time_point sNext{};
+    const auto now = Clock::now();
+    if (now < sNext) return;
+    sNext = now + std::chrono::milliseconds(250);
+    const bool host = s->role() == coop::net::Role::Host;
+    for (auto it = g_touched.begin(); it != g_touched.end();)
+        it = now >= it->second.until ? g_touched.erase(it) : std::next(it);
+    struct Found { void* obj; MaterialKind kind; };
+    std::vector<Found> live;
+    struct Ctx { std::vector<Found>* out; MaterialKind kind; };
+    const struct { const wchar_t* name; MaterialKind kind; } kClasses[] = {
+        {L"prop_concreteBucket_C", MaterialKind::Concrete},
+        {L"prop_cementBag_C",      MaterialKind::Bag},
+    };
+    for (const auto& k : kClasses) {
+        void* cls = ue_wrap::object_index::ClassByName(k.name);
+        if (!cls) continue;
+        Ctx ctx{&live, k.kind};
+        ue_wrap::object_index::ForEachInstance(cls, [](void* c, void* obj, int32_t) {
+            if (!obj || !R::IsLive(obj) || R::NameStartsWith(R::NameOf(obj), L"Default__")) return;
+            auto* x = static_cast<Ctx*>(c);
+            x->out->push_back(Found{obj, x->kind});
+        }, &ctx);
+    }
+    for (auto it = g_materials.begin(); it != g_materials.end();) {
+        bool still = false;
+        for (const Found& f : live) if (f.obj == it->first) { still = true; break; }
+        it = still ? std::next(it) : g_materials.erase(it);
+    }
+    for (const Found& f : live) {
+        // A hand item is the player's, not the world's: its stock rides the profile and its drop's record.
+        if (coop::hand_item::IsHandAxisActor(f.obj)) continue;
+        int32_t units = 0;
+        bool dry = false;
+        if (!ReadMaterial(f.obj, f.kind, units, dry)) continue;
+        MaterialSeen& seen = g_materials[f.obj];
+        const bool first = !seen.have;
+        const bool changed = !first && (seen.units != units || seen.dry != dry);
+        seen.units = units; seen.dry = dry; seen.have = true;
+        if (first || !changed) continue;   // a first sighting is the save both peers loaded
+        // The host speaks for its world copies (a bag a client carries is the client's while it carries it;
+        // a bucket's spill and drying are the host's tick even then); a client for what its verb just changed.
+        const bool speaks = host ? (f.kind == MaterialKind::Concrete || !coop::remote_prop::IsActorUnderAnyDrive(f.obj))
+                                 : Touched(f.obj, now);
+        if (!speaks) {
+            // A record landed on this copy: its look follows the stock through updStage (which runs updDry).
+            if (!host && f.kind == MaterialKind::Concrete) {
+                if (void* fn = R::FindDispatchFunctionCached(R::ClassOf(f.obj), L"updStage")) {
+                    ue_wrap::ParamFrame fr(fn);
+                    if (fr.valid()) ue_wrap::Call(f.obj, fr);
+                }
+            }
+            continue;
+        }
+        const std::wstring key = ue_wrap::prop::GetInteractableKeyString(f.obj);
+        if (key.empty() || key == L"None") continue;
+        if (coop::prop_save_data::Publish(s, f.obj, key)) {
+            g_lastPublish[f.obj] = now;   // a host echo landing inside the window does not undo the change
+            ++g_cPublished;
+            UE_LOGI("prop_record_refresh: %ls key='%ls' units %d dry %d -- published (%s)",
+                    f.kind == MaterialKind::Concrete ? L"concrete bucket" : L"cement bag", key.c_str(), units,
+                    dry ? 1 : 0, host ? "host" : "client verb");
+        }
+    }
+}
 }  // namespace
+
+void ClearMaterialState() {
+    g_materials.clear();
+    g_touched.clear();
+}
 
 }  // namespace coop::props::prop_record_refresh
