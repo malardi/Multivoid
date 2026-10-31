@@ -70,6 +70,13 @@ bool WriteTrap(void* atv, bool v);
 // that does not dispatch. Game thread.
 bool ReadTpLocation(void* atv, FVector& out);
 
+// Where the driver sits, in world space: the `sitarrow` component's location and full world rotation (a
+// banked or pitched rig tilts its seat with it). An ATV whose class has no sitarrow, or whose arrow does
+// not read, answers 40 cm forward of the root and 45 cm up, with the root's rotation. False, outs
+// untouched, on a null, dead or unresolved ATV or a transform that does not read finite. Used to seat a
+// remote driver's puppet on THIS machine's copy of the rig (coop/player/remote_player). Game thread.
+bool GetDriverSeatTransform(void* atv, FVector& loc, FRotator& rot);
+
 // The game's OWN rig-consistent teleport: ATV_C::teleportVehicle(NewLocation, NewRotation) --
 // K2_SetActorLocation(bTeleport=true) + K2_SetActorRotation(bTeleportPhysics=true), and THEN it
 // re-places frontWheel_R onto ax_FR1, frontWheel_L onto ax_FL1 and backWheelRoot onto `back`

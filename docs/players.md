@@ -61,6 +61,21 @@ and slaves the body's pelvis velocity to the streamed ragdoll pose so the flop t
 the puppet stays attached as the anchor for the nameplate and the recovery hand-off
 (`coop/player/remote_player_ragdoll`).
 
+### Sitting
+
+The game seats a player through `mainPlayer_C::sit`: `sittingOn` names the seat and the pawn is
+attached to it, but the body's AnimBP stays in its standing idle, so on the other screens the puppet
+stood through the chair. Player skins share the kerfur Omega skeleton and its AnimBP, which carries
+the Omega's own ATV sit (`isOnAtv`); the puppet raises it with foot IK off and moves its body onto
+the seat on its parent, so the capsule stays where the stream put it (`ue_wrap/actors/sit_pose`).
+A chair is a state bit of the pose: `sittingOn` is a `prop_sit` prop, and the streamed position and
+yaw are already the chair's, since the sender's pawn is attached to it. The ATV driver needs no bit:
+the host's seat table, stamped to every peer, names the driver, and the puppet sits on this
+machine's copy of the rig at its `sitarrow` seat every tick, so the rider stays on the rig that is
+seen rather than trailing it by the interpolation window (`coop/player/remote_player`). Adapted
+from ElvardFIC/WatchersOfTheVoid. `[?]` The offsets are the fork's in-game tuning; the rendered
+seat alignment is unmeasured here.
+
 ### What the player holds and toggles
 
 The item in a player's hand is player state, not a world entity: the game destroys and respawns

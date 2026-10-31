@@ -16,6 +16,8 @@
 #include "coop/player/players_registry.h"  // kPeerIdUnknown
 #include "coop/player/puppet_footsteps.h"
 #include "coop/player/remote_player_ragdoll.h"
+#include "ue_wrap/actors/sit_pose.h"  // MeshShift: the seated body's offset onto the seat
+#include "ue_wrap/core/cached_obj_ref.h"
 #include "ue_wrap/core/types.h"
 
 #include <cstdint>
@@ -135,6 +137,24 @@ public:
 
     void* actor() const { return actor_; }
 
+    // What the peer sits on, as this machine knows it. Nothing on the wire names the ATV seat: the
+    // host's seat table, stamped to every peer, does (coop::atv_sync::ActorSeatedBy), so the drive
+    // reads it per slot and hands it here each tick; a chair is the streamed seated bit
+    // (kStateBitSeated), read by StreamsSeated. The ATV wins over the bit.
+    enum class Seat : uint8_t {
+        None,       // standing: the streamed pose as it is
+        Chair,      // the sit at the streamed pose (the source is attached to its chair), body shifted onto the seat
+        AtvDriver,  // the sit on THIS machine's copy of the ATV, at its driver seat, every tick
+    };
+    // Set before Tick, every tick, by coop::puppet_drive (the slot's owner). `atv` is the ATV actor for
+    // AtvDriver, live in this game-thread slice, and is ignored otherwise. A ragdoll display overrides
+    // either seat: the flop is the body then. Game thread.
+    void SetSeat(Seat seat, void* atv = nullptr);
+    // The seat presented on the last Tick (None until a seated tick ran, and while ragdolled).
+    Seat SeatShown() const { return seatShown_; }
+    // The newest pose's seated bit: the source sits on a chair.
+    bool StreamsSeated() const { return (curStateBits_ & coop::net::kStateBitSeated) != 0; }
+
 private:
     // Spawn's before-finish callback (engine::SpawnActor): keeps the deferred actor and registers it
     // under pendingSlot_, so the registry knows the body before its BeginPlay runs.
@@ -152,6 +172,22 @@ private:
         burningFailSaid_ = false;
         burningNextTry_ = {};
     }
+    // Move from the presented seat to the requested one (seat_, overridden to None by a ragdoll
+    // display): the sit flags raised or dropped, the body's seat offset put back, the stride and the
+    // presentation yaw re-based. Tick's first step, so a seat change reaches ApplyToEngine the same
+    // frame. Sets dirty_ on a change.
+    void UpdateSeat();
+    // Drop every seat field (Spawn, for a body that is not the last one; Destroy). Reads no body
+    // memory: only the sit table's row goes, by pointer.
+    void ResetSeat();
+
+    // The seat offset for the presented seat: Chair drops the body half a body plus two and a half
+    // heads and moves it four heads forward, AtvDriver lifts it one and a half heads and moves it
+    // three heads forward (the fork's in-game tuning against the sit clip, which is authored for the
+    // ATV saddle). Re-applied every ApplyToEngine while seated, since the capsule half height it scales
+    // by is read live.
+    void ApplySeatShift();
+
     // Apply curPos_, curYaw_ and curSpeed_ to the engine actor and the AnimBP. Called by Tick once
     // per frame whether or not interpolation is active, so nothing that moved the actor between
     // frames leaves drift.
@@ -266,6 +302,16 @@ private:
     // AdvanceInterp applies its dAlpha to the errors above; SetTargetPose opens it and closes it on
     // a snap.
     coop::LerpWindow window_;
+    // The seat (see Seat): requested by the drive each tick, presented by UpdateSeat. seatAtv_ is the
+    // ATV of an AtvDriver request, slot-validated (a snap's ApplyToEngine inside SetTargetPose can run
+    // before the next SetSeat, and must not read an ATV destroyed since). seatShift_ holds
+    // the Mesh slot's authored relative location while the body is offset onto a seat. seatSaid_ logs
+    // each seat entry once, with the transforms a lab run checks the sit against.
+    Seat             seat_ = Seat::None;
+    ue_wrap::CachedObjRef seatAtv_{};
+    Seat             seatShown_ = Seat::None;
+    ue_wrap::sit_pose::MeshShift seatShift_{};
+    bool             seatSaid_ = false;
     bool             hasPose_ = false;  // first packet snaps; spawn placeholder is fake
     bool             dirty_ = true;     // true while there's an unapplied change to push to the engine
 };

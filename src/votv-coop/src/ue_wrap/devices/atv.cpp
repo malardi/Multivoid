@@ -16,6 +16,7 @@
 #include "ue_wrap/core/types.h"     // FTransform (SpawnMirror)
 
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -35,6 +36,7 @@ int32_t g_brakeOff    = -1;       // Brake    (0x05D9, bool)
 int32_t g_trapOff     = -1;       // trap     (a bool bit: the byte, with its mask below)
 uint8_t g_trapMask    = 0;
 int32_t g_tpOff       = -1;       // tp       (a UBillboardComponent*: where `explode` places its blast)
+int32_t g_sitArrowOff = -1;       // sitarrow (a scene component: the driver seat a remote driver's puppet sits on)
 
 int32_t ResolveOff(void* cls, const wchar_t* name, int32_t fallback) {
     int32_t o = R::FindPropertyOffset(cls, name);
@@ -50,6 +52,9 @@ int32_t ResolveOff(void* cls, const wchar_t* name, int32_t fallback) {
 // a same-process rejoin, ATV_C not among them), and one still loading answers null here. The field
 // offsets above are its layout, the same in every world, so they are resolved once.
 void* AtvClass() { return object_index::ClassByName(L"ATV_C"); }
+
+bool Finite(const FVector& v) { return std::isfinite(v.X) && std::isfinite(v.Y) && std::isfinite(v.Z); }
+bool Finite(const FRotator& r) { return std::isfinite(r.Pitch) && std::isfinite(r.Yaw) && std::isfinite(r.Roll); }
 
 }  // namespace
 
@@ -74,6 +79,9 @@ bool EnsureResolved() {
     // No fallback: a miss leaves a client's ATV explosion unrequested, since the host has no place to put it.
     g_tpOff = R::FindPropertyOffset(cls, L"tp");
     if (g_tpOff < 0) UE_LOGW("atv: tp offset not found -- a client's ATV explosion cannot be requested");
+    // No fallback: a miss seats a remote driver's puppet by the rig's own transform instead.
+    g_sitArrowOff = R::FindPropertyOffset(cls, L"sitarrow");
+    if (g_sitArrowOff < 0) UE_LOGW("atv: sitarrow offset not found -- a remote driver is seated by the rig's transform");
 
     g_resolved.store(true, std::memory_order_release);
     UE_LOGI("atv: resolved ATV_C=%p Key@0x%04X Player@0x%04X isDriven@0x%04X fuel@0x%04X "
@@ -165,6 +173,32 @@ bool ReadTpLocation(void* atv, FVector& out) {
     if (!atv || g_tpOff < 0) return false;
     void* tp = *reinterpret_cast<void* const*>(reinterpret_cast<const char*>(atv) + g_tpOff);
     return tp && engine::TryGetComponentLocation(tp, out);
+}
+
+bool GetDriverSeatTransform(void* atv, FVector& loc, FRotator& rot) {
+    if (!atv || !R::IsLive(atv) || !EnsureResolved()) return false;
+    if (g_sitArrowOff >= 0) {
+        void* seat = *reinterpret_cast<void* const*>(reinterpret_cast<const char*>(atv) + g_sitArrowOff);
+        FVector l{};
+        FRotator r{};
+        if (seat && R::IsLive(seat) && engine::TryGetComponentLocation(seat, l) &&
+            engine::TryGetComponentWorldRotation(seat, r) && Finite(l) && Finite(r)) {
+            loc = l;
+            rot = r;
+            return true;
+        }
+    }
+    // The fallback the fork measured for a rig without the arrow: 40 cm forward of the root and 45 up,
+    // along the rig's own facing and with its full rotation.
+    FVector l{};
+    FRotator r{};
+    if (!GetRootTransform(atv, l, r) || !Finite(l) || !Finite(r)) return false;
+    const FVector fwd = engine::GetActorForwardVector(atv);
+    const float len2 = fwd.X * fwd.X + fwd.Y * fwd.Y + fwd.Z * fwd.Z;
+    if (!Finite(fwd) || len2 < 0.01f || len2 > 4.f) return false;
+    loc = FVector{l.X + fwd.X * 40.f, l.Y + fwd.Y * 40.f, l.Z + 45.f};
+    rot = r;
+    return true;
 }
 
 bool TeleportRig(void* atv, const FVector& loc, const FRotator& rot) {

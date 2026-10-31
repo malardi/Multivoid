@@ -159,6 +159,7 @@ set(VOTVCOOP_SOURCES
     src/ue_wrap/desk/saved_signals.cpp
     src/ue_wrap/actors/puppet.cpp
     src/ue_wrap/actors/puppet_spawn.cpp
+    src/ue_wrap/actors/sit_pose.cpp
     src/ue_wrap/actors/kerfur.cpp
     src/ue_wrap/actors/kerfus.cpp
     src/ue_wrap/actors/zombie.cpp

@@ -20,6 +20,7 @@
 #include "ue_wrap/core/reflected_offset.h"
 #include "ue_wrap/core/sdk_profile.h"
 #include "ue_wrap/core/ufunction_hook.h"
+#include "ue_wrap/actors/sit_pose.h"   // AfterPuppetAnimUpdate: the seated puppet's sit, post-update
 #include "ue_wrap/facts/function_row.h"
 
 #include <cstdint>
@@ -56,6 +57,9 @@ void HeadGateBUAPost(void* /*context*/, void* animInstance, void* /*result*/) {
     if (!sMainPlayerClass) sMainPlayerClass = R::FindClass(P::name::MainPlayerClass);
     if (!sMainPlayerClass || R::ClassOf(actor) != sMainPlayerClass) return;  // a kerfur NPC exits here
     if (ReadPtr(actor, P::off::APawn_Controller)) return;                    // the local player exits here
+    // A seated puppet's sit, re-asserted after the same recompute: the update derives useLegIK from
+    // the movement mode every frame (ue_wrap/actors/sit_pose.h). One compare when nobody sits.
+    ue_wrap::sit_pose::AfterPuppetAnimUpdate(actor, animInstance);
     const int32_t off = ue_wrap::reflected_offset::AnimBP_kerfur_lookingAtPlayer();
     if (off < 0) return;
     WriteAt<bool>(animInstance, off, true);

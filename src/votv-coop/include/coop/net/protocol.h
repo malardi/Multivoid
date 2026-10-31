@@ -30,7 +30,7 @@ inline constexpr uint32_t kMagic = 0x564D5450u;
 // This file is past the 1500-line hard cap and stays there: it is the single-feature exception the
 // rule names. One wire format, whose enum, payload structs and static_asserts are read together;
 // splitting it would put a kind's number in one file and its bytes in another.
-inline constexpr uint16_t kProtocolVersion = 284;
+inline constexpr uint16_t kProtocolVersion = 285;
 
 // Default LAN port (overridable via multivoid.ini "net.port=").
 inline constexpr uint16_t kDefaultPort = 47621;
@@ -1261,7 +1261,8 @@ inline uint32_t NowStateTimeMs24() {
 //   stateBits    -- bit 0 in air (the source's movement mode is falling; clears the puppet's foot
 //                   IK), bit 1 ragdolled and not dead (every ragdoll cause; the receiver toggles
 //                   ragdollMode and forceGetUp on the edges), bit 2 burning (the source's burningTime
-//                   runs; the receiver shows the flame and nothing else), bits 3..7 reserved.
+//                   runs; the receiver shows the flame and nothing else), bit 3 seated on a chair
+//                   (the receiver plays the sit and puts the body on the seat), bits 4..7 reserved.
 struct PoseSnapshot {
     float   x, y, z;
     float   yaw;
@@ -1285,6 +1286,11 @@ namespace match_form { constexpr uint8_t kNone = 0; constexpr uint8_t kPile = 1;
 inline constexpr uint8_t kStateBitInAir   = 0x01;
 inline constexpr uint8_t kStateBitRagdoll = 0x02;  // the source is ragdolled (faint, manual, knock-out), not dead
 inline constexpr uint8_t kStateBitBurning = 0x04;  // the source's body is on fire (its burningTime runs), display only
+// The source sits on a chair: mainPlayer_C::sittingOn names a prop_sit chair (ue_wrap::sit_pose::IsChair),
+// and it is neither ragdolled nor dead. Display only: the receiver raises the kerfur AnimBP's sit on the
+// puppet and offsets its body onto the seat (coop/player/remote_player). The ATV driver seat needs no bit:
+// the host's seat table, stamped to every peer, already names the driver (coop::atv_sync::ActorSeatedBy).
+inline constexpr uint8_t kStateBitSeated  = 0x08;
 
 // The game's vital scalars (food, sleep, the default max health) top out at 100. health is
 // normalised by the peer's own max health before quantisation; food and sleep by this.

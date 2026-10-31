@@ -7,6 +7,7 @@
 #include "coop/world/dimension_travel.h"  // PoseAccepted: no body from another level
 
 #include "coop/creatures/wisp_grab_hold.h"
+#include "coop/interactables/atv_sync.h"  // ActorSeatedBy: the driver seat the host's table gives a slot
 #include "coop/dev/perf_probe.h"
 #include "coop/net/protocol.h"
 #include "coop/net/session.h"
@@ -184,6 +185,20 @@ void DriveTick(coop::net::Session& session, bool worldReadyAnnounced) {
         if (session.TryGetRemoteRagdollPose(slot, rdoll, &rdollNew) && rdollNew) {
             g_puppets[slot].SetRagdollPose(rdoll);
         }
+    }
+
+    // The seat each puppet shows, handed to it before its Tick. The ATV driver comes from the host's
+    // seat table as this peer holds it (the host's own, or the stamp every AtvState carries), which
+    // already names the driver on every machine, so a driving peer needs nothing new on the wire;
+    // it wins over the streamed chair bit. The rig is passed as this tick's index read. Adapted from
+    // ElvardFIC/WatchersOfTheVoid coop/player/sit_pose DriveAtvDrivers (MIT).
+    for (int slot = 0; slot < coop::players::kMaxPeers; ++slot) {
+        if (!g_puppets[slot].valid()) continue;
+        using Seat = coop::RemotePlayer::Seat;
+        void* const atv = coop::atv_sync::ActorSeatedBy(static_cast<uint8_t>(slot));
+        g_puppets[slot].SetSeat(atv ? Seat::AtvDriver
+                                    : (g_puppets[slot].StreamsSeated() ? Seat::Chair : Seat::None),
+                                atv);
     }
 
     // Tick every live puppet (independent of which slot received pose data

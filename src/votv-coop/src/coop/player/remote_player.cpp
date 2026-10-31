@@ -18,6 +18,8 @@
 #include "ue_wrap/engine/world_identity.h"
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/actors/puppet.h"
+#include "ue_wrap/actors/sit_pose.h"
+#include "ue_wrap/devices/atv.h"       // GetDriverSeatTransform: a driving peer's seat on this machine's rig
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/core/sdk_profile.h"
 
@@ -80,10 +82,11 @@ bool RemotePlayer::Spawn(const std::string& skinName, uint8_t peerSlot) {
         UE_LOGW("RemotePlayer::Spawn: peer slot %u is the local peer's", static_cast<unsigned>(peerSlot));
         return false;
     }
+    ResetSeat();      // a new body owes no seat to the one before it: its offset and sit flags lived there
     // A pointer left by an earlier world never reads as this call's.
     actor_ = nullptr;
     internalIdx_ = -1;
-    ResetBurning();   // a new body owes no flame state to the one before it
+    ResetBurning();   // nor flame state
     // Registry::Local() first (controller-filtered: the genuine local, not a puppet, which is also
     // a mainPlayer_C); FindObjectByClass as the fallback during the splash and pre-possession
     // window, where no controller is attached and no puppet exists yet. Without it Spawn failed
@@ -393,13 +396,22 @@ void RemotePlayer::Tick() {
     // SetTargetPose.
     AdvanceInterp();
 
+    // The seat the drive asked for this tick, presented before anything reads it.
+    UpdateSeat();
+
     // Advance the body-yaw presentation (the turn in place, coop/player/puppet_body_yaw.h), which
     // keeps moving while the wire is quiet, so it sets dirty_ itself. Skipped while ragdolled: the
-    // pelvis attachment owns the transform.
-    if (!ragdoll_.Active() &&
-        bodyYaw_.Update(NowMs(), curSpeed_, curYaw_, curHeadYawDelta_)) {
-        dirty_ = true;
+    // pelvis attachment owns the transform. Seated, the body faces what it sits on, as streamed: no
+    // head-lead hold (puppet_body_yaw::State::Seated).
+    if (!ragdoll_.Active()) {
+        const bool changed = (seatShown_ != Seat::None)
+            ? bodyYaw_.Seated(NowMs(), curYaw_)
+            : bodyYaw_.Update(NowMs(), curSpeed_, curYaw_, curHeadYawDelta_);
+        if (changed) dirty_ = true;
     }
+    // On an ATV the body rides this machine's rig, which moves every frame whether or not a pose
+    // arrived, so the seat is re-placed every tick.
+    if (seatShown_ == Seat::AtvDriver) dirty_ = true;
 
     // Skip the engine write when nothing changed since the last push: the puppet runs no physics
     // integration (its movement and actor ticks are parked), so a frozen pose stays where it is,
@@ -483,6 +495,9 @@ void RemotePlayer::Destroy() {
     // The AnimInstance dies with the actor, so no field cleanup. The ragdoll display body is a
     // separate actor that would outlive the puppet as an orphan: torn down first, with its latches.
     ragdoll_.TeardownForDestroy();
+    // The seat's offset and sit flags live on the body and die with it: only the sit table's row is
+    // let go (by pointer, no memory read).
+    ResetSeat();
     // The skin effect rig's face actor is a separate world actor too.
     coop::skin_effects::OnBodyDestroyed(actor_);
     // IsLiveByIndex: if the puppet was GC-freed and its address recycled, plain IsLive would pass
@@ -534,10 +549,45 @@ void RemotePlayer::ApplyToEngine() {
     // The wire carries the source's actor Z (the capsule centre, MTA's vPos shape, unaffected by BP
     // init transients), and the puppet's actor is the wire pose unchanged: both ends are
     // mainPlayer_C, so no actor-level Z or yaw offset exists.
-    E::SetActorLocation(actor_, curPos_);
     // bodyYaw_ (the presentation), not curYaw_ (the wire truth): standing, the body holds so the
-    // head can lead.
-    E::SetActorRotation(actor_, ue_wrap::FRotator{0.f, bodyYaw_.Yaw(), 0.f});
+    // head can lead; on a chair it is the streamed yaw, the facing the game seated the source at.
+    ue_wrap::FVector   placeLoc = curPos_;
+    ue_wrap::FRotator  placeRot{0.f, bodyYaw_.Yaw(), 0.f};
+    // A driving peer sits on THIS machine's copy of the ATV, at its driver seat, with the seat's
+    // full rotation (a banked rig tilts its rider). The streamed pose is the sender's body on the
+    // sender's rig; this machine's rig is corrected toward the syncer on its own clock, so the two
+    // drift apart by the interpolation window at speed, and the body is glued to the rig it is seen
+    // on instead. A seat that does not read leaves the streamed pose.
+    bool onRig = false;
+    if (seatShown_ == Seat::AtvDriver) {
+        if (void* atv = seatAtv_.Get()) {
+            ue_wrap::FVector seatLoc{};
+            ue_wrap::FRotator seatRot{};
+            if (ue_wrap::atv::GetDriverSeatTransform(atv, seatLoc, seatRot)) {
+                placeLoc = seatLoc;
+                placeRot = seatRot;
+                onRig = true;
+            }
+        }
+    }
+    E::SetActorLocation(actor_, placeLoc);
+    E::SetActorRotation(actor_, placeRot);
+    if (seatShown_ != Seat::None) {
+        ApplySeatShift();
+        if (!seatSaid_) {
+            // Once per seat entry: what the lab checks the sit against (the body should face the way
+            // the chair or the handlebars do, and its yaw here should match the seat's).
+            seatSaid_ = true;
+            ue_wrap::FRotator rigRot{};
+            void* atv = seatAtv_.Get();
+            const bool rigRead = atv && E::TryGetActorRotation(atv, rigRot);
+            UE_LOGI("remote_player: puppet %p seated (%s) at (%.0f,%.0f,%.0f) yaw=%.1f streamedYaw=%.1f "
+                    "head=%.1f%s rigYaw=%.1f%s", actor_, seatShown_ == Seat::AtvDriver ? "ATV driver" : "chair",
+                    placeLoc.X, placeLoc.Y, placeLoc.Z, placeRot.Yaw, curYaw_, ue_wrap::sit_pose::ModelHead(actor_),
+                    seatShown_ == Seat::AtvDriver ? (onRig ? " on the rig's seat" : " (seat unread: streamed pose)") : "",
+                    rigRead ? rigRot.Yaw : 0.f, rigRead ? "" : " (none)");
+        }
+    }
 
     // The flashlight cone: drive the puppet's lag_fl spring arm pitch so the cone points where the
     // source looks. On a real player the actor's tick updates it from the camera; the puppet's
@@ -554,10 +604,10 @@ void RemotePlayer::ApplyToEngine() {
                     }
                 }
                 // The relative yaw compensates the body-yaw hold: the cone must point at the camera
-                // (curYaw_ + curHeadYawDelta_) while the parent shows bodyYaw_, so the difference
-                // is shortest-arced.
+                // (curYaw_ + curHeadYawDelta_) while the parent shows placeRot's yaw (bodyYaw_, or
+                // the ATV seat's), so the difference is shortest-arced.
                 const float flRelYaw = OffsetDegrees(
-                    bodyYaw_.Yaw(), curYaw_ + curHeadYawDelta_);
+                    placeRot.Yaw, curYaw_ + curHeadYawDelta_);
                 if (sSetRelRotFn) {
                     ue_wrap::FRotator rot{curPitch_, flRelYaw, 0.f};
                     ue_wrap::ParamFrame f(sSetRelRotFn);
@@ -591,20 +641,25 @@ void RemotePlayer::ApplyToEngine() {
             std::sin(yawRad) * curSpeed_,
             0.f,
         };
-        const bool inAir = (curStateBits_ & coop::net::kStateBitInAir) != 0;
-        Pup::DriveCharacterMovement(actor_, vel, inAir);
+        // Seated, the body is still on its seat whatever the seat does (an ATV streams the rig's
+        // speed through its rider): no velocity, grounded, no sprint, no steps.
+        const bool seated = seatShown_ != Seat::None;
+        const bool inAir = !seated && (curStateBits_ & coop::net::kStateBitInAir) != 0;
+        Pup::DriveCharacterMovement(actor_, seated ? ue_wrap::FVector{} : vel, inAir);
         // Run-loudness parity: lib_C::step's volume reads MaxWalkSpeed, which the parked puppet
         // never updates, so the native sprint knob is mirrored from the streamed speed at the
         // stride emitter's run boundary.
         Pup::DriveSprintWalkSpeed(
-            actor_, curSpeed_ > coop::puppet_footsteps::Stride::kRunSpeedCmS);
+            actor_, !seated && curSpeed_ > coop::puppet_footsteps::Stride::kRunSpeedCmS);
         // Footstep audio: the native accumulator lives in the puppet's suppressed BP tick, so the
         // coop layer strides the interpolated displacement and dispatches the game's own
         // lib_C::step (coop/player/puppet_footsteps.h). One StepDue verdict drives both the native
         // step and the skin step effects (two accumulators drift apart into doubled steps). The
         // default step's volume is the skin layer's call: a replace-mode variant mutes it to 0, and
         // lib step still runs its trace, water and friction side effects.
-        if (footsteps_.StepDue(curPos_, curSpeed_, !inAir)) {
+        if (seated) {
+            footsteps_.Reset();   // the ride is not walked distance
+        } else if (footsteps_.StepDue(curPos_, curSpeed_, !inAir)) {
             ue_wrap::votv_lib::CharacterStep(
                 actor_, coop::skin_effects::DefaultStepVolume(
                             actor_, coop::puppet_footsteps::Stride::kStepVolume));
@@ -638,6 +693,64 @@ void RemotePlayer::ApplyToEngine() {
         coop::puppet_head_probe::Tick(actor_, bodyYaw_.Yaw(),
                                       curYaw_ + curHeadYawDelta_, curPitch_);
     }
+}
+
+void RemotePlayer::SetSeat(Seat seat, void* atv) {
+    seat_ = seat;
+    if (seat == Seat::AtvDriver && atv) {
+        if (!seatAtv_.Is(atv)) seatAtv_.Set(atv);   // fresh from the drive's index read this slice
+    } else {
+        seatAtv_.Reset();
+        if (seat == Seat::AtvDriver) seat_ = Seat::Chair;   // a driver with no rig: the sit where the stream puts it
+    }
+}
+
+void RemotePlayer::ResetSeat() {
+    // No memory of the body is read: Spawn runs this after an earlier body may have been collected,
+    // and Destroy before its own DestroyActor. The sit table's row goes by pointer; the offset is the
+    // body's and goes with it.
+    if (actor_) ue_wrap::sit_pose::Forget(actor_);
+    seat_ = Seat::None;
+    seatShown_ = Seat::None;
+    seatAtv_.Reset();
+    seatShift_ = ue_wrap::sit_pose::MeshShift{};
+    seatSaid_ = false;
+}
+
+void RemotePlayer::UpdateSeat() {
+    const Seat want = ragdoll_.Active() ? Seat::None : seat_;
+    if (want == seatShown_) return;
+    const Seat was = seatShown_;
+    seatShown_ = want;
+    dirty_ = true;
+    footsteps_.Reset();   // neither the sit nor the ride is walked distance
+    seatSaid_ = false;
+    if (want == Seat::None) {
+        // Stood up (or the flop took the body): the authored offset back, the sit dropped, and the
+        // turn-in-place re-based on the streamed yaw, the facing the body stood up with.
+        ue_wrap::sit_pose::ClearMeshShift(seatShift_);
+        ue_wrap::sit_pose::DriveSitting(actor_, false);
+        bodyYaw_.Reset(curYaw_);
+        UE_LOGI("remote_player: puppet %p stood up from the %s%s", actor_,
+                was == Seat::AtvDriver ? "ATV" : "chair", ragdoll_.Active() ? " (ragdolled)" : "");
+        return;
+    }
+    // Sat down, or moved between a chair and the ATV: the sit raised now (ApplyToEngine keeps it and
+    // re-applies the offset with this seat's numbers), the body turned to the seat at once.
+    ue_wrap::sit_pose::DriveSitting(actor_, true);
+    bodyYaw_.Seated(NowMs(), curYaw_);
+}
+
+void RemotePlayer::ApplySeatShift() {
+    namespace SP = ue_wrap::sit_pose;
+    // The flags again each apply: a skin applied while seated rebuilds the AnimInstances, and the
+    // post-update hook (SP::AfterPuppetAnimUpdate) covers only the frames between applies.
+    SP::DriveSitting(actor_, true);
+    const float head = SP::ModelHead(actor_);
+    if (seatShown_ == Seat::AtvDriver)
+        SP::ApplyMeshShift(actor_, seatShift_, head * 3.f, head * 1.5f);
+    else
+        SP::ApplyMeshShift(actor_, seatShift_, head * 4.f, -(SP::ModelHalfLength(actor_) + head * 2.5f));
 }
 
 bool RemotePlayer::SetLocation(const ue_wrap::FVector& location) {
