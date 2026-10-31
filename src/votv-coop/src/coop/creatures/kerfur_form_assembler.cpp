@@ -14,6 +14,8 @@
 
 #include "coop/creatures/kerfur_form_assembler.h"
 
+#include "coop/creatures/kerfur_convert_host.h"  // OnTurnOnSuccessor: the turn-on's robot at its birth
+
 #include "coop/config/config.h"
 #include "coop/element/element.h"    // ElementId, kInvalidId (gate 1 per-eid read)
 #include "coop/element/registry.h"   // Registry::EidForActor (gate 1 per-eid read)
@@ -275,9 +277,18 @@ void OnFinishSpawn(void* /*context*/, void* /*sourceObject*/, void* spawnedResul
             // Gate 3c: a live index at FinishSpawningActor?
             bIdx = R::InternalIndexOf(spawnedResult);
             bIndexLive = R::IsLiveByIndex(spawnedResult, bIdx);
-            if (bIndexLive) { g_spawnBIndexLive.fetch_add(1, std::memory_order_relaxed);
-                              StoreCapturedForm(spawnedResult, bIdx, cls); }  // captured inside the verb
-            else            g_spawnBIndexDead.fetch_add(1, std::memory_order_relaxed);
+            if (bIndexLive) {
+                g_spawnBIndexLive.fetch_add(1, std::memory_order_relaxed);
+                StoreCapturedForm(spawnedResult, bIdx, cls);  // captured inside the verb
+                // A turn-on's robot, at its birth: the host's executor learns of it here rather than at the
+                // verb's return, so whom it serves is recorded before anything the verb still runs on it
+                // after the spawn reads the player (prop_kerfurOmega_C's body is not dumped; a move() there
+                // would). Only who it serves is decided there; the converge still consumes the capture.
+                if (tls_capturedIsNpc && IsHostRole())
+                    coop::kerfur_convert_host::OnTurnOnSuccessor(spawnedResult, tls_bracketCtx);
+            } else {
+                g_spawnBIndexDead.fetch_add(1, std::memory_order_relaxed);
+            }
         } else {
             g_spawnFormOutWindow.fetch_add(1, std::memory_order_relaxed);
         }

@@ -12,7 +12,9 @@
 // and form -- in a one-shot thread-local slot, and does nothing else with it:
 // kerfur_convert CONSUMES it at the verb's return, where the host converges the
 // conversion on exactly the successor the verb made. The routing stays there;
-// this file only publishes B.
+// this file only publishes B -- to that converge, and, on the host, a turn-on's B
+// at its birth to kerfur_convert_host::OnTurnOnSuccessor, which decides whom the
+// new robot serves before the verb's own reads ask.
 
 #pragma once
 

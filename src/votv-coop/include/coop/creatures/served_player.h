@@ -9,7 +9,13 @@
 // by post-hooks whose source is the calling robot. Each seam is armed only while a record needs it, and a
 // robot is recorded only while all its seams can answer. Which read is which, and which stay the host's:
 // docs/coop-dispatch-visibility.md. Nothing writes a puppet's hand, so a client's get_reports finds it empty
-// and gets the game's own refusal hint, shown on the host. Game thread.
+// and gets the game's own refusal hint, shown on the host.
+//
+// One more answer rides on a record and gates none: the gaze. The Omega's head is aimed by its AnimBP's
+// own update at the local camera manager, a read no puppet can answer, so while a record whose robot reads
+// through the pawn seam lives, a post-hook on that update re-aims the head at the served player's eye, and
+// the pose stream carries it to the clients' mirrors. Its hook installs from Tick on the class the robot's
+// body runs, and a class it cannot hook leaves that head on the host, said once. Game thread.
 
 #pragma once
 
@@ -48,8 +54,8 @@ void Unserve(void* robot);
 // The slot a live `robot` serves, or 0 (the host, no record, or a dead robot's).
 uint8_t ServedSlot(void* robot);
 
-// Drop dead robots' records and arm each seam while a record needs it. Every pump tick; nothing to do on a
-// client. Game thread.
+// Drop dead robots' records, hook the gaze on each live record's body class, and arm each seam and the
+// gaze while a record needs it. Every pump tick; nothing to do on a client. Game thread.
 void Tick();
 
 // A peer left: every robot it was served goes back to player 0.

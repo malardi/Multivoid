@@ -126,6 +126,29 @@ void DriveKerfurLookAt(void* npcActor, const FVector& worldTarget);
 bool ReadKerfurBodyYaw(void* npcActor, float& outYaw);
 void DriveKerfurBodyYaw(void* npcActor, float yaw);
 
+// The host's own Omega aimed at someone other than the local camera: the seam a robot serving a client
+// uses (coop/creatures/served_player). Its AnimBP's update aims `lookAt` at the local PlayerCameraManager,
+// a read no answer can redirect (a puppet has no camera manager), so the seam is a post-hook on that
+// update, which re-aims `lookAt` at the served player after the update wrote it and before the graph
+// copies it into the LookAt nodes; the pose stream then carries that target to every client's mirror.
+//
+// The class of a kerfur NPC's body AnimInstance (its ACharacter::Mesh slot's), or null when the actor is
+// no live kerfur-family character.
+void* KerfurBodyAnimClass(void* npcActor);
+// Whether `cls` is the kerfur-family AnimBP class or one of its subclasses: a BlueprintUpdateAnimation
+// declared on anything else (the native UAnimInstance's) would hook every AnimInstance in the game.
+bool IsKerfurAnimClass(void* cls);
+// The actor a kerfur-family AnimInstance animates (the owner of its skeletal mesh component), or null for
+// any other AnimInstance, a dead one, or one with no owning actor. Memory reads only.
+void* KerfurAnimActor(void* anim);
+// Aim a kerfur-family AnimInstance's head at `worldTarget` for this update: `lookAt` only, and only while
+// `customLookAt` is clear -- the AnimBP's own aim at the local camera, which this replaces. A custom look
+// the robot's own graph set (the spooky stare, the punch's) keeps its target, and a mirror's driven look
+// (customLookAt set by DriveKerfurLookAt) is never touched. `lookingAtPlayer`, the state gate the update
+// recomputes from the local camera's angle, is left as the update wrote it: each peer's own view decides
+// whether the head turns at all. False when nothing was written.
+bool AimKerfurAnimLookAt(void* anim, const FVector& worldTarget);
+
 // Park an ACharacter-derived puppet so the network SetActorLocation drive is authoritative: the
 // CharacterMovement tick off (no gravity or velocity integration fighting the drive) and the
 // actor tick off (no BP ReceiveTick; for an NPC mirror that is its AI). The AnimBP still ticks on

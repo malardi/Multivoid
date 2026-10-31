@@ -62,6 +62,14 @@ uint32_t RefusedFor(int slot);
 // so its return can name whose request it was. Game thread.
 int RequestSlotFor(void* object);
 
+// HOST: the turn-on verb running on `verbObject` (the prop) has just finished spawning its successor `npc`,
+// inside the verb, before the rest of the verb can have it read whom to follow (the form assembler's capture
+// at FinishSpawningActor). When the verb runs for a client's request, the new Omega serves that client from its
+// first read (kerfur_command::ServeActivator): whoever turns an Omega on is whom it follows and looks at. The
+// host's own press, an event's spawn and a refused service leave it reading the host, as the game does.
+// Game thread.
+void OnTurnOnSuccessor(void* npc, void* verbObject);
+
 // The converge at a conversion verb's return, from the gate's post on the host. `oldEid` is the old
 // form's element id at the verb's entry, invalid for a kerfur never enrolled. The old form still alive
 // means the verb refused (a sentient kerfur, a failed spawn): nothing converted anywhere, since a
