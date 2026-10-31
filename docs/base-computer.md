@@ -115,9 +115,11 @@ A laptop and a signal server hold a disc the same way: inserting one moves its t
 writes, its data rows and the JSON of its whole save struct into four fields of the device and
 destroys the actor, and ejecting one spawns the disc back from those fields. The four are one
 concept with one owner, and they are state, not an event: the host holds every device's slot, each
-peer polls its own devices once a second behind a digest that reads the raw field bytes, and a peer
+peer polls its own devices four times a second behind a digest that reads the raw field bytes, and a peer
 whose own game changed a slot sends the host the outcome as a claim. The host applies it and answers
-with the canonical, which is also the acknowledgement (`coop/interactables/floppy_slot_sync`).
+with the canonical, which is also the acknowledgement (`coop/interactables/floppy_slot_sync`). A canonical
+for a device the client cannot take yet -- its class not loaded, its list not that long -- waits for
+that device and lands when it comes up; until then the client claims nothing for it.
 
 The laptop also edits the files of the disc it holds, which its file quad carries as edit scripts
 (`coop/interactables/laptop_buffer_sync`). So the laptop's slot is watched for which disc it holds
@@ -182,7 +184,7 @@ disc under another peer's hold on every peer; the holder's own insert is the one
 | the upgrade levels | the host | the struct whole, on change; a purchase is an intent |
 | an order | the client names the row; the host performs and prices | an intent |
 | a coin gun sale | the client names the prop; the host prices, mints and destroys | an intent ahead of the destroy |
-| a device's floppy slot | the host | a 1 Hz digest-gated poll; a peer claims the outcome of its own insert or eject, and the host's canonical is the answer |
+| a device's floppy slot | the host | a 4 Hz digest-gated poll; a peer claims the outcome of its own insert or eject, and the host's canonical is the answer |
 
 ## Wire messages
 
@@ -224,7 +226,7 @@ an error line.
 | A refused coin-gun sale has already destroyed the prop on the client, and no heal re-asserts it: a client authors that destruction before the arbiter answers, as its generator install does, whose refusal refunds the upgrade. The host rebuilds its key index periodically, so a refusal is rare | `[V]` `coop/items/coingun_sync` |
 | The coin collect has two entries; the interceptor sits on the overlap entry, and the E-press entry dispatches inside the Blueprint where it cannot fire, so a coin a client collects by pressing is credited on the client only and the host's next balance broadcast erases it | `[V]` `coop/items/coingun_sync` |
 | A client's earnings from a chest or an achievement reach only its own machine and are erased by the host's next broadcast | `[V]` `coop/world/balance_sync` is one-way |
-| A slot change reaches the other peer on the next poll, so up to a second plus the round trip. A player who reaches a box inside that window acts on the slot as it was: an eject of a disc the other peer has just inserted answers "No floppy disc in the slot" and is not retried, and a client's insert into a slot the host has just filled replaces the host's disc when the claim lands, which loses that disc | `[V]` the lane polls at 1 Hz, and the host applies a claim over whatever its slot holds (`coop/interactables/floppy_slot_sync`); a faster poll would narrow the window rather than close it |
+| A slot change reaches the other peer on the next poll, so up to a quarter of a second plus the round trip. A player who reaches a box inside that window acts on the slot as it was: an eject of a disc the other peer has just inserted answers "No floppy disc in the slot" and is not retried, and a client's insert into a slot the host has just filled replaces the host's disc when the claim lands, which loses that disc | `[V]` the lane polls at 4 Hz, and the host applies a claim over whatever its slot holds (`coop/interactables/floppy_slot_sync`); a faster poll would narrow the window rather than close it |
 
 ## Code map
 
