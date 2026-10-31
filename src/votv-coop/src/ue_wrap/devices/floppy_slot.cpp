@@ -69,6 +69,7 @@ struct Desc {
     int32_t offData       = -1;
     int32_t offObjectData = -1;
     int32_t offZip        = -1;
+    uint8_t maskZip       = 0;   // zip's bit in its byte (FBoolProperty); 0 = not resolved
     int32_t offNametype   = -1;
     int32_t offWidget     = -1;
     int32_t offMesh       = -1;
@@ -202,13 +203,31 @@ bool EnsureResolved(DeviceKind kind) {
     d->offReadWrites = R::FindPropertyOffset(cls, L"floppyReadwrites");
     d->offData       = R::FindPropertyOffset(cls, L"floppyData");
     d->offObjectData = R::FindPropertyOffset(cls, L"floppyObjectData");
-    if (d->hasZip)      d->offZip      = R::FindPropertyOffset(cls, L"zip");
+    // `zip` is an FBoolProperty: its value is one bit (or a native bool's byte) of the byte at its
+    // offset, and a whole-byte read or write also takes the flags that may share that byte. Resolved
+    // as offset + mask; when the mask cannot be read the flag is left out (never read, written or
+    // hashed) rather than guessed at, and the rest of the slot still syncs. Adapted from
+    // ElvardFIC/WatchersOfTheVoid src/votv-coop/src/ue_wrap/devices/floppy_slot.cpp (MIT).
+    if (d->hasZip) {
+        int32_t zipOff = -1;
+        uint8_t zipMask = 0;
+        if (R::FindBoolProperty(cls, L"zip", zipOff, zipMask) && zipOff >= 0 && zipMask != 0) {
+            d->offZip = zipOff;
+            d->maskZip = zipMask;
+        } else {
+            d->offZip = -1;
+            d->maskZip = 0;
+            UE_LOGW("floppy_slot: %ls `zip` did not resolve as a bool (offset %d, mask 0x%02X) -- the "
+                    "zip flag is left out of this device's slot sync", d->className, zipOff,
+                    static_cast<unsigned>(zipMask));
+        }
+    }
     if (d->hasNametype) d->offNametype = R::FindPropertyOffset(cls, L"floppyNametype");
     if (d->refreshWidget) d->offWidget = R::FindPropertyOffset(cls, L"Widget");
     if (d->refreshMesh) d->offMesh = R::FindPropertyOffset(cls, L"floppyMesh");
 
     const bool ok = d->offType >= 0 && d->offReadWrites >= 0 && d->offData >= 0 &&
-                    d->offObjectData >= 0 && (!d->hasZip || d->offZip >= 0) &&
+                    d->offObjectData >= 0 &&
                     (!d->hasNametype || d->offNametype >= 0) &&
                     (!d->refreshWidget || d->offWidget >= 0) &&
                     (!d->refreshMesh || d->offMesh >= 0);
@@ -220,8 +239,9 @@ bool EnsureResolved(DeviceKind kind) {
         return false;
     }
     d->resolved = true;
-    UE_LOGI("floppy_slot: %ls resolved (type=0x%X rw=0x%X data=0x%X json=0x%X)",
-            d->className, d->offType, d->offReadWrites, d->offData, d->offObjectData);
+    UE_LOGI("floppy_slot: %ls resolved (type=0x%X rw=0x%X data=0x%X json=0x%X zip=%d/0x%02X)",
+            d->className, d->offType, d->offReadWrites, d->offData, d->offObjectData, d->offZip,
+            static_cast<unsigned>(d->maskZip));
     return true;
 }
 
@@ -275,7 +295,7 @@ bool ReadScalars(DeviceKind kind, void* device, Scalars& out) {
     const auto* p = reinterpret_cast<const uint8_t*>(device);
     out.floppyType = *reinterpret_cast<const int32_t*>(p + d->offType);
     out.readWrites = *reinterpret_cast<const int32_t*>(p + d->offReadWrites);
-    out.zip        = d->offZip >= 0 && p[d->offZip] != 0;
+    out.zip        = d->offZip >= 0 && d->maskZip != 0 && (p[d->offZip] & d->maskZip) != 0;
     return true;
 }
 
@@ -305,7 +325,10 @@ bool ReadDigest(DeviceKind kind, void* device, uint64_t& out, DigestScope scope)
     // own second phase clears floppyObjectData once it has read it -- floppyReadwrites it never
     // clears at all -- and a poll reading either would publish twice.
     if (*reinterpret_cast<const int32_t*>(p + d->offType) < 0) { out = h; return true; }
-    if (d->offZip >= 0) Mix(h, p + d->offZip, 1);
+    if (d->offZip >= 0 && d->maskZip != 0) {
+        const uint8_t zip = (p[d->offZip] & d->maskZip) != 0 ? 1 : 0;  // the flag, not its byte
+        Mix(h, &zip, sizeof(zip));
+    }
     MixFString(h, device, d->offNametype);
     MixFString(h, device, d->offObjectData);
     if (scope == DigestScope::Occupancy) { out = h; return true; }
@@ -325,7 +348,13 @@ bool WriteSlot(DeviceKind kind, void* device, const Scalars& st, const Content& 
     auto* p = reinterpret_cast<uint8_t*>(device);
     *reinterpret_cast<int32_t*>(p + d->offType)       = st.floppyType;
     *reinterpret_cast<int32_t*>(p + d->offReadWrites) = st.readWrites;
-    if (d->offZip >= 0) p[d->offZip] = st.zip ? 1 : 0;
+    if (d->offZip >= 0 && d->maskZip != 0) {
+        // Only zip's own bit moves; a native bool (mask 0xFF) gets the canonical 0/1.
+        uint8_t& zipByte = p[d->offZip];
+        if (d->maskZip == 0xFF) zipByte = st.zip ? 1 : 0;
+        else zipByte = static_cast<uint8_t>(st.zip ? (zipByte | d->maskZip)
+                                                   : (zipByte & static_cast<uint8_t>(~d->maskZip)));
+    }
     if (d->offNametype >= 0) WriteFStringField(device, d->offNametype, content.nametype);
     WriteFStringField(device, d->offObjectData, content.objectData);
     WriteFStringArrayField(device, d->offData, content.data);
@@ -369,6 +398,7 @@ void ResetCache() {
         d.nextTryMs = 0;
         d.offType = d.offReadWrites = d.offData = d.offObjectData = -1;
         d.offZip = d.offNametype = d.offWidget = d.offMesh = -1;
+        d.maskZip = 0;
         // The overlap entries go with the rest: a resolved UFunction of a world's Blueprint class
         // is cached on the same terms as this file's offsets, and a caller holding one past a
         // level change would be holding it on a guess.
