@@ -1178,6 +1178,11 @@ enum class ReliableKind : uint8_t {
     // the host every few seconds for every Omega (a late joiner's and a fresh mirror's seed). Not pre-world.
     // KerfurDripPayload, sent at its used length.
     KerfurDrip = 209,
+    // HOST->CLIENT: the Madness Combat event (the console's madness.combat, run on the host): whether its master
+    // stands, whether its music plays and its kill counter shows, the count and the master's age. The music and
+    // the counter were the host's alone. Sent on change and every second while the event runs (a late joiner's
+    // seed), once more when it ends. Not relayed, not pre-world. MadnessStatePayload.
+    MadnessState = 210,
 };
 
 #pragma pack(push, 1)
@@ -1920,6 +1925,21 @@ struct KerfurDripPayload {
 };
 static_assert(sizeof(KerfurDripPayload) == 200, "KerfurDripPayload must be 200 bytes");
 static_assert(sizeof(KerfurDripPayload) <= 256 - 20 - 8, "KerfurDripPayload must fit one datagram");
+
+// The Madness Combat event's presentation (MadnessState). Adapted from ElvardFIC/WatchersOfTheVoid's
+// MadnessStatePayload (MIT).
+struct MadnessStatePayload {
+    uint32_t sequence;   // 4 -- the host's, non-zero, rising; a receiver keeps the newest
+    uint32_t eventId;    // 4 -- a new master is a new event (non-zero while active)
+    int32_t  kills;      // 4 -- the counter's count, >= 0
+    float    elapsed;    // 4 -- the master's age in seconds when sent (the music's position)
+    uint8_t  active;     // 1 -- 0/1
+    uint8_t  hud;        // 1 -- 0/1
+    uint8_t  playing;    // 1 -- 0/1
+    uint8_t  _pad;       // 1
+};
+static_assert(sizeof(MadnessStatePayload) == 20, "MadnessStatePayload must be 20 bytes");
+static_assert(sizeof(MadnessStatePayload) <= 256 - 20 - 8, "MadnessStatePayload must fit one datagram");
 
 // A swinging lid's pose (SwingerPose): the lid by the container lane's key, its world transform.
 struct SwingerPosePayload {

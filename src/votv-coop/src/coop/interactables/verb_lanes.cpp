@@ -20,6 +20,7 @@
 #include "coop/props/pry_crowbar_sync.h"
 #include "coop/world/pipe_burst_sync.h"
 #include "coop/creatures/kerfur_drip_sync.h"
+#include "coop/world/madness_sync.h"
 #include "coop/creatures/walker_mirror.h"
 #include "coop/world/dimension_travel.h"
 #include "coop/comms/log_mirror.h"
@@ -46,6 +47,7 @@ void Install(coop::net::Session& session) {
     coop::pry_crowbar_sync::Install(&session);   // a plank's crowbar shows on every peer
     coop::pipe_burst_sync::Install(&session);    // the basement pipes burst on the host alone
     coop::kerfur_drip_sync::Install(&session);   // what a kerfur Omega wears, on every peer
+    coop::madness_sync::Install(&session);       // the Madness Combat event's music and counter, on every peer
     coop::dimension_travel::Install(&session);
     coop::log_mirror::Install(&session);         // a client's logs, streamed to the host's coop_logs   // a dimension: the session kept, the clients follow the host
     coop::walker_mirror::Install(&session);      // one walking mannequin: a client's brain off, the host's pose streamed
@@ -69,6 +71,7 @@ void Tick(coop::net::Session& session) {
     coop::pry_crowbar_sync::Tick();     // settle the crowbar watches, retire stale shown crowbars
     coop::pipe_burst_sync::Tick();      // the host's pipe states out
     coop::kerfur_drip_sync::Tick();     // the host's Omegas' accessories, every few seconds
+    coop::madness_sync::Tick();         // HOST: the Madness Combat state out; CLIENT: its music and counter shown
     coop::walker_mirror::Install(&session);  // retry a watch not taken yet (idempotent)
     coop::walker_mirror::Tick(session);  // HOST: the walking mannequins' poses to the clients
     coop::swinger_pose_sync::Tick(session);  // a lid this peer swings by hand: its pose to the others
@@ -92,6 +95,7 @@ void OnDisconnect() {
     coop::pry_crowbar_sync::OnDisconnect();
     coop::pipe_burst_sync::OnDisconnect();
     coop::kerfur_drip_sync::OnDisconnect();
+    coop::madness_sync::OnDisconnect();  // the music stopped, the counter off the screen
     coop::walker_mirror::OnDisconnect();
     coop::swinger_pose_sync::OnDisconnect();
     coop::dimension_travel::OnDisconnect();

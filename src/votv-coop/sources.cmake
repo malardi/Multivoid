@@ -87,6 +87,7 @@ set(VOTVCOOP_SOURCES
     src/ue_wrap/world/active_events.cpp
     src/ue_wrap/world/jellyfish_path.cpp
     src/ue_wrap/world/bad_sun.cpp
+    src/ue_wrap/world/madness.cpp
     src/ue_wrap/world/red_sky.cpp
     src/ue_wrap/world/explosion.cpp
     src/ue_wrap/world/explosion_source.cpp
@@ -376,6 +377,7 @@ set(VOTVCOOP_SOURCES
     src/coop/props/pry_crowbar_sync.cpp
     src/coop/world/pipe_burst_sync.cpp
     src/coop/creatures/kerfur_drip_sync.cpp
+    src/coop/world/madness_sync.cpp
     src/coop/world/dimension_travel.cpp
     src/coop/comms/log_mirror.cpp
     src/coop/dev/lab_cmd.cpp

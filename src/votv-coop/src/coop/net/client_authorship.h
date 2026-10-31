@@ -230,6 +230,7 @@ constexpr ClientAuthorship AuthorshipOf(ReliableKind k) {
     case ReliableKind::LaptopTabState:
     case ReliableKind::WorldTravel:
     case ReliableKind::AtvSetComplete:
+    case ReliableKind::MadnessState:
         return ClientAuthorship::Host;
     }
     return ClientAuthorship::NotAKind;  // a byte value that names no kind: refused like Host

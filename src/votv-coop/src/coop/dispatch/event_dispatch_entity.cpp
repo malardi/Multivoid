@@ -11,6 +11,7 @@
 #include "coop/props/pry_crowbar_sync.h"
 #include "coop/world/pipe_burst_sync.h"
 #include "coop/creatures/kerfur_drip_sync.h"
+#include "coop/world/madness_sync.h"
 #include "coop/world/dimension_travel.h"
 #include "coop/interactables/swinger_pose_sync.h"
 
@@ -181,6 +182,19 @@ bool HandleEntityEvent(net::Session& session,
         }
         for (int i = 0; i < net::kKerfurDripMax; ++i) p.names[i][sizeof(p.names[i]) - 1] = 0;
         coop::kerfur_drip_sync::OnKerfurDrip(p, msg.senderPeerSlot);
+        break;
+    }
+    case net::ReliableKind::MadnessState: {
+        // The host's Madness Combat state; madness_sync plays its music and shows its counter here. The fields
+        // are checked there, before any engine call.
+        if (msg.payloadLen < sizeof(net::MadnessStatePayload)) {
+            UE_LOGW("event_feed: MadnessState payload too short (%zu < %zu)",
+                    static_cast<size_t>(msg.payloadLen), sizeof(net::MadnessStatePayload));
+            break;
+        }
+        net::MadnessStatePayload p{};
+        std::memcpy(&p, msg.payload, sizeof(p));
+        coop::madness_sync::OnMadnessState(p);
         break;
     }
     case net::ReliableKind::BloodDecal: {
