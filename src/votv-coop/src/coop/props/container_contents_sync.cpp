@@ -17,6 +17,7 @@
 #include "coop/net/session.h"
 #include "coop/session/net_pump.h"
 #include "ue_wrap/actors/container_inventory.h"
+#include "ue_wrap/actors/container_view.h"  // Refresh: the open screen rebuilt after an apply
 #include "ue_wrap/actors/save_record.h"
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/object_index.h"  // ClassByName -- the host's O(1) class resolve for a client's contents
@@ -334,8 +335,15 @@ Ingest ApplyContents(uint32_t eid, const std::vector<SR::SaveRecord>& recs, uint
     g_appliedHash[eid] = blobHash;
     // The base a later local edit declares; never cleared by our own verb edge.
     if (!IsHost()) g_baseHash[eid] = blobHash;
-    ci::RederiveShownState(ci::OwnerOf(inv), inv);
-    UE_LOGI("container_contents: eid=%u applied %d records", eid, n);
+    void* const owner = ci::OwnerOf(inv);
+    ci::RederiveShownState(owner, inv);
+    // An inventory screen open onto this container still lists the rows it was built with: a row
+    // another player took stayed, and choosing it said "not enough space". Rebuild it from the
+    // contents just written (a no-op unless this container is the one on screen). Adapted from
+    // ElvardFIC/WatchersOfTheVoid src/votv-coop/src/coop/props/container_contents_sync.cpp (MIT).
+    const bool refreshed = owner && ue_wrap::container_view::Refresh(owner);
+    UE_LOGI("container_contents: eid=%u applied %d records%s", eid, n,
+            refreshed ? " (open screen rebuilt)" : "");
     return Ingest::Applied;
 }
 

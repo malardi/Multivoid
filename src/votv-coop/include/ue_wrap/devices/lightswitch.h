@@ -63,6 +63,10 @@ bool IsLightSwitch(void* obj);              // class == lightswitch_C or subclas
 std::wstring GetSwitchKeyString(void* sw);  // the switch's AtriggerBase_C::Key
 bool TryReadSwitchA(void* sw, bool& on);    // the switch's flip state (bool A)
 bool CallUse(void* sw);                     // use() -- flips the switch visual + the lights
+// use() for a REMOTE peer's press: the same call, but the 2D UI click use() plays (heard map-wide)
+// is cancelled and played at the switch, attenuated (silent by ~15 m). Falls back to CallUse when
+// the PlaySound2D hook cannot be installed. Game thread.
+bool CallUseReplayed(void* sw);
 
 // The group a switch fires: its `objects[0]` (the inherited triggerBase_C::objects, which use() reads
 // and casts to the trigger interface), when that is a light root. Game thread. Null otherwise.

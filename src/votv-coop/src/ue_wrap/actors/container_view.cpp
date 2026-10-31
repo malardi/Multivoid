@@ -101,6 +101,17 @@ bool Open(void* container) {
     return Call(gm, f);
 }
 
+// Adapted from ElvardFIC/WatchersOfTheVoid src/votv-coop/src/ue_wrap/actors/container_view.cpp (MIT).
+bool Refresh(void* container) {
+    if (!container || !R::IsLive(container)) return false;
+    void* const screen = OpenScreen();
+    if (!screen || !R::IsLive(screen) || PointerAt(screen, g.entered) != container) return false;
+    void* const fn = R::FindDispatchFunctionCached(R::ClassOf(screen), L"gen");
+    if (!fn) return false;
+    ParamFrame f(fn);
+    return f.valid() && Call(screen, f);
+}
+
 bool Close() {
     void* const screen = OpenScreen();
     if (!screen) return false;

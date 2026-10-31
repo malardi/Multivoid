@@ -107,6 +107,31 @@ coop::net::ItemActivatePayload g_peerActivateCache[coop::players::kMaxPeers] = {
 // bounce back as a wire packet. Atomic, as the session pointer.
 std::atomic<bool> g_echoSuppress{false};
 
+// The state poll. The observers above see the F-key chain only, but the battery running out
+// clears the flashlight inside the player's native Tick, and unequipping takes hasFlashlight away
+// with no F press: neither reached the wire, so the puppet's light stayed on for everyone else.
+// TickConnect samples the local state every kPollMs and broadcasts when it moved. Only the on/off
+// state and, while on, the mode byte are compared (KeyOf): intensity and cones move with battery
+// dimming and must not stream. A changed key is sent once two consecutive samples agree, so a
+// low-battery flicker shorter than one poll does not click on every peer. Game thread. Adapted
+// from ElvardFIC/WatchersOfTheVoid src/votv-coop/src/coop/player/item_activate.cpp (MIT).
+inline constexpr uint64_t kPollMs = 250;
+uint64_t g_nextPollMs = 0;
+void*    g_pollPlayer = nullptr;  // identity only: a new local pawn restarts the poll's baseline
+// The key last broadcast to every peer; 0 = off, the puppet default. Atomic, as the signature:
+// DebugForceToggle sends from the autotest's worker thread.
+std::atomic<int> g_lastSentKey{0};
+int      g_pollCandidate = -1;    // a changed key seen once, awaiting the next sample's agreement
+// Whether light_R's visibility has been seen tracking the flashlight (visible while on). Only then
+// is an invisible light_R read as off: a build whose blueprint drives intensity alone would
+// otherwise read every flashlight as off.
+// Atomic: BuildPayloadFromLocal also runs on DebugForceToggle's worker thread.
+std::atomic<bool> g_visibilityTracks{false};
+
+int KeyOf(const coop::net::ItemActivatePayload& p) {
+    return p.state ? (1 | (static_cast<int>(p.mode) << 1)) : 0;
+}
+
 bool ProbeLogEnabled() {
     // Read once per process: the observer is hot.
     static const bool s_enabled = ::coop::config::ResolveFlag(::coop::config_registry::rows::flashlight_log);
@@ -136,7 +161,13 @@ bool BuildPayloadFromLocal(void* mp, coop::net::ItemActivatePayload& out, coop::
         out.senderElementId =
             (selfEid == coop::element::kInvalidId) ? 0u : selfEid;
     }
-    out.state           = fl.flashlight ? 1 : 0;
+    // On means the flag is set, a flashlight is equipped (an unequip clears hasFlashlight and
+    // nothing else) and, once light_R has been seen tracking it, the light is visible.
+    if (fl.flashlight && fl.hasFlashlight && snap.visible)
+        g_visibilityTracks.store(true, std::memory_order_relaxed);
+    const bool lit = fl.flashlight && fl.hasFlashlight &&
+                     (snap.visible || !g_visibilityTracks.load(std::memory_order_relaxed));
+    out.state           = lit ? 1 : 0;
     out.flags           = 0;  // no actor key
     out.mode            = fl.mode;
     out.actorKeyHash    = 0;
@@ -200,13 +231,17 @@ void OnUpdateFlashlightPost(void* self, void* function, void* /*params*/) {
                 snapOk ? snap.intensity : -1.f);
     }
 
-    // The crank lantern (_c) toggles its own light components, not the player's light_R; it is not
-    // sent.
+    // The crank lantern (_c) used to be skipped here, so its state never crossed. It is sent like
+    // the others now: the payload's state is the flag, the equip guard and light_R's visibility
+    // (BuildPayloadFromLocal), so the puppet shows what the local light_R does. Said once, so a
+    // run says what the crank variant reads as.
     if (crankFlashlight) {
-        if (ProbeLogEnabled()) {
-            UE_LOGI("flashlight: crank lantern (_c) -- nothing sent");
+        static bool s_saidCrank = false;
+        if (!s_saidCrank || ProbeLogEnabled()) {
+            s_saidCrank = true;
+            UE_LOGI("flashlight: crank lantern (_c) -- flashlight=%d hasFL=%d, sent as the light_R state",
+                    flashlight ? 1 : 0, hasFlashlight ? 1 : 0);
         }
-        return;
     }
 
     // No send when the BP guard early-returned for no equipped flashlight, or a recook that always
@@ -255,11 +290,42 @@ void OnUpdateFlashlightPost(void* self, void* function, void* /*params*/) {
         UE_LOGW("flashlight: SendReliable failed (channel busy or not connected) [%s]", which);
     } else {
         g_lastSentSig.store(storeSig, std::memory_order_release);
+        g_lastSentKey.store(KeyOf(p), std::memory_order_release);
+        g_pollCandidate = -1;
         UE_LOGI("flashlight: sent state=%d mode=%u Intensity=%.2f outerCone=%.1f innerCone=%.1f "
                 "(senderElementId=0x%08x, via %s)",
                 p.state, p.mode, p.intensity, p.outerConeAngle, p.innerConeAngle,
                 p.senderElementId, which);
     }
+}
+
+// The poll's sample: broadcast the local state when its key moved and two samples agree.
+void PollLocalState() {
+    auto* s = g_session.load(std::memory_order_acquire);
+    if (!s || !s->connected() || !g_installed) return;
+    const uint64_t now = ::GetTickCount64();
+    if (now < g_nextPollMs) return;
+    g_nextPollMs = now + kPollMs;
+    void* mp = coop::players::Registry::Get().Local();
+    if (!mp || !R::IsLive(mp)) return;
+    if (mp != g_pollPlayer) {
+        // A new pawn (a respawn, a world change) starts from what the peers were last told.
+        g_pollPlayer = mp;
+        g_pollCandidate = -1;
+    }
+    if (g_echoSuppress.load(std::memory_order_acquire)) return;
+    coop::net::ItemActivatePayload p{};
+    if (!BuildPayloadFromLocal(mp, p, s)) return;
+    const int key = KeyOf(p);
+    if (key == g_lastSentKey.load(std::memory_order_acquire)) { g_pollCandidate = -1; return; }
+    if (key != g_pollCandidate) { g_pollCandidate = key; return; }  // seen once: wait for the next sample
+    if (!s->SendReliable(coop::net::ReliableKind::ItemActivate, &p, sizeof(p))) return;  // retried next poll
+    const uint64_t sig = SignaturePayload(p);
+    g_lastSentSig.store((sig == kNoSendYet) ? (kNoSendYet - 1) : sig, std::memory_order_release);
+    g_lastSentKey.store(key, std::memory_order_release);
+    g_pollCandidate = -1;
+    UE_LOGI("flashlight: state poll sent state=%d mode=%u Intensity=%.2f (a change no F press made: "
+            "battery, unequip or crank)", p.state, p.mode, p.intensity);
 }
 
 }  // namespace
@@ -327,6 +393,7 @@ bool DebugForceToggle(void* mp) {
         const uint64_t sig = SignaturePayload(p);
         const uint64_t storeSig = (sig == kNoSendYet) ? (kNoSendYet - 1) : sig;
         g_lastSentSig.store(storeSig, std::memory_order_release);
+        g_lastSentKey.store(KeyOf(p), std::memory_order_release);
         UE_LOGI("flashlight: DebugForceToggle sent state=%d mode=%u Intensity=%.2f outerCone=%.1f "
                 "(senderElementId=0x%08x)",
                 p.state, p.mode, p.intensity, p.outerConeAngle, p.senderElementId);
@@ -535,7 +602,11 @@ void QueueConnectBroadcastForSlot(int peerSlot) {
         return;
     }
     // To the one slot: the connected peers got the state on the toggle.
-    s->SendReliableToSlot(peerSlot, coop::net::ReliableKind::ItemActivate, &p, sizeof(p));
+    const bool sent =
+        s->SendReliableToSlot(peerSlot, coop::net::ReliableKind::ItemActivate, &p, sizeof(p));
+    // A client's one slot is the host, which relays to everyone: the state poll's baseline moves.
+    if (sent && s->role() == coop::net::Role::Client)
+        g_lastSentKey.store(KeyOf(p), std::memory_order_release);
     const uint64_t sig = SignaturePayload(p);
     const uint64_t storeSig = (sig == kNoSendYet) ? (kNoSendYet - 1) : sig;
     g_lastSentSig.store(storeSig, std::memory_order_release);
@@ -567,6 +638,8 @@ void ReplayPeerStatesToSlot(int newSlot) {
 }
 
 void TickConnect() {
+    // The local state poll: a battery dying, an unequip or the crank lantern (no F press).
+    PollLocalState();
 
     // The pending applies drain once the registry has a live puppet for the slot.
     for (uint8_t peer = 0; peer < coop::players::kMaxPeers; ++peer) {
@@ -586,6 +659,11 @@ void TickConnect() {
 }
 
 void OnDisconnect() {
+    // The poll's baseline belongs to the session: a new one's peers start with the puppet off.
+    g_lastSentKey.store(0, std::memory_order_release);
+    g_pollCandidate = -1;
+    g_pollPlayer = nullptr;
+    g_nextPollMs = 0;
     int clearedApplies = 0;
     for (uint8_t i = 0; i < coop::players::kMaxPeers; ++i) {
         if (g_pendingApplyValid[i]) ++clearedApplies;

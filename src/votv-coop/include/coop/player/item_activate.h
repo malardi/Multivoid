@@ -3,7 +3,9 @@
 // item actor; the puppet (also a pawn orphan) has the same light at the same offset, so
 // toggling its visibility is the full implementation. Sender path: a post-observer on the
 // pawn's flashlight update reads the pawn's flashlight flag and broadcasts the payload to
-// peers; an echo-suppression flag keeps the receiver's apply from bouncing back. Receiver
+// peers, and a 250 ms state poll (TickConnect) sends what no F press reports: the battery
+// running out, an unequip, the crank lantern. An echo-suppression flag keeps the receiver's
+// apply from bouncing back. Receiver
 // path: ApplyToPuppet writes the puppet's flag and toggles the light's visibility through
 // the engine wrapper. The flashlight_log config flag adds log lines before and after every
 // observed toggle (the blueprint's early return when the player has no flashlight, and the
@@ -56,9 +58,10 @@ void QueueConnectBroadcastForSlot(int peerSlot);
 // `newSlot` is the freshly connected client's slot. Game thread only.
 void ReplayPeerStatesToSlot(int newSlot);
 
-// The per-tick worker. Drains the pending broadcast queued at connect (retries the reliable
-// send until the channel accepts it, then updates the observer's dedup signature so the next
-// press does not re-send) and the per-peer pending applies (walks the puppet registry; each
+// The per-tick worker. Polls the local flashlight every 250 ms and broadcasts a change of its
+// on/off state (or of its mode while on) that no F press made -- the battery running out, an
+// unequip, the crank lantern -- once two samples agree (a refused send is retried at the next
+// sample). Drains the per-peer pending applies (walks the puppet registry; each
 // slot with a pending payload and a valid puppet is applied and cleared). Cheap when nothing
 // is pending. Game thread only.
 void TickConnect();
