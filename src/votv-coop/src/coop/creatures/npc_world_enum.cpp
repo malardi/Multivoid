@@ -156,6 +156,12 @@ constexpr ExSpawnSource kExSpawnSources[] = {
     {L"trigger_wispSwarm_C",     nullptr},          // the wisps event swarm
     {L"piramidSpawner_C",        nullptr},          // the piramid event chain
     {L"ticker_wispSpawner_C",    nullptr},          // the ambient sky wisps
+    // The killer-wisp and fossil-hound tickers: each spawn is an EX_CallMath BeginDeferred in the ticker's
+    // ubergraph, and a client's own ticker is refused (spawn_authority), so without these rows the host's
+    // creatures were seen by no one else.
+    // Adapted from ElvardFIC/WatchersOfTheVoid src/votv-coop/src/coop/creatures/npc_world_enum.cpp (MIT).
+    {L"ticker_yellowWispSpawner_C", nullptr},       // the killer wisps (killerwisp_C)
+    {L"ticker_fossilhoundSpawner_C", nullptr},      // the fossil hounds (fossilhound_C)
     {L"ticker_egSpawner_C",      nullptr},          // the ambient night eggs, one eg_C per roll
     {L"prop_coingun_C",          nullptr},          // the sell gun's coin mint
     {L"jellyfishPath_C",         nullptr},          // the space jellyfish's seven (world-actor lane)
@@ -254,6 +260,7 @@ void InstallExSpawnCatch() {
                                                  &OnBeginDeferredExSpawn)) {
         UE_LOGI("npc-sync[ex-spawn]: Func-thunk catch installed on BeginDeferred (source-gated: "
                 "trigger_wispSwarm_C -> wisp_C, piramidSpawner_C -> killerwisp_C + piramid2_C, "
+                "ticker_yellowWispSpawner_C -> killerwisp_C, ticker_fossilhoundSpawner_C -> fossilhound_C, "
                 "jellyfishPath_C -> jellyfish_C, trigger_eventer_C -> ventCrawler_C + superEgger_C, "
                 "grayEventController_C -> grayTest_C, superEgger_C + ticker_egSpawner_C -> eg_C, "
                 "tentacleBallsFollower_C -> tentacleBall_C; EX_CallMath spawns now enroll)");
