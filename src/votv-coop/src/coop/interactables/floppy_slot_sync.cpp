@@ -35,7 +35,18 @@ namespace GT = ue_wrap::game_thread;
 
 std::atomic<coop::net::Session*> g_session{nullptr};
 
-constexpr uint64_t kSweepMs = 1000;   // the server lane's own cadence
+// Slot occupancy is interaction state: a player inserts, ejects and re-inserts within seconds. At
+// one poll a second a peer could act on a slot the other had changed up to a second ago -- an
+// eject of a disc just inserted there answered "No floppy disc in the slot", and an insert into a
+// slot just filled replaced the disc in it when the claim landed. The laptop's file quad polls at
+// 4 Hz, and this lane now does too. The digest reads raw field bytes and stops at an empty slot's
+// type, so the cost is the occupied boxes'. A client's claim is raised only on its own game's edge,
+// so a box claims at most 4 times a second, under the host's per-sender rate window below.
+// Adapted from ElvardFIC/WatchersOfTheVoid src/votv-coop/src/coop/interactables/floppy_slot_sync.cpp (MIT).
+constexpr uint64_t kSweepMs = 250;
+// A refused connect set is retried on its own clock: its tries are counted, and at the sweep's
+// cadence they would all be spent inside a second of backpressure.
+constexpr uint64_t kConnectRetryMs = 1000;
 
 // The identity is the device's index in its kind's own list, and the list is the gamemode's
 // servers[]: the level places the boxes, so both peers build the same order. The cap is
@@ -48,7 +59,7 @@ constexpr size_t kMaxDevices = 64;
 // JSON its own stringToSaveData cannot parse, which is worse than not sending.
 constexpr size_t kMaxSlotBytes = 32 * 1024;
 
-// A client's claim is unbounded input. The window is generous next to the 1 Hz poll that
+// A client's claim is unbounded input. The window is generous next to the 4 Hz poll that
 // produces one, so a peer playing normally never reaches it.
 constexpr uint64_t kRateWindowMs = 2000;
 constexpr int      kMaxClaimsPerWindow = 12;
@@ -178,6 +189,21 @@ std::set<uint32_t> g_unsendable;     // slots this peer cannot put on the wire a
 // nothing about the laptop.
 bool g_haveCanonical[FS::kDeviceKindCount] = {};
 
+// CLIENT: a host canonical for a device this peer cannot take yet -- its class is not resolved, or
+// its kind's list (the gamemode's servers[], the one laptop) does not reach that index yet. Dropping
+// it was permanent: the host sent the joiner's set once and counted it delivered, so the joiner kept
+// its own save's slot for that device, and when nothing of the kind landed this peer stayed mute
+// for the kind all session -- its inserts claimed nothing and the laptop's file edits waited on a
+// canonical that never came. The value is kept per device until the device can take it; a newer
+// canonical for the same device replaces it, and the host publishes every change, so what waits is
+// always the host's latest. The sweep claims nothing for a device with one waiting.
+// Adapted from ElvardFIC/WatchersOfTheVoid src/votv-coop/src/coop/interactables/floppy_slot_sync.cpp (MIT).
+struct PendingCanonical {
+    Slot     slot;
+    uint32_t gen = 0;   // the laptop's generation the canonical named; 0 for the boxes
+};
+std::map<uint32_t, PendingCanonical> g_pending;   // ShadowKey -> the host's latest value for it
+
 // CLIENT: a claim the host drops -- for its rate, its size, a bad index or a malformed body --
 // gets no answer of any kind, and this peer primed its shadow when the claim was SENT. Without
 // this the divergence is permanent. Re-claim on a deadline, a bounded number of times.
@@ -186,7 +212,7 @@ std::map<uint32_t, Awaiting> g_awaiting;
 constexpr uint64_t kAnswerMs = 4000;
 constexpr int      kMaxClaimTries = 3;
 
-// HOST: a joiner whose connect set the transport refused has a permanently stale world -- the 1 Hz
+// HOST: a joiner whose connect set the transport refused has a permanently stale world -- the
 // sweep covers edges, not a set nobody asked for. Re-send it.
 std::map<int, int> g_connectRetry;   // peer slot -> tries left
 
@@ -210,6 +236,7 @@ void NoteLaptopOccupancy(void* laptop) {
 }
 constexpr int kMaxConnectTries = 5;
 uint64_t g_nextSweep = 0;
+uint64_t g_nextConnectRetry = 0;
 coop::blob_chunks::Assembler g_asm;
 uint32_t g_nextSeq = 1;
 
@@ -238,7 +265,7 @@ void PrimeShadow(FS::DeviceKind kind, size_t index, void* device) {
 
 // A slot this peer cannot put on the wire -- past the size ceiling, or with rows the reader will
 // not read. Prime the shadow so the sweep stops, drop the retry, and warn ONCE for this device.
-// Leaving the shadow stale instead is a permanent 1 Hz re-read of the very field that is too big
+// Leaving the shadow stale instead is a permanent per-sweep re-read of the very field that is too big
 // to read, with a log line every second; the slot is retried when it next changes, which is the
 // only event that could make it sendable.
 void ParkUnsendable(FS::DeviceKind kind, size_t index, void* device, const char* why,
@@ -345,6 +372,70 @@ bool ApplySlot(FS::DeviceKind kind, size_t index, void* device, const Slot& s) {
     return true;
 }
 
+// ---- client: a canonical lands ----
+
+struct LandCounts { int applied = 0, unchanged = 0; };
+
+// CLIENT: one device's host value written to a device that can take it. The host has now spoken for
+// the kind, and for the laptop the generation the canonical named is this peer's.
+void LandCanonical(FS::DeviceKind kind, uint8_t index, void* device, const Slot& in, uint32_t gen,
+                   LandCounts& counts) {
+    g_awaiting.erase(ShadowKey(kind, index));
+    // [#39's report] What this write replaces. A live run applied two inserts of one disc within a
+    // second, the second from a peer that had only watched, and the host kept the later one.
+    // The rows and the JSON are read only behind an occupied slot, as ApplySlot reads them.
+    FS::Scalars prevSt{};
+    Slot prev;
+    const bool held = FS::ReadScalars(kind, device, prevSt) && prevSt.floppyType >= 0 &&
+                      ReadSlotOf(kind, device, prev);
+    const bool wrote = ApplySlot(kind, index, device, in);
+    g_haveCanonical[static_cast<uint8_t>(kind)] = true;
+    if (kind == FS::DeviceKind::Laptop) g_laptopGen = gen;
+    if (!wrote) { ++counts.unchanged; return; }
+    ++counts.applied;
+    if (!held || in.st.floppyType < 0) return;
+    const std::wstring prevKey = FS::ObjectDataKey(prev.c.objectData);
+    const std::wstring inKey = FS::ObjectDataKey(in.c.objectData);
+    UE_LOGI("floppy_slot_sync: CLIENT canonical wrote device=%u type=%d key '%ls' rows %zu over "
+            "an occupied slot: type %d key '%ls' rows %zu -- %s",
+            static_cast<unsigned>(index), in.st.floppyType, inKey.c_str(), in.c.data.size(),
+            prev.st.floppyType, prevKey.c_str(), prev.c.data.size(),
+            prevKey == inKey ? "OVERWROTE AN OCCUPIED SLOT (same key)"
+                             : "OVERWROTE AN OCCUPIED SLOT HOLDING ANOTHER DISC");
+}
+
+// CLIENT: every waiting canonical of this kind whose device can take it now. The ones that land
+// leave the map before any is written: a write calls the device's own refresh, and nothing that
+// runs from there may find an entry it is still iterating.
+LandCounts DrainPending(FS::DeviceKind kind) {
+    LandCounts counts;
+    if (g_pending.empty() || !FS::EnsureResolved(kind)) return counts;
+    std::vector<void*> devices;
+    const size_t n = ReadDevices(kind, devices);
+    struct Ready { uint8_t index; void* device; PendingCanonical value; };
+    std::vector<Ready> ready;
+    for (auto it = g_pending.begin(); it != g_pending.end();) {
+        const auto keyKind = static_cast<FS::DeviceKind>(it->first >> 16);
+        const size_t index = static_cast<size_t>(it->first & 0xFFFF);
+        if (keyKind != kind || index >= n || !devices[index] || !R::IsLive(devices[index])) {
+            ++it;
+            continue;
+        }
+        ready.push_back({static_cast<uint8_t>(index), devices[index], std::move(it->second)});
+        it = g_pending.erase(it);
+    }
+    for (const Ready& r : ready) {
+        if (!R::IsLive(r.device)) {
+            // Gone during an earlier write: the value waits for whatever takes that index next,
+            // unless a newer one has arrived for it meanwhile.
+            g_pending.emplace(ShadowKey(kind, r.index), r.value);
+            continue;
+        }
+        LandCanonical(kind, r.index, r.device, r.value.slot, r.value.gen, counts);
+    }
+    return counts;
+}
+
 // ---- host ----
 
 void HostBroadcastOne(coop::net::Session* s, FS::DeviceKind kind, size_t index, void* device) {
@@ -382,7 +473,7 @@ void HostBroadcastOne(coop::net::Session* s, FS::DeviceKind kind, size_t index, 
     } else {
         if (!g_retry.count(ShadowKey(kind, index)))
             UE_LOGW("floppy_slot_sync: canonical for device %zu send refused -- retry armed "
-                    "(1 Hz sweep)", index);
+                    "(next sweep)", index);
         g_retry.insert(ShadowKey(kind, index));
     }
 }
@@ -427,7 +518,7 @@ void ClientClaim(coop::net::Session* s, FS::DeviceKind kind, size_t index, void*
 }
 
 // Every device's slot to one joiner. True when every blob was accepted; a refused one leaves the
-// retry armed, because the 1 Hz sweep covers EDGES and a set nobody asked for is not an edge.
+// retry armed, because the sweep covers EDGES and a set nobody asked for is not an edge.
 bool SendConnectSetOf(coop::net::Session* s, int peerSlot, FS::DeviceKind kind) {
     if (!FS::EnsureResolved(kind)) return false;
     std::vector<void*> devices;
@@ -535,6 +626,9 @@ void SweepKind(coop::net::Session* s, FS::DeviceKind kind, bool host) {
         uint64_t digest = 0;
         if (!FS::ReadDigest(kind, d, digest, ScopeOf(kind))) continue;
         const uint32_t key = ShadowKey(kind, i);
+        // The host's value for this device is waiting to be written: what the device holds now is
+        // this peer's own save, which is neither a prime nor a claim.
+        if (!host && g_pending.count(key)) continue;
         auto it = g_shadow.find(key);
         if (it == g_shadow.end()) {
             // First sight primes silently: a prime is not an edge, and the joiner's own connect
@@ -573,9 +667,23 @@ void Tick() {
     g_asm.Sweep(std::chrono::steady_clock::now(), std::chrono::seconds(10));
 
     const bool host = IsHost();
-    if (host) DrainConnectRetries(s);
+    if (host && now >= g_nextConnectRetry) {
+        g_nextConnectRetry = now + kConnectRetryMs;
+        DrainConnectRetries(s);
+    }
 
-    for (FS::DeviceKind kind : kKinds) SweepKind(s, kind, host);
+    for (FS::DeviceKind kind : kKinds) {
+        // Before the sweep, so a device that has just come up takes the host's value rather than
+        // being primed on its own.
+        if (!host) {
+            const LandCounts c = DrainPending(kind);
+            if (c.applied || c.unchanged)
+                UE_LOGI("floppy_slot_sync: CLIENT applied %d waiting canonical(s) of kind %u once the "
+                        "device could take them (%d already matched; %zu still waiting)", c.applied,
+                        static_cast<unsigned>(kind), c.unchanged, g_pending.size());
+        }
+        SweepKind(s, kind, host);
+    }
 }
 
 void OnChunk(const coop::net::BlobChunkPayload& p, uint8_t senderSlot) {
@@ -598,17 +706,17 @@ void OnChunk(const coop::net::BlobChunkPayload& p, uint8_t senderSlot) {
         return;
     }
     const auto kind = static_cast<FS::DeviceKind>(kindB);
-    if (!FS::EnsureResolved(kind)) {
-        UE_LOGW("floppy_slot_sync: chunk arrived before %u resolved -- dropped (the 1 Hz sweep "
-                "and the connect set re-deliver)", static_cast<unsigned>(kindB));
-        return;
-    }
-    std::vector<void*> devices;
-    const size_t n = ReadDevices(kind, devices);
     const bool host = IsHost();
 
     if (op == kOpClaim) {
         if (!host) return;  // a client never takes another peer's claim; only the host's canonical
+        if (!FS::EnsureResolved(kind)) {
+            UE_LOGW("floppy_slot_sync: claim arrived before device kind %u resolved -- dropped; the "
+                    "client's answer deadline claims it again", static_cast<unsigned>(kindB));
+            return;
+        }
+        std::vector<void*> devices;
+        const size_t n = ReadDevices(kind, devices);
         if (blob.size() > kMaxSlotBytes) {
             UE_LOGW("floppy_slot_sync: claim from slot %u is %zu B, past the %zu B ceiling -- "
                     "dropped", static_cast<unsigned>(senderSlot), blob.size(), kMaxSlotBytes);
@@ -699,37 +807,26 @@ void OnChunk(const coop::net::BlobChunkPayload& p, uint8_t senderSlot) {
                 entries.size(), static_cast<unsigned>(count));
         return;
     }
-    int applied = 0, skipped = 0, unchanged = 0;
-    for (const auto& entry : entries) {
+    // Every entry waits under its device first, a newer value replacing an older one, and then
+    // lands at once where its device can take it; the rest land from Tick when theirs comes up.
+    int invalid = 0;
+    for (auto& entry : entries) {
         const uint8_t index = entry.first;
-        const Slot& in = entry.second;
-        if (index >= n || !devices[index] || !R::IsLive(devices[index])) { ++skipped; continue; }
-        if (!FS::IsSlotType(in.st.floppyType)) { ++skipped; continue; }
-        g_awaiting.erase(ShadowKey(kind, index));
-        // [#39's report] What this write replaces. A live run applied two inserts of one disc within a
-        // second, the second from a peer that had only watched, and the host kept the later one.
-        // The rows and the JSON are read only behind an occupied slot, as ApplySlot reads them.
-        FS::Scalars prevSt{};
-        Slot prev;
-        const bool held = FS::ReadScalars(kind, devices[index], prevSt) && prevSt.floppyType >= 0 &&
-                          ReadSlotOf(kind, devices[index], prev);
-        if (!ApplySlot(kind, index, devices[index], in)) { ++unchanged; continue; }
-        ++applied;
-        if (!held || in.st.floppyType < 0) continue;
-        const std::wstring prevKey = FS::ObjectDataKey(prev.c.objectData);
-        const std::wstring inKey = FS::ObjectDataKey(in.c.objectData);
-        UE_LOGI("floppy_slot_sync: CLIENT canonical wrote device=%u type=%d key '%ls' rows %zu over "
-                "an occupied slot: type %d key '%ls' rows %zu -- %s",
-                static_cast<unsigned>(index), in.st.floppyType, inKey.c_str(), in.c.data.size(),
-                prev.st.floppyType, prevKey.c_str(), prev.c.data.size(),
-                prevKey == inKey ? "OVERWROTE AN OCCUPIED SLOT (same key)"
-                                 : "OVERWROTE AN OCCUPIED SLOT HOLDING ANOTHER DISC");
+        if (index >= kMaxDevices || !FS::IsSlotType(entry.second.st.floppyType)) { ++invalid; continue; }
+        const uint32_t key = ShadowKey(kind, index);
+        g_awaiting.erase(key);   // the host has answered for this device, whenever it lands
+        PendingCanonical& pc = g_pending[key];
+        pc.slot = std::move(entry.second);
+        pc.gen = kind == FS::DeviceKind::Laptop ? gen : 0;
     }
-    g_haveCanonical[kindB] = true;
-    if (kind == FS::DeviceKind::Laptop) g_laptopGen = gen;
-    if (applied || skipped)
+    const LandCounts c = DrainPending(kind);
+    size_t waiting = 0;
+    for (const auto& kv : g_pending)
+        if (static_cast<FS::DeviceKind>(kv.first >> 16) == kind) ++waiting;
+    if (c.applied || invalid || waiting)
         UE_LOGI("floppy_slot_sync: CLIENT applied canonical -- %d device(s) written, %d already "
-                "matched, %d skipped (of %zu local)", applied, unchanged, skipped, n);
+                "matched, %d invalid, %zu waiting for their device (kind %u)", c.applied, c.unchanged,
+                invalid, waiting, static_cast<unsigned>(kindB));
 }
 
 void QueueConnectBroadcastForSlot(int peerSlot) {
@@ -753,7 +850,8 @@ bool LaptopOccupancySettled() {
     auto it = g_shadow.find(key);
     if (it == g_shadow.end() || it->second != d) return false;  // an edge this lane has not taken yet
     if (IsHost()) return !g_retry.count(key);                     // published
-    return g_haveCanonical[static_cast<uint8_t>(kLaptop)] && !g_awaiting.count(key);  // the host answered its claim
+    // The host answered its claim, and no host value for the laptop is still waiting to be written.
+    return g_haveCanonical[static_cast<uint8_t>(kLaptop)] && !g_awaiting.count(key) && !g_pending.count(key);
 }
 
 void DevClaimLaptopNow() {
@@ -773,6 +871,7 @@ void OnDisconnect() {
     g_unsendable.clear();
     g_awaiting.clear();
     g_connectRetry.clear();
+    g_pending.clear();
     for (bool& have : g_haveCanonical) have = false;
     g_laptopGen = 0;
     g_laptopGenDigest = 0;
@@ -782,6 +881,7 @@ void OnDisconnect() {
     g_rate.clear();
     g_asm.Clear();
     g_nextSweep = 0;
+    g_nextConnectRetry = 0;
     g_session.store(nullptr, std::memory_order_release);
 }
 

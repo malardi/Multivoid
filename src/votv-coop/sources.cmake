@@ -115,6 +115,7 @@ set(VOTVCOOP_SOURCES
     src/ue_wrap/desk/sat_console.cpp
     src/ue_wrap/desk/coord_tower.cpp
     src/ue_wrap/desk/tape_caddy.cpp
+    src/ue_wrap/desk/shared_screen.cpp
     src/ue_wrap/devices/floppy_slot.cpp
     src/ue_wrap/devices/laptop.cpp
     src/ue_wrap/devices/portable_pc.cpp
@@ -544,6 +545,7 @@ set(VOTVCOOP_SOURCES
     src/coop/interactables/tape_caddy_sync.cpp
     src/coop/interactables/laptop_sync.cpp
     src/coop/interactables/laptop_tab.cpp
+    src/coop/interactables/shared_screen_sync.cpp
     src/coop/interactables/portable_pc_lid.cpp
     src/coop/interactables/laptop_buffer_sync.cpp
     src/coop/interactables/floppy_slot_entry.cpp

@@ -33,6 +33,7 @@
 #include "coop/world/email_sync.h"
 #include "coop/interactables/laptop_sync.h"  // the stationary PC lane
 #include "coop/interactables/laptop_tab.h"  // the tab the PC's user is on
+#include "coop/interactables/shared_screen_sync.h"  // the PC operator's screen on every peer
 #include "coop/interactables/laptop_buffer_sync.h"  // the PC buffer quad lane
 #include "coop/interactables/portable_pc_lid.h"  // the portable PC's lid lane
 #include "coop/interactables/sleepingbag_sync.h"  // client fold/unfold verbs run on the host's source prop
@@ -262,6 +263,7 @@ void Install(coop::net::Session& session) {
     coop::signal_catch_sync::Install(&session);  // the signal-catch consume replay (dish slew + downloader arm on every peer)
     coop::laptop_sync::Install(&session);  // the stationary PC's power and the portable PC lid's wire
     coop::laptop_tab::Install(&session);  // the PC user's tab: the three tab watches, and the receive paths' session
+    coop::shared_screen_sync::Install(&session);  // the PC operator's screen: the session, and the laptop claim's release hold
     coop::portable_pc_lid::Install(&session);  // the portable PC's lid, on its own verb
     coop::sleepingbag_sync::Install(&session);  // sleepingbag transitions use host-authored prop births
     coop::laptop_buffer_sync::Install(&session);  // the PC buffer quad
@@ -391,6 +393,7 @@ void ConnectReplayForSlot(int slot) {
     coop::signal_catch_sync::QueueConnectBroadcastForSlot(slot);  // the in-flight catch replay (the identity half) and the kind-2 state seed
     coop::laptop_sync::QueueConnectBroadcastForSlot(slot);  // the PC's power (its disc slot is floppy_slot_sync's)
     coop::laptop_tab::QueueConnectBroadcastForSlot(slot);  // the tab the PC's user is on
+    coop::shared_screen_sync::QueueConnectBroadcastForSlot(slot);  // the PC operator's screen
     coop::portable_pc_lid::QueueConnectBroadcastForSlot(slot);  // every open portable PC lid
     coop::floppybox_sync::QueueConnectBroadcastForSlot(slot);  // one canonical per live box
     coop::props::container_contents_sync::QueueConnectBroadcastForSlot(slot);  // one slice per live world container (principle 8 anchor over the join snapshot)
@@ -468,6 +471,7 @@ void DisconnectSlot(coop::net::Session& session, int slot) {
     // must not survive into a recycled occupant.
     coop::prop_save_data::OnPeerGone(static_cast<uint8_t>(slot));
     coop::floppy_slot_sync::OnPeerGone(static_cast<uint8_t>(slot));
+    coop::shared_screen_sync::OnPeerGone(slot);  // its half assemblies, its report order, what it was owed
     coop::dish_hashcode_sync::OnPeerGone(static_cast<uint8_t>(slot));
     coop::sat_console_sync::OnPeerGone(static_cast<uint8_t>(slot));  // its terminal kept, running its command, for its return
     coop::daily_task_sync::OnPeerGone(static_cast<uint8_t>(slot));  // a departed slot is owed no task
@@ -594,6 +598,7 @@ DisconnectStats DisconnectAll() {
     coop::prop_save_data::OnDisconnect();
     coop::laptop_sync::OnDisconnect();
     coop::laptop_tab::OnDisconnect();
+    coop::shared_screen_sync::OnDisconnect();
     coop::portable_pc_lid::OnDisconnect();
     coop::laptop_buffer_sync::OnDisconnect();  // quad shadow + assembler
     coop::floppybox_sync::OnDisconnect();  // box shadows + taken-ring + pendings
@@ -707,7 +712,7 @@ void TickGameplay(coop::net::Session& session, bool isConnected, bool isHost,
     { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:alarm"}; coop::alarm_sync::Tick(); }  // base radar alarm: 1 Hz active-bit poll BOTH roles (host broadcasts transitions; client forwards local ones)
     { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:server"}; coop::serverbox_sync::Tick(); }  // the server boxes: the watches settled, then the HOST's 1 Hz poll -> broadcast on change
     { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:server_upgrade"}; coop::server_upgrade_sync::Tick(); }  // a parked canonical, applied once the servers resolve
-    { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:slot"}; coop::floppy_slot_sync::Tick(); coop::mirror_slot_entry::Tick(); }  // device slots: 1 Hz digest-gated poll -> HOST canonical, CLIENT claim; the mirror entry's watches settle
+    { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:slot"}; coop::floppy_slot_sync::Tick(); coop::mirror_slot_entry::Tick(); }  // device slots: 4 Hz digest-gated poll -> HOST canonical, CLIENT claim; the mirror entry's watches settle
     { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"puppet_identity.settle"}; coop::puppet_identity::Tick(); }  // the watches settle, the per-world pointers follow the class set
     { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:roach"}; coop::roach_sync::Tick(); }  // roach infestation: HOST 1 Hz population poll -> paged broadcast; CLIENT liveness-scan -> consumption intents
     { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:owner_entity"}; coop::owner_entity_sync::Tick(); }  // owner-entity: 4 Hz own-pose stream + keepalive + death-watch + mirror prune
@@ -720,6 +725,7 @@ void TickGameplay(coop::net::Session& session, bool isConnected, bool isHost,
     coop::player_handshake::TickSkinConverge();  // heal a join-window deferred skin apply (~2 s throttle)
     coop::skin_preview::Tick();  // F1-skins live mannequin preview (spawn/apply/position/hide)
     { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:laptop_tab"}; coop::laptop_tab::Tick(session); }  // the tab watches until live, the refusal window, and a tab report owed by its pace; BEFORE the occupancy poll, so a leaving user's last tab goes ahead of the claim's release
+    { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:shared_screen"}; coop::shared_screen_sync::Tick(); }  // the PC operator's screen: lease, inherited repaint, capture, the host's sends; BEFORE the occupancy poll, whose release hold flushes the final screen
     { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:device_occupancy"}; coop::device_occupancy::Tick(); }  // device occupancy: activeInterface edge poll + pending claim retry
     { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:console_state"}; coop::console_state_sync::Tick(); }  // signal-catcher: host sky poll / client mirror sweep / desk + dish owner streams
     { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:signal_catch"}; coop::signal_catch_sync::Tick(); }  // the catch and cleared detectors, 1 Hz

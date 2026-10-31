@@ -30,7 +30,7 @@ inline constexpr uint32_t kMagic = 0x564D5450u;
 // This file is past the 1500-line hard cap and stays there: it is the single-feature exception the
 // rule names. One wire format, whose enum, payload structs and static_asserts are read together;
 // splitting it would put a kind's number in one file and its bytes in another.
-inline constexpr uint16_t kProtocolVersion = 283;
+inline constexpr uint16_t kProtocolVersion = 284;
 
 // Default LAN port (overridable via multivoid.ini "net.port=").
 inline constexpr uint16_t kDefaultPort = 47621;
@@ -1183,6 +1183,12 @@ enum class ReliableKind : uint8_t {
     // the counter were the host's alone. Sent on change and every second while the event runs (a late joiner's
     // seed), once more when it ends. Not relayed, not pre-world. MadnessStatePayload.
     MadnessState = 210,
+    // CLIENT->HOST and HOST->CLIENT: the base computer's desktop as its operator sees it -- each switcher's page,
+    // what is shown, where a list is scrolled, what a text says (coop/interactables/shared_screen_sync). The
+    // laptop's holder reports to the host under the host's lease; the host sends the canonical to each ready
+    // client. Chunked blob (BlobChunkPayload; coop/interactables/shared_screen_wire.h). Not relayed, not
+    // pre-world. Late join: the canonical at the joiner's world-ready.
+    SharedScreen = 247,
 };
 
 #pragma pack(push, 1)

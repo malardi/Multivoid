@@ -41,6 +41,16 @@ that the sender holds the claim and the index is one of its own tabs, writes it 
 it on. A peer that does not hold the claim writes the switcher's index and nothing else: the game's own
 tab call also binds that peer's keys to a remote drone. A joiner gets the host's index at its world-ready.
 
+### The laptop's screen
+
+The rest of the desktop crosses as its operator sees it: each switcher's page, what is shown or collapsed,
+where a list is scrolled, what a text says (`coop/interactables/shared_screen_sync`). The operator is the
+peer holding the laptop claim, or the host while nobody does. The host mints a lease for each holder, a
+client operator reports its screen under that lease, and every other peer applies the host's canonical.
+The boot page is never read or written: the laptop's own startup drives it. Presentation only -- no press
+or verb is replayed. A new operator first repaints the screen it inherits, and a client keeps the claim
+until its final screen has been sent. A text-only change travels at most once a second.
+
 ### The laptop's inbox
 
 The laptop's messages -- the hash-collection task mails, the scientist and alien replies, the
@@ -115,9 +125,11 @@ A laptop and a signal server hold a disc the same way: inserting one moves its t
 writes, its data rows and the JSON of its whole save struct into four fields of the device and
 destroys the actor, and ejecting one spawns the disc back from those fields. The four are one
 concept with one owner, and they are state, not an event: the host holds every device's slot, each
-peer polls its own devices once a second behind a digest that reads the raw field bytes, and a peer
+peer polls its own devices four times a second behind a digest that reads the raw field bytes, and a peer
 whose own game changed a slot sends the host the outcome as a claim. The host applies it and answers
-with the canonical, which is also the acknowledgement (`coop/interactables/floppy_slot_sync`).
+with the canonical, which is also the acknowledgement (`coop/interactables/floppy_slot_sync`). A canonical
+for a device the client cannot take yet -- its class not loaded, its list not that long -- waits for
+that device and lands when it comes up; until then the client claims nothing for it.
 
 The laptop also edits the files of the disc it holds, which its file quad carries as edit scripts
 (`coop/interactables/laptop_buffer_sync`). So the laptop's slot is watched for which disc it holds
@@ -183,13 +195,14 @@ disc under another peer's hold on every peer; the holder's own insert is the one
 | an order | the client names the row; the host performs and prices | an intent |
 | a coin gun sale | the client names the prop; the host prices, mints and destroys | an intent ahead of the destroy |
 | a coin pickup | the client names the coin; the host runs its credit once | an intent; the client's own credit is refused |
-| a device's floppy slot | the host | a 1 Hz digest-gated poll; a peer claims the outcome of its own insert or eject, and the host's canonical is the answer |
+| a device's floppy slot | the host | a 4 Hz digest-gated poll; a peer claims the outcome of its own insert or eject, and the host's canonical is the answer |
 
 ## Wire messages
 
 | Kind | Direction | Carries |
 |---|---|---|
 | `LaptopTabReport`, `LaptopTabState` | the claim holder to the host; the host to the other clients | the switcher's index |
+| `SharedScreen` | the laptop's operator to the host; the host to every ready client | the desktop's rows under the operator's lease |
 | `BalanceSync` | the host to all | the absolute balance |
 | `UpgradeLevels` | the host to all | the eighteen levels, whole |
 | `UpgradeIntent` | a client to the host | the panel row's index and whether it is a buy or a sell |
@@ -225,13 +238,14 @@ an error line.
 | A refused coin-gun sale has already destroyed the prop on the client, and no heal re-asserts it: a client authors that destruction before the arbiter answers, as its generator install does, whose refusal refunds the upgrade. The host rebuilds its key index periodically, so a refusal is rare | `[V]` `coop/items/coingun_sync` |
 | A coin a client picks up is the host's to credit: the client's press and overlap on the host's coin are refused and forwarded, so the pickup shows after the round trip, and one the host refuses (its copy of the player out of reach) leaves the coin where it is. Every collect on the host, its own press and overlap included, passes one reservation per coin, so one coin credits once | `[V]` `coop/items/coingun_collect` |
 | A client's earnings from a chest or an achievement reach only its own machine and are erased by the host's next broadcast | `[V]` `coop/world/balance_sync` is one-way |
-| A slot change reaches the other peer on the next poll, so up to a second plus the round trip. A player who reaches a box inside that window acts on the slot as it was: an eject of a disc the other peer has just inserted answers "No floppy disc in the slot" and is not retried, and a client's insert into a slot the host has just filled replaces the host's disc when the claim lands, which loses that disc | `[V]` the lane polls at 1 Hz, and the host applies a claim over whatever its slot holds (`coop/interactables/floppy_slot_sync`); a faster poll would narrow the window rather than close it |
+| A slot change reaches the other peer on the next poll, so up to a quarter of a second plus the round trip. A player who reaches a box inside that window acts on the slot as it was: an eject of a disc the other peer has just inserted answers "No floppy disc in the slot" and is not retried, and a client's insert into a slot the host has just filled replaces the host's disc when the claim lands, which loses that disc | `[V]` the lane polls at 4 Hz, and the host applies a claim over whatever its slot holds (`coop/interactables/floppy_slot_sync`); a faster poll would narrow the window rather than close it |
 
 ## Code map
 
 | Concept | Files |
 |---|---|
 | the laptop's tab | `coop/interactables/laptop_tab` |
+| the laptop's screen | `coop/interactables/shared_screen_sync`, `ue_wrap/desk/shared_screen` |
 | the floppy slot | `coop/interactables/floppy_slot_sync`, `coop/interactables/laptop_buffer_sync`, `ue_wrap/devices/floppy_slot`, `ue_wrap/devices/serverbox`, `ue_wrap/devices/laptop` |
 | the inbox | `coop/world/email_sync`, `ue_wrap/world/email`, `coop/session/join_seed` |
 | the economy | `coop/world/balance_sync`, `coop/items/order_sync`, `coop/items/order_queue_sync`, `coop/items/coingun_sync`, `coop/interactables/upgrade_sync`, `ue_wrap/world/economy`, `ue_wrap/world/order_economy`, `ue_wrap/world/store_catalog`, `ue_wrap/world/upgrades` |

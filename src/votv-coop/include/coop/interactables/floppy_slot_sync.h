@@ -27,11 +27,12 @@ namespace coop::floppy_slot_sync {
 
 void Install(coop::net::Session* session);
 
-// 1 Hz, game thread: a poll of every device's slot behind floppy_slot::ReadDigest, which reads
+// 4 Hz, game thread: a poll of every device's slot behind floppy_slot::ReadDigest, which reads
 // the raw field bytes and mints nothing; an empty slot hashes its type and stops, so the cost is
 // set by the boxes that actually hold a disc. HOST: broadcast the canonical for
 // a slot that moved, and re-send one whose send was refused. CLIENT: claim a slot that moved, and
-// nothing else -- the host's canonical is what the client settles on.
+// nothing else -- the host's canonical is what the client settles on; a canonical for a device this
+// peer cannot take yet waits for it and lands here once it can.
 void Tick();
 
 // FloppySlotState chunks. The host takes a claim (bounded by size and by rate per sender),
@@ -52,7 +53,7 @@ uint32_t LaptopGeneration();
 // nothing unpublished, on a client nothing claimed and unanswered. The quad exchanges edits only while it holds.
 bool LaptopOccupancySettled();
 
-// [dev] CLIENT: the laptop's slot swept now rather than at the next 1 Hz sweep, so the laptop drill's claim and an edit
+// [dev] CLIENT: the laptop's slot swept now rather than at the next sweep, so the laptop drill's claim and an edit
 // after it land in one frame, before the host can answer. Game thread.
 void DevClaimLaptopNow();
 

@@ -23,6 +23,7 @@
 #include "coop/interactables/meadow_db_sync.h"   // MeadowAppend/MeadowDelete
 #include "coop/interactables/physmods_sync.h"    // PhysModsState
 #include "coop/interactables/sat_console_sync.h"  // SatConsole
+#include "coop/interactables/shared_screen_sync.h"  // SharedScreen
 #include "coop/interactables/drive_payload_sync.h"  // DrivePayload
 #include "coop/interactables/drive_sync.h"       // DriveSlotState
 #include "coop/interactables/drive_rack_sync.h"  // RackState
@@ -269,6 +270,23 @@ bool HandleSignalEvent(const net::Session::ReliableMessage& msg) {
                 ? static_cast<uint8_t>(msg.senderPeerSlot)
                 : static_cast<uint8_t>(0xFF);
         coop::floppy_slot_sync::OnChunk(fs, fsslot);
+        break;
+    }
+    case net::ReliableKind::SharedScreen: {
+        // The laptop operator's report (client->host) and the host's canonical (host->clients); the lane checks
+        // the direction by the role, the sender and the lease.
+        if (msg.payloadLen < sizeof(net::BlobChunkPayload)) {
+            UE_LOGW("event_feed: SharedScreen payload too short (%zu < %zu)",
+                    static_cast<size_t>(msg.payloadLen), sizeof(net::BlobChunkPayload));
+            break;
+        }
+        net::BlobChunkPayload ss{};
+        std::memcpy(&ss, msg.payload, sizeof(ss));
+        const uint8_t ssslot =
+            (msg.senderPeerSlot >= 0 && msg.senderPeerSlot < net::kMaxPeers)
+                ? static_cast<uint8_t>(msg.senderPeerSlot)
+                : static_cast<uint8_t>(0xFF);
+        coop::shared_screen_sync::OnChunk(ss, ssslot);
         break;
     }
     case net::ReliableKind::SatConsole: {
