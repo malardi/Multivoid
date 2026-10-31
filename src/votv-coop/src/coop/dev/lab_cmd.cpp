@@ -31,10 +31,12 @@
 #include "ue_wrap/engine/engine_pawn.h"
 #include "ue_wrap/engine/world_identity.h"
 #include "ue_wrap/world/world_singleton.h"
+#include "ue_wrap/world/daynightcycle.h"  // daytime
 
 #include <windows.h>
 
 #include <cctype>
+#include <deque>
 #include <algorithm>
 #include <cmath>
 #include <vector>
@@ -130,7 +132,7 @@ std::vector<Near> ActorsAround(const std::string& sub, float radius) {
 // A target by name: player, gm, gi, slot (the save object), C:<Class> (the first live object of that class),
 // near:<class text> (the nearest actor of such a class); <target>/<property> follows an object property of it.
 void* Target(const std::string& t) {
-    const size_t slash = t.find('/');
+    const size_t slash = t.rfind('/');  // a/b/c: c is a property of whatever a/b names
     if (slash != std::string::npos) {
         void* base = Target(t.substr(0, slash));
         if (!base) return nullptr;
@@ -314,6 +316,92 @@ bool CallWithArgs(void* obj, const std::string& fnName, std::istringstream& in, 
             o << " " << Narrow(p.name) << "=" << ReadValue(fn, f.data(), p.name);
     out = o.str();
     return ok;
+}
+
+
+// ---- timed input: the game's own input events, called as a key press would ----------------------
+// A blueprint's InputAction node compiles to one event per edge (InpActEvt_<action>_K2Node_
+// InputActionEvent_<n>, the lower n is the press, the next the release); an InputAxis node to one
+// event the engine calls every frame with the axis value. Calling them is what the player's keys do,
+// minus the key itself, so a lab copy in a background window can walk, drive, use and look.
+using Clock = std::chrono::steady_clock;
+
+struct Timed {
+    void* obj = nullptr;
+    int32_t idx = -1;        // the object's slot at the start, so a recycled address is never called
+    void* fn = nullptr;      // axis: called every tick; action: the release, called once at `until`
+    bool axis = false;
+    float value = 0.f;
+    Clock::time_point until{};
+    std::string what;
+};
+std::vector<Timed> g_timed;
+
+// The input events of `obj` for `name`, lowest node number first.
+std::vector<void*> InputEvents(void* obj, bool axis, const std::string& name) {
+    std::vector<void*> out;
+    if (!obj) return out;
+    void* cls = R::ClassOf(obj);
+    const std::wstring base = std::wstring(axis ? L"InpAxisEvt_" : L"InpActEvt_") + Wide(name) +
+                              (axis ? L"_K2Node_InputAxisEvent_" : L"_K2Node_InputActionEvent_");
+    for (int i = 0; i < 160; ++i) {
+        void* fn = R::FindDispatchFunction(cls, (base + std::to_wstring(i)).c_str(), nullptr);
+        if (fn) out.push_back(fn);
+    }
+    return out;
+}
+
+// One input event, as the game's own call (the sync hooks treat it as the player's act).
+bool CallInput(void* obj, void* fn, bool axis, float value) {
+    ue_wrap::ParamFrame f(fn);
+    if (!f.valid()) return false;
+    if (axis) f.SetRaw(L"AxisValue", &value, sizeof(value));  // an action event's Key stays None
+    R::SetGameAttributedDepth(1);
+    const bool ok = ue_wrap::Call(obj, f);
+    R::SetGameAttributedDepth(0);
+    return ok;
+}
+
+void TickTimed(Clock::time_point now) {
+    for (size_t i = 0; i < g_timed.size();) {
+        Timed& t = g_timed[i];
+        const bool live = R::IsLiveByIndex(t.obj, t.idx);
+        if (t.axis && live && now < t.until) { CallInput(t.obj, t.fn, true, t.value); ++i; continue; }
+        if (now < t.until && live) { ++i; continue; }
+        if (live) {
+            if (t.axis) CallInput(t.obj, t.fn, true, 0.f);   // the stick back to rest
+            else if (t.fn) CallInput(t.obj, t.fn, false, 0.f);  // the key let go
+        }
+        UE_LOGI("[LAB] input %s ended%s", t.what.c_str(), live ? "" : " (its object is gone)");
+        g_timed.erase(g_timed.begin() + static_cast<long>(i));
+    }
+}
+
+void ReleaseAll() {
+    for (Timed& t : g_timed) t.until = Clock::now();
+    TickTimed(Clock::now());
+}
+
+// ---- keep fed: a lab body that never starves or tires --------------------------------------------
+bool g_keepFed = false;
+Clock::time_point g_nextFeed{};
+
+namespace V = ue_wrap::vitals;
+
+bool FieldByName(const std::string& n, V::Field& out) {
+    for (uint8_t i = 0; i < static_cast<uint8_t>(V::Field::Count); ++i) {
+        const V::Field f = static_cast<V::Field>(i);
+        if (Lower(V::RowOf(f).name) == Lower(n)) { out = f; return true; }
+    }
+    return false;
+}
+
+void Feed() {
+    float maxHealth = 100.f;
+    V::Read(V::Field::MaxHealth, &maxHealth);
+    V::Write(V::Field::Food, 100.f);
+    V::Write(V::Field::Sleep, 100.f);
+    V::Write(V::Field::Health, maxHealth > 0.f ? maxHealth : 100.f);
 }
 
 void Run(long long id, const std::string& verb, const std::string& rest) {
@@ -558,11 +646,129 @@ void Run(long long id, const std::string& verb, const std::string& rest) {
         const size_t n = ue_wrap::GcPin::ReportWorldScopedPins("lab");
         Answer(id, true, "world-scoped pins " + std::to_string(n) + " of " +
                              std::to_string(ue_wrap::GcPin::Outstanding()));
+    } else if (verb == "press") {
+        // press <target> <action> [seconds]: the action's press event now, its release after the hold.
+        std::string t, action;
+        float secs = 0.15f;
+        in >> t >> action;
+        if (!(in >> secs)) secs = 0.15f;
+        void* obj = Target(t);
+        const auto ev = InputEvents(obj, false, action);
+        if (ev.empty()) { Answer(id, false, "press: no InpActEvt_" + action + " on " + t); return; }
+        const bool ok = CallInput(obj, ev[0], false, 0.f);
+        if (ev.size() > 1) {
+            Timed tm;
+            tm.obj = obj; tm.idx = R::InternalIndexOf(obj); tm.fn = ev[1]; tm.axis = false;
+            tm.until = Clock::now() + std::chrono::milliseconds(static_cast<int>(secs * 1000.f));
+            tm.what = "press " + t + " " + action;
+            g_timed.push_back(tm);
+        }
+        Answer(id, ok, "press " + t + " " + action + " (" + std::to_string(ev.size()) + " event(s), held " +
+                           std::to_string(secs) + " s)");
+    } else if (verb == "axis") {
+        // axis <target> <name> <value> <seconds>: the axis event every tick with that value, then 0.
+        std::string t, name;
+        float value = 0.f, secs = 1.f;
+        in >> t >> name >> value;
+        if (!(in >> secs)) secs = 1.f;
+        void* obj = Target(t);
+        const auto ev = InputEvents(obj, true, name);
+        if (ev.empty()) { Answer(id, false, "axis: no InpAxisEvt_" + name + " on " + t); return; }
+        Timed tm;
+        tm.obj = obj; tm.idx = R::InternalIndexOf(obj); tm.fn = ev[0]; tm.axis = true; tm.value = value;
+        tm.until = Clock::now() + std::chrono::milliseconds(static_cast<int>(secs * 1000.f));
+        tm.what = "axis " + t + " " + name;
+        g_timed.push_back(tm);
+        Answer(id, true, "axis " + t + " " + name + " = " + std::to_string(value) + " for " + std::to_string(secs) + " s");
+    } else if (verb == "release") {
+        const size_t n = g_timed.size();
+        ReleaseAll();
+        Answer(id, true, "released " + std::to_string(n) + " input(s)");
+    } else if (verb == "daytime") {
+        // daytime <hour 0..24>: the within-day clock set there (on the host it is the shared clock).
+        float hour = 12.f;
+        in >> hour;
+        float total = 0.f, day = 0.f, scale = 0.f, maxTime = 0.f;
+        namespace DNC = ue_wrap::daynightcycle;
+        if (!DNC::ReadClock(total, day, scale) || !DNC::ReadMaxTime(maxTime) || maxTime <= 0.f) {
+            Answer(id, false, "daytime: the day-night cycle is not resolved");
+            return;
+        }
+        const float want = maxTime * std::fmod(std::max(0.f, hour), 24.f) / 24.f;
+        DNC::ApplyClock(total + (want - day), want);
+        Answer(id, true, "daytime " + std::to_string(hour) + " (day " + std::to_string(day) + " -> " +
+                             std::to_string(want) + " of " + std::to_string(maxTime) + ")");
+    } else if (verb == "vitals") {
+        // vitals name=value ... (food, sleep, health, ...): the player's vital rows written.
+        std::string kv, done;
+        bool ok = true;
+        while (in >> kv) {
+            const size_t eq = kv.find('=');
+            V::Field f{};
+            if (eq == std::string::npos || !FieldByName(kv.substr(0, eq), f) ||
+                !V::Write(f, std::strtof(kv.c_str() + eq + 1, nullptr))) { ok = false; done += " !" + kv; continue; }
+            done += " " + kv;
+        }
+        Answer(id, ok, "vitals" + done);
+    } else if (verb == "keepfed") {
+        std::string v;
+        in >> v;
+        g_keepFed = (v != "0" && v != "off");
+        if (g_keepFed) Feed();
+        Answer(id, true, std::string("keepfed ") + (g_keepFed ? "on" : "off"));
     } else if (verb == "log") {
         UE_LOGI("[LAB] ---- %s ----", rest.c_str());
         Answer(id, true, "log");
     } else {
         Answer(id, false, "unknown verb '" + verb + "'");
+    }
+}
+
+
+// ---- the script queue: a command file is a script, run in order; `wait` and `waitworld` pause it --
+struct Pending { long long id; std::string verb, rest; };
+std::deque<Pending> g_queue;
+Clock::time_point g_resumeAt{};
+Clock::time_point g_waitDeadline{};  // a waitworld's timeout, set when it starts
+bool g_waitingWorld = false;
+
+std::string CurrentWorldName() {
+    void* w = ue_wrap::world_identity::CurrentWorld();
+    return w ? Lower(Narrow(R::ToString(R::NameOf(w)))) : std::string();
+}
+
+void RunQueue(Clock::time_point now) {
+    while (!g_queue.empty() && now >= g_resumeAt) {
+        Pending& p = g_queue.front();
+        if (p.verb == "wait") {
+            const float secs = std::strtof(p.rest.c_str(), nullptr);
+            g_resumeAt = now + std::chrono::milliseconds(static_cast<int>(secs * 1000.f));
+            Answer(p.id, true, "wait " + p.rest);
+            g_queue.pop_front();
+            continue;
+        }
+        if (p.verb == "waitworld") {
+            // waitworld <name text> [timeout s]: hold the script until the current world's name holds it.
+            std::istringstream in(p.rest);
+            std::string want;
+            float timeout = 120.f;
+            in >> want;
+            if (!(in >> timeout)) timeout = 120.f;
+            if (!g_waitingWorld) {
+                g_waitingWorld = true;
+                g_waitDeadline = now + std::chrono::milliseconds(static_cast<int>(timeout * 1000.f));
+            }
+            const std::string cur = CurrentWorldName();
+            const bool there = !cur.empty() && cur.find(Lower(want)) != std::string::npos;
+            if (!there && now < g_waitDeadline) return;  // still waiting: nothing after it runs
+            g_waitingWorld = false;
+            Answer(p.id, there, "waitworld " + want + (there ? " reached" : " TIMED OUT, world '" + cur + "'"));
+            g_queue.pop_front();
+            continue;
+        }
+        const Pending cur = p;
+        g_queue.pop_front();
+        Run(cur.id, cur.verb, cur.rest);
     }
 }
 
@@ -585,7 +791,7 @@ void Poll() {
         std::getline(ls, rest);
         const size_t b = rest.find_first_not_of(' ');
         rest = b == std::string::npos ? std::string() : rest.substr(b);
-        Run(id, verb, rest);
+        g_queue.push_back({id, verb, rest});
     }
 }
 
@@ -675,6 +881,9 @@ void Tick() {
     g_lastFrame = now;
     ++g_frames;
     if (now >= g_nextPoll) { g_nextPoll = now + std::chrono::milliseconds(200); Poll(); }
+    RunQueue(now);
+    TickTimed(now);
+    if (g_keepFed && now >= g_nextFeed) { g_nextFeed = now + std::chrono::seconds(5); Feed(); }
     if (now >= g_nextState) { g_nextState = now + std::chrono::seconds(1); WriteState(); }
 }
 

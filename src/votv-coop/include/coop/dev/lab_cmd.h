@@ -11,6 +11,21 @@
 //   callp <function>   a no-parameter function on this peer's player
 //   callgm <function>  a no-parameter function on the gameplay mode
 //   log <text>         a marker line in multivoid.log
+//   (and the inspection verbs in lab_cmd.cpp: get/set/fields, call/gcall, around, dump, spawn, ...;
+//   a target is player, gm, gi, slot, puppet:<n>, C:<Class>, near:<text>, chained as a/b/c)
+//
+// A command file is a script, run in order:
+//   wait <seconds>                  pause the lines after it
+//   waitworld <name> [timeout s]    pause until the current world's name holds <name>
+// Input, as the player's keys reach the game (its own input events, so a background copy can act):
+//   press <target> <action> [s]     InpActEvt_<action>: the press now, the release after s (0.15)
+//   axis <target> <name> <v> <s>    InpAxisEvt_<name> with value v every tick for s seconds
+//   release                         let every held key and axis go
+// The world and the body:
+//   daytime <hour>                  the day-night clock to that hour (the host's is the shared one)
+//   vitals food=100 sleep=100 ...   write the player's vital rows
+//   keepfed 1|0                     keep food, sleep and health full every 5 s
+//   worlds [tag] / gc / pins        the UWorld census, a forced collection, the world-scoped GC pins
 
 #pragma once
 
