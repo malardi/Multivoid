@@ -356,7 +356,7 @@ std::vector<void*> InputEvents(void* obj, bool axis, const std::string& name) {
 // row names the action, the edge (IE_Pressed 0, IE_Released 1) and the event function it calls. A
 // node number says nothing about the edge (the player's use has three events from two nodes), so the
 // rows decide; only when none are found does the lowest-number-first guess stand.
-struct ActionPair { void* press = nullptr; void* release = nullptr; int rows = 0; };
+struct ActionPair { std::vector<void*> press, release; int rows = 0; };  // every bound row fires, as the engine fires them
 
 ActionPair ActionEvents(void* obj, const std::string& action) {
     ActionPair out;
@@ -385,8 +385,10 @@ ActionPair ActionEvents(void* obj, const std::string& action) {
                 const R::FName fnName = *reinterpret_cast<const R::FName*>(row + 16);
                 void* fn = R::FindDispatchFunction(R::ClassOf(obj), R::ToString(fnName).c_str(), nullptr);
                 ++out.rows;
-                if (edge == 0 && !out.press) out.press = fn;
-                else if (edge == 1 && !out.release) out.release = fn;
+                if (!fn) continue;
+                auto& v = edge == 0 ? out.press : edge == 1 ? out.release : out.press;
+                if (edge > 1) continue;  // repeat / double-click rows are not a key's press or release
+                if (std::find(v.begin(), v.end(), fn) == v.end()) v.push_back(fn);
             }
         }
     }
@@ -751,23 +753,24 @@ void Run(long long id, const std::string& verb, const std::string& rest) {
         void* obj = Target(t);
         ActionPair ap = ActionEvents(obj, action);
         std::string how = "bindings";
-        if (!ap.press && !ap.release) {
+        if (ap.press.empty() && ap.release.empty()) {
             const auto ev = InputEvents(obj, false, action);
-            if (!ev.empty()) ap.press = ev[0];
-            if (ev.size() > 1) ap.release = ev[1];
+            if (!ev.empty()) ap.press.push_back(ev[0]);
+            if (ev.size() > 1) ap.release.push_back(ev[1]);
             how = "node order";
         }
-        if (!ap.press && !ap.release) { Answer(id, false, "press: no InpActEvt_" + action + " on " + t); return; }
-        const bool ok = ap.press ? CallInput(obj, ap.press, false, 0.f) : true;
-        if (ap.release) {
+        if (ap.press.empty() && ap.release.empty()) { Answer(id, false, "press: no InpActEvt_" + action + " on " + t); return; }
+        bool ok = true;
+        for (void* fn : ap.press) ok = CallInput(obj, fn, false, 0.f) && ok;
+        for (void* fn : ap.release) {
             Timed tm;
-            tm.obj = obj; tm.idx = R::InternalIndexOf(obj); tm.fn = ap.release; tm.axis = false;
+            tm.obj = obj; tm.idx = R::InternalIndexOf(obj); tm.fn = fn; tm.axis = false;
             tm.until = Clock::now() + std::chrono::milliseconds(static_cast<int>(secs * 1000.f));
             tm.what = "press " + t + " " + action;
             g_timed.push_back(tm);
         }
-        Answer(id, ok, "press " + t + " " + action + " (" + how + ": press " + (ap.press ? "yes" : "no") +
-                           ", release " + (ap.release ? "yes" : "no") + ", held " + std::to_string(secs) + " s)");
+        Answer(id, ok, "press " + t + " " + action + " (" + how + ": " + std::to_string(ap.press.size()) + " press, " +
+                           std::to_string(ap.release.size()) + " release, held " + std::to_string(secs) + " s)");
     } else if (verb == "axis") {
         // axis <target> <name> <value> <seconds>: the axis event every tick with that value, then 0.
         std::string t, name;
