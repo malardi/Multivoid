@@ -15,6 +15,8 @@
 
 #pragma once
 
+#include <cstdint>
+
 namespace ue_wrap::window_canvas {
 
 // One dab, in the render target's pixel space.
@@ -38,6 +40,17 @@ bool IsStrokeDraw(void* sourceObject);
 
 // The last stroke's top-left corner (field A). Raw field read.
 bool ReadStrokeCorner(void* window, float& x, float& y);
+
+// The stroke draw's own arguments, read off a pre-hook's parameter frame of UCanvas::K2_DrawMaterial
+// (`parms`, each parameter at its Offset_Internal): the brush material the window draws with -- the
+// stroking sponge's material, held or thrown -- and the dab's top-left corner and edge as drawn. Raw
+// reads only, so it is safe inside the hook. False while the draw is unresolved or the values are not
+// a dab (a non-finite or non-positive edge, no material).
+bool ReadDrawArgs(const uint8_t* parms, void*& material, float& x, float& y, float& size);
+
+// The brush material's current opac/col (two UFunction reads). False when `material` is not a live
+// MaterialInstanceDynamic or a scalar does not read. Game thread, outside any hook.
+bool ReadBrushScalars(void* material, float& opac, float& col);
 
 // The brush the player's held sponge (or mop) paints with: its size and the brush material's
 // current opac/col, which the sponge rewrites right before each dab. False when the player holds

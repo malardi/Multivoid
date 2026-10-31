@@ -3,14 +3,18 @@
 // Gameplay/network layer (principle 7); the engine is reached only through ue_wrap::window_canvas.
 //
 // SYMMETRIC, presser-authored. A stroke runs only on the peer whose camera launched it, so that
-// peer observes its own dab (a Func post-hook on UCanvas::K2_DrawMaterial filtered to a window frame
-// with an open stroke session), reads the held sponge's brush and sends the dab. Every other peer
+// peer observes its own dab (a Func pre-hook on UCanvas::K2_DrawMaterial filtered to a window frame
+// with an open stroke session), takes the draw's own corner, edge and brush material -- the stroking
+// sponge's, held or thrown -- reads that material's opac/col at the tick and sends the dab. Every other peer
 // replays it through the window's own Canvas session, and the host relays a client's dab to the
 // other clients, so the host's world -- and its save -- carries every peer's wipes. A joiner gets the
 // window as it was in the host's transferred save.
-// Known limits: a thrown sponge's dab is not sent (no hand to read its brush from); dabs that
-// arrive while a signal plays wait for playback to end; the periodic dirt splotch still rolls on
-// each peer independently.
+// Known limits: a dab whose brush material is gone by the tick falls back to the held sponge's brush
+// and is dropped without one; dabs that arrive while a signal plays wait for playback to end; the
+// periodic dirt splotch still rolls on each peer independently.
+// The pre-hook's capture of the draw arguments is adapted from ElvardFIC/WatchersOfTheVoid
+// src/votv-coop/src/coop/interactables/window_stroke_sync.cpp (MIT), which reads the brush at the
+// native draw rather than from the hand.
 
 #pragma once
 

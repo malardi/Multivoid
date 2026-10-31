@@ -14,6 +14,7 @@
 #include "ue_wrap/core/types.h"
 
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 
@@ -31,6 +32,9 @@ int32_t g_cvByte      = -1;       // bool cv      -- a stroke session is open
 uint8_t g_cvMask      = 0;
 void*   g_canvasEvent = nullptr;  // d_window_C::Canvas -- opens/joins the session, re-arms its close
 void*   g_drawFn      = nullptr;  // UCanvas::K2_DrawMaterial
+int32_t g_parmMat     = -1;       // K2_DrawMaterial's RenderMaterial, ScreenPosition and ScreenSize offsets
+int32_t g_parmPos     = -1;
+int32_t g_parmSize    = -1;
 
 template <class T>
 T ReadField(void* obj, int32_t off) {
@@ -49,6 +53,7 @@ int32_t g_offDrawmat    = -1;       // MaterialInterface* drawmat (the brush par
 void*   g_playerCls     = nullptr;
 int32_t g_offHolding    = -1;       // mainPlayer_C::holding_actor -- the item in hand
 void*   g_setScalarFn   = nullptr;  // MaterialInstanceDynamic::SetScalarParameterValue
+void*   g_midCls        = nullptr;  // MaterialInstanceDynamic
 void*   g_matLibCdo     = nullptr;  // Default__KismetMaterialLibrary
 void*   g_createMidFn   = nullptr;  // KismetMaterialLibrary::CreateDynamicMaterialInstance
 int32_t g_offPanels     = -1;       // mainGamemode_C::analogPanels
@@ -79,6 +84,7 @@ bool EnsureMaterialFns() {
     if (g_setScalarFn) return true;
     void* mid = R::FindClass(L"MaterialInstanceDynamic");
     if (!mid) return false;
+    g_midCls = mid;
     g_setScalarFn = R::FindFunction(mid, L"SetScalarParameterValue");
     return g_setScalarFn != nullptr;
 }
@@ -179,6 +185,9 @@ bool EnsureResolved() {
     g_cvMask = cvMask;
     g_canvasEvent = canvasEvent;
     g_drawFn = drawFn;
+    g_parmMat  = R::FindParamOffset(drawFn, L"RenderMaterial");
+    g_parmPos  = R::FindParamOffset(drawFn, L"ScreenPosition");
+    g_parmSize = R::FindParamOffset(drawFn, L"ScreenSize");
     g_resolved.store(true, std::memory_order_release);
     UE_LOGI("window_canvas: resolved d_window_C=%p A@0x%X canv@0x%X cv@0x%X/0x%02X Canvas=%p K2_DrawMaterial=%p",
             winCls, offA, offCanv, cvByte, cvMask, canvasEvent, drawFn);
@@ -204,6 +213,38 @@ bool ReadStrokeCorner(void* window, float& x, float& y) {
     const FVector2D a = ReadField<FVector2D>(window, g_offA);
     x = a.X;
     y = a.Y;
+    return true;
+}
+
+bool ReadDrawArgs(const uint8_t* parms, void*& material, float& x, float& y, float& size) {
+    if (!parms || !g_resolved.load(std::memory_order_acquire)) return false;
+    if (g_parmMat < 0 || g_parmPos < 0 || g_parmSize < 0) return false;
+    void* m = nullptr;
+    FVector2D pos{}, edge{};
+    std::memcpy(&m, parms + g_parmMat, sizeof(m));
+    std::memcpy(&pos, parms + g_parmPos, sizeof(pos));
+    std::memcpy(&edge, parms + g_parmSize, sizeof(edge));
+    if (!m || !std::isfinite(pos.X) || !std::isfinite(pos.Y) || !std::isfinite(edge.X) || edge.X <= 0.f)
+        return false;
+    material = m;
+    x = pos.X;
+    y = pos.Y;
+    size = edge.X;  // both sites draw a square, (size, size)
+    return true;
+}
+
+bool ReadBrushScalars(void* material, float& opac, float& col) {
+    if (!material || !R::IsLive(material) || !EnsureMaterialFns() || !g_midCls) return false;
+    void* bases[1] = {g_midCls};
+    if (!R::IsDescendantOfAny(R::ClassOf(material), bases, 1)) return false;
+    float o = 0.f, c = 0.f;
+    if (!ue_wrap::engine::GetScalarParameterValue(material, NameOnce(g_nOpac, L"opac"), o) ||
+        !ue_wrap::engine::GetScalarParameterValue(material, NameOnce(g_nCol, L"col"), c) ||
+        !std::isfinite(o) || !std::isfinite(c)) {
+        return false;
+    }
+    opac = o;
+    col = c;
     return true;
 }
 
