@@ -24,6 +24,12 @@ bool CanClose();
 // the actor that opens it does. False when the gamemode or the verb cannot be reached.
 bool Open(void* container);
 
+// Rebuild the open screen's item rows after `container`'s contents changed under it (another
+// peer's take or put): the screen's own gen(), which also rebuilds the selection and the action
+// buttons. Without it the screen kept a row another player had removed. Does nothing, false, when
+// the screen is closed or shows another container. Game thread.
+bool Refresh(void* container);
+
 // Close the screen as its close key does. False, and nothing done, when it is not open or its exit()
 // does not resolve.
 bool Close();
