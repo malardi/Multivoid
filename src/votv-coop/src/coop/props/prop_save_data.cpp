@@ -9,6 +9,7 @@
 #include "coop/net/blob_chunks.h"
 #include "coop/net/session.h"
 #include "coop/props/prop_element_tracker.h"
+#include "coop/props/prop_food_state.h"   // a food's record: its clock rebased, its cooking carried
 #include "coop/props/prop_key_index.h"
 #include "coop/props/remote_prop.h"       // IsOwnedHere: a held prop takes no record
 #include "ue_wrap/actors/prop.h"          // GetInteractableKeyString (the host birth path)
@@ -331,7 +332,13 @@ bool TryApply(void* actor, const std::wstring& key, const SR::SaveRecord& rec) {
     // authoritative FindClass walk.
     const SR::ClassResolver resolve =
         PT::SessionIsHost() ? &ue_wrap::object_index::ClassByName : nullptr;
-    if (!SR::ApplyRecord(actor, rec, resolve)) return false;
+    // A food's record is applied from a copy: its stamp is rebased to this peer's clock and the
+    // cooking progress the native codec lacks comes out of it first (coop/props/prop_food_state).
+    SR::SaveRecord local(rec);
+    coop::props::prop_food_state::Carried carried;
+    if (!coop::props::prop_food_state::PrepareApply(actor, local, carried)) return false;
+    if (!SR::ApplyRecord(actor, local, resolve)) return false;
+    coop::props::prop_food_state::FinishApply(actor, carried);
     ++g_appliedTotal;
     coop::dev::food_clock_probe::NoteApply(actor, key, rec);
     // The author's record has LANDED, so the host may publish this key again, and does so here, from
@@ -502,6 +509,7 @@ bool Publish(coop::net::Session* s, void* actor, const std::wstring& key, size_t
                 key.c_str());
         return false;
     }
+    coop::props::prop_food_state::DecorateCapture(actor, rec);
     coop::dev::food_clock_probe::NotePublish(actor, key, rec);
     return SendBody(s, -1, key, rec, bytesOut);
 }
@@ -540,6 +548,7 @@ bool PublishToSlot(coop::net::Session* s, int peerSlot, void* actor, const std::
     if (!Covers(actor)) { coop::dev::food_clock_probe::NoteRefused(actor); return false; }
     SR::SaveRecord rec;
     if (!SR::CaptureRecord(actor, rec)) return false;
+    coop::props::prop_food_state::DecorateCapture(actor, rec);
     coop::dev::food_clock_probe::NotePublish(actor, key, rec);
     return SendBody(s, peerSlot, key, rec);
 }

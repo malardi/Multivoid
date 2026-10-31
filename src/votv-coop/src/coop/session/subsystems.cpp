@@ -44,7 +44,6 @@
 #include "coop/props/prop_key_index.h"  // Begin/End at the gate hold
 #include "coop/props/container_contents_sync.h"  // the world-container GObjStack slice
 #include "coop/props/container_view_close.h"  // a view into a container ends where the player's reach does
-#include "coop/props/prop_food_state.h"  // the food family's live state and who authors it
 #include "coop/props/prop_record_refresh.h"  // a drive box or reel case republishes its record in place
 #include "coop/interactables/signal_catch_sync.h"
 #include "coop/interactables/signal_sync.h"
@@ -268,8 +267,7 @@ void Install(coop::net::Session& session) {
     coop::laptop_buffer_sync::Install(&session);  // the PC buffer quad
     coop::floppybox_sync::Install(&session);  // the disc crate stack
     coop::props::container_contents_sync::Install(&session);  // container contents
-    coop::props::prop_record_refresh::Install(&session);  // drive box + reel case republish their own record
-    coop::props::prop_food_state::Install();  // the food family claims its own live state off the record lane
+    coop::props::prop_record_refresh::Install(&session);  // drive box, reel case, miner, bucket and a food's bite republish their own record
     coop::desk_cursor_sync::Install(&session);  // coords-panel live-cursor unreliable motion stream (interpolated mirror)
     coop::desk_input_sync::Install(&session);  // the claim-free field-granular desk input lane
     coop::desk_snd_fx::Install(&session);  // desk audio-effect mirror (Func-patch audio seam)
