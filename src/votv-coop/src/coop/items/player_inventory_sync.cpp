@@ -10,12 +10,14 @@
 #include "coop/player/players_registry.h"
 #include "coop/net/protocol.h"
 #include "coop/net/session.h"
+#include "coop/player/hand_item.h"  // LocalHandActor: the live item the hold record names
 #include "coop/props/prop_synth_key.h"  // RandomKeyString, the fresh key of a copied record
 #include "coop/session/player_handshake.h"
 #include "ue_wrap/actors/begin_equipment.h"  // GiveFromClass, the starter-kit probe
 #include "ue_wrap/actors/effects.h"  // ResetOnSaveObject, the host's effects out of the joiner's save
 #include "ue_wrap/engine/engine.h"      // SetSaveObjectReadyHook, the pre-materialise apply point
 #include "ue_wrap/actors/inventory.h"
+#include "ue_wrap/actors/save_record.h"  // CaptureRecord: the held item's live record
 #include "ue_wrap/actors/puppet.h"  // ReadCharacterIsFalling
 #include "ue_wrap/actors/vitals.h"
 #include "ue_wrap/core/log.h"
@@ -162,6 +164,38 @@ static bool SendProfile(coop::net::Session* s, std::vector<uint8_t> blob, uint64
     return false;  // refused -> retry next poll under a fresh seq
 }
 
+// The item in the player's hand, as it is now. saveSlot.hold keeps the record the item was equipped
+// with, while the live actor in the hand spends its portions and its charge: a food bitten twice in
+// the hand, or a battery run down, still read whole there, so a profile streamed from it brought the
+// item back whole at the next join. The live actor's own getData replaces the record when the actor
+// is the one the record names (same class, same key); its stored transform is kept, since the
+// hand's display transform is not where the item is stored. Adapted from ElvardFIC/WatchersOfTheVoid
+// (MIT), https://github.com/ElvardFIC/WatchersOfTheVoid/blob/HEAD/src/votv-coop/include/coop/items/held_record_capture.h -- Game thread.
+void RefreshHeldRecord(ue_wrap::inventory::PlayerInventory& items) {
+    if (items.hold.empty()) return;
+    ue_wrap::save_record::SaveRecord& record = items.hold[0].data;
+    if (record.className.empty() || record.key.empty() || record.key == L"None") return;
+    void* held = coop::hand_item::LocalHandActor();
+    if (!held) return;
+    ue_wrap::save_record::SaveRecord current;
+    if (!ue_wrap::save_record::CaptureRecord(held, current)) return;
+    if (current.key != record.key || current.className != record.className) return;
+    current.xform = record.xform;
+    record = std::move(current);
+}
+
+// The send decision's hash. The live hold record's floats move every frame (a food's temperature,
+// and the world-clock stamp its getData writes), and hashing them would stream the whole profile at
+// the poll rate; they are left out of the hash, not out of the profile. A portion eaten (an int)
+// still sends at once, and a float alone rides the kVitalsCadence send.
+uint64_t ItemsHash(const ue_wrap::inventory::PlayerInventory& items, const std::vector<uint8_t>& blob) {
+    if (items.hold.empty() || items.hold[0].data.floats.empty()) return coop::blob_chunks::Fnv64(blob);
+    ue_wrap::inventory::PlayerInventory coarse = items;
+    for (auto& group : coarse.hold[0].data.floats)
+        for (float& v : group) v = 0.f;
+    return coop::blob_chunks::Fnv64(coop::inventory_wire::SerializeItems(coarse));
+}
+
 // Client: poll the carried, worn and held items at 1 Hz and stream the profile to the host. A
 // change of the items goes at once; the vitals and the pose alone go at kVitalsCadence, and are
 // not even read on a poll that will not send.
@@ -172,9 +206,10 @@ void ClientStreamTick(coop::net::Session* s) {
     if (!g_profileApplied) return;  // this world holds no profile of ours to report
     ue_wrap::inventory::PlayerInventory items;
     if (!ue_wrap::inventory::ReadAll(items)) return;  // world not up yet
+    RefreshHeldRecord(items);
     SampleStandingPose();
     std::vector<uint8_t> blob = coop::inventory_wire::SerializeItems(items);
-    const uint64_t itemsHash = coop::blob_chunks::Fnv64(blob);
+    const uint64_t itemsHash = ItemsHash(items, blob);
     if (itemsHash == g_lastItemsHash && now - g_lastSend < kVitalsCadence) return;
     SendProfile(s, std::move(blob), itemsHash, items.inventory.size(), now);
 }
