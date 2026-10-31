@@ -76,6 +76,9 @@ std::atomic<uint32_t> g_pendingSeq{0};
 }  // namespace
 
 void SetSession(coop::net::Session* session) {
+    // Called on every pass of the installs (idempotent like its neighbours): the delivery rows reset only
+    // when the session itself changes, or every tick would forget what was sent and send it again.
+    if (g_session.load(std::memory_order_acquire) == session) return;
     g_delivery = {};
     g_world = ue_wrap::world_identity::Generation();
     g_session.store(session, std::memory_order_release);
