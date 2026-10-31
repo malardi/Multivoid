@@ -32,6 +32,22 @@ public:
     // What SetActorRotation shows (the presentation yaw).
     float Yaw() const { return yaw_; }
 
+    // SEATED: the body turns with what it sits on, so the standing head-lead hysteresis does not
+    // apply. A seated source is attached to its chair (mainPlayer_C::sit attaches the pawn to
+    // sittingOn), so the streamed actor yaw is the facing the game seated the body at, carried with
+    // the chair if the chair turns; the camera's lead stays in headYawDelta, which the head look
+    // reads as before. The yaw is taken as streamed, the latch cleared and the dt clock re-seeded, so
+    // standing up resumes the turn-in-place from the seat's facing with no catch-up spin. Returns
+    // true when the yaw changed.
+    bool Seated(uint64_t nowMs, float wireYawDeg) {
+        const float next = ue_wrap::NormalizeAxis(wireYawDeg);
+        const bool changed = std::fabs(ue_wrap::NormalizeAxis(next - yaw_)) > 0.001f;
+        yaw_ = next;
+        turning_ = false;
+        lastMs_ = nowMs;
+        return changed;
+    }
+
     // Re-base on wire truth: spawn placement, first packet, teleport snap,
     // ragdoll recover. Clears the hysteresis latch + the dt clock.
     void Reset(float yawDeg) {

@@ -28,6 +28,7 @@
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/actors/prop.h"
 #include "ue_wrap/actors/puppet.h"
+#include "ue_wrap/actors/sit_pose.h"  // IsChair: the seated bit
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/core/types.h"
 #include "ue_wrap/actors/vitals.h"
@@ -109,11 +110,25 @@ bool ReadLocalPose(void* local, void* controller, coop::net::PoseSnapshot& out) 
     // The ragdoll bit: isRagdoll is the AnimBP gate every ragdoll cause flips (the C key, an
     // exhaustion faint, a KO), synced as a display flag so the puppet flops on the other screens; a
     // death is excluded by `dead`. One wrapper read.
+    bool ragdollOrDead = false;
     {
         bool isRagdoll = false, dead = false;
-        if (ue_wrap::engine::ReadMainPlayerRagdollState(local, isRagdoll, dead) &&
-            isRagdoll && !dead) {
-            out.stateBits |= coop::net::kStateBitRagdoll;
+        if (ue_wrap::engine::ReadMainPlayerRagdollState(local, isRagdoll, dead)) {
+            if (isRagdoll && !dead) out.stateBits |= coop::net::kStateBitRagdoll;
+            ragdollOrDead = isRagdoll || dead;
+        }
+    }
+    // The seated bit: sittingOn names a chair (a prop_sit prop; a sitBox hands mainPlayer_C::sit its
+    // parent chair), so the other screens play the sit on this player's puppet instead of a body
+    // standing through the seat. The position and yaw above are already the seat's: sit attaches the
+    // pawn to the chair. The ATV seats its driver through the same field but is not a prop, so it
+    // never sets the bit; the receiver reads the driver from the host's ATV seat table instead. A
+    // ragdoll or a death is the body's state whatever sittingOn still says.
+    {
+        void* seat = nullptr;
+        if (!ragdollOrDead && ue_wrap::engine::ReadMainPlayerSittingOn(local, seat) && seat &&
+            ue_wrap::sit_pose::IsChair(seat)) {
+            out.stateBits |= coop::net::kStateBitSeated;
         }
     }
     // The burning bit: the body's own fire runs while its burningTime is above zero (the condition
