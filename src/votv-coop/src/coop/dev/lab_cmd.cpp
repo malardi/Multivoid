@@ -193,7 +193,7 @@ std::string ReadValue(void* owner, void* base, const std::wstring& prop) {
     return buf;
 }
 
-bool WriteValue(void* owner, void* base, const std::wstring& prop, const std::string& v) {
+bool WriteValue(void* owner, void* base, const std::wstring& prop, const std::string& v, bool callFrame = false) {
     int32_t off = -1;
     std::wstring cls;
     if (!R::PropertyOffsetAndClass(owner, prop.c_str(), off, cls) || off < 0) return false;
@@ -208,6 +208,16 @@ bool WriteValue(void* owner, void* base, const std::wstring& prop, const std::st
         if (!R::FindBoolProperty(owner, prop.c_str(), bo, mask)) return false;
         uint8_t& b = static_cast<uint8_t*>(base)[bo];
         b = (v == "1" || v == "true") ? static_cast<uint8_t>(b | mask) : static_cast<uint8_t>(b & ~mask);
+    } else if (cls == L"StrProperty" && callFrame) {
+        // A call argument only: the frame's FString aliases a buffer this module keeps, and the callee
+        // only reads it (the ATV's actionName compares its verb). Never into a live object, whose
+        // destructor would free memory the engine did not allocate.
+        static std::wstring keep[8];
+        static int next = 0;
+        std::wstring& w = keep[next++ % 8];
+        w = Wide(v);
+        *reinterpret_cast<R::FString*>(p) = R::FString{w.data(), static_cast<int32_t>(w.size()) + 1,
+                                                      static_cast<int32_t>(w.size()) + 1};
     } else return false;
     return true;
 }
@@ -295,7 +305,7 @@ bool CallWithArgs(void* obj, const std::string& fnName, std::istringstream& in, 
         const size_t eq = kv.find('=');
         if (eq == std::string::npos) continue;
         std::string val = kv.substr(eq + 1);
-        if (!WriteValue(fn, f.data(), Wide(kv.substr(0, eq)), val)) { out = "bad arg " + kv; return false; }
+        if (!WriteValue(fn, f.data(), Wide(kv.substr(0, eq)), val, /*callFrame=*/true)) { out = "bad arg " + kv; return false; }
     }
     const bool ok = ue_wrap::Call(obj, f);
     std::ostringstream o;
