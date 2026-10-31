@@ -152,10 +152,21 @@ constexpr const wchar_t* kEventerOutputs[] = {L"ventCrawler_C", L"superEgger_C",
 // its spawns are bytecode-internal too. Most of them are props, which ride the prop lane already; the two
 // ariral ships warping out are actors, and only they are mirrored here.
 constexpr const wchar_t* kSpawnPropOutputs[] = {L"arirShipVanishing_C", nullptr};
+// The funny console's own creatures: enterCommand's gooseworx.rufus and gooseworx.thiccfus spawn them with the
+// console as the spawner (a host-run line; coop/interactables/sat_console_table), and nothing else the console
+// spawns is mirrored here. rufus_C is a late allowlist entry (sdk_profile_names.h); thiccfus_C derives from it.
+// Adapted from ElvardFIC/WatchersOfTheVoid src/votv-coop/src/coop/creatures/npc_world_enum.cpp (MIT).
+constexpr const wchar_t* kConsoleNpcOutputs[] = {L"rufus_C", L"thiccfus_C", nullptr};
 constexpr ExSpawnSource kExSpawnSources[] = {
     {L"trigger_wispSwarm_C",     nullptr},          // the wisps event swarm
     {L"piramidSpawner_C",        nullptr},          // the piramid event chain
     {L"ticker_wispSpawner_C",    nullptr},          // the ambient sky wisps
+    // The killer-wisp and fossil-hound tickers: each spawn is an EX_CallMath BeginDeferred in the ticker's
+    // ubergraph, and a client's own ticker is refused (spawn_authority), so without these rows the host's
+    // creatures were seen by no one else.
+    // Adapted from ElvardFIC/WatchersOfTheVoid src/votv-coop/src/coop/creatures/npc_world_enum.cpp (MIT).
+    {L"ticker_yellowWispSpawner_C", nullptr},       // the killer wisps (killerwisp_C)
+    {L"ticker_fossilhoundSpawner_C", nullptr},      // the fossil hounds (fossilhound_C)
     {L"ticker_egSpawner_C",      nullptr},          // the ambient night eggs, one eg_C per roll
     {L"prop_coingun_C",          nullptr},          // the sell gun's coin mint
     {L"jellyfishPath_C",         nullptr},          // the space jellyfish's seven (world-actor lane)
@@ -164,6 +175,7 @@ constexpr ExSpawnSource kExSpawnSources[] = {
     {L"superEgger_C",            nullptr},          // eggvasion: spwn() mints the eg_C children
     {L"tentacleBallsFollower_C", nullptr},          // tentacleBalls: runTrigger() mints the pack
     {L"trigger_spawnProp_C",     kSpawnPropOutputs},  // the picnic's warping ships
+    {L"ui_console_C",            kConsoleNpcOutputs}, // the console's Rufus and thiccfus
     {L"ticker_deerSpawner_C",    nullptr},          // the deer, at random absolute map points
     {L"ticker_treeSpawner_C",    nullptr},          // the walking trees, on a world-anchored ring
 };
@@ -227,6 +239,9 @@ void OnBeginDeferredExSpawn(void* /*context*/, void* srcObj, void* spawned) {
     if (!cls) return;
     // A scoped source's outputs first: one render, before the world-actor list's per-entry renders.
     if (source->outputs && !NamesOneOf(cls, source->outputs)) return;
+    // A named output of a late class (the console's Rufus) can be the first of its class this process: its
+    // class loaded with this very spawn, before the object index lists it, so it is admitted from the spawn.
+    if (source->outputs && !coop::npc_sync::IsAllowlistedClass(cls)) coop::npc_sync::AdmitLateClass(cls);
     if (!coop::npc_sync::IsAllowlistedClass(cls) && !IsWaAllowlistedClass(cls)) return;
     const int32_t idx = R::InternalIndexOf(spawned);
     std::lock_guard<std::mutex> lk(g_pendingMx);
@@ -254,9 +269,11 @@ void InstallExSpawnCatch() {
                                                  &OnBeginDeferredExSpawn)) {
         UE_LOGI("npc-sync[ex-spawn]: Func-thunk catch installed on BeginDeferred (source-gated: "
                 "trigger_wispSwarm_C -> wisp_C, piramidSpawner_C -> killerwisp_C + piramid2_C, "
+                "ticker_yellowWispSpawner_C -> killerwisp_C, ticker_fossilhoundSpawner_C -> fossilhound_C, "
                 "jellyfishPath_C -> jellyfish_C, trigger_eventer_C -> ventCrawler_C + superEgger_C, "
                 "grayEventController_C -> grayTest_C, superEgger_C + ticker_egSpawner_C -> eg_C, "
-                "tentacleBallsFollower_C -> tentacleBall_C; EX_CallMath spawns now enroll)");
+                "tentacleBallsFollower_C -> tentacleBall_C, ui_console_C -> rufus_C + thiccfus_C; "
+                "EX_CallMath spawns now enroll)");
     } else {
         UE_LOGW("npc-sync[ex-spawn]: InstallPostHook FAILED -- EX_CallMath creature spawns will "
                 "NOT mirror this session (event-swarm wisps host-only)");

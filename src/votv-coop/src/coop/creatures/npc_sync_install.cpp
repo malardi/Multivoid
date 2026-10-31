@@ -13,12 +13,15 @@
 #include "coop/creatures/npc_world_enum.h"  // InstallExSpawnCatch (the EX_CallMath spawn catch)
 #include "ue_wrap/core/game_thread.h"
 #include "ue_wrap/core/log.h"
+#include "ue_wrap/core/object_index.h"   // ClassByName: the late allowlist's lookup
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/core/sdk_profile.h"
 #include "ue_wrap/facts/function_row.h"
 
 #include <atomic>
 #include <cstdint>
+#include <cwchar>   // _wcsicmp: the late classes' names compare without case, as the engine's do
+#include <string>
 
 namespace coop::npc_sync {
 
@@ -40,6 +43,7 @@ std::atomic<bool> g_installed{false};
 // The allowlisted NPC classes, resolved at install from the allowlist names in sdk_profile.h.
 // Sized by the allowlist constant, so an addition to the list binds the array length too.
 void* g_npcAllowlist[ue_wrap::profile::name::kNpcAllowlistSize] = {};
+std::atomic<void*> g_npcLateAllowlist[ue_wrap::profile::name::kNpcLateAllowlistSize] = {};
 
 void* g_npcSpawnFn = nullptr;
 int32_t g_npcSpawnActorClassParamOff = -1;
@@ -75,9 +79,50 @@ bool IsInstalled() {
     return g_installed.load(std::memory_order_acquire);
 }
 
+namespace {
+// Hold `cls` in the late slot `i`, said when it is new there.
+void HoldLate(size_t i, void* cls, const char* how) {
+    void* const was = g_npcLateAllowlist[i].exchange(cls, std::memory_order_acq_rel);
+    if (cls != was)
+        UE_LOGI("npc-suppress: late allowlist[%zu] '%ls' = %p (%s)", i, P::name::kNpcLateAllowlist[i], cls, how);
+}
+}  // namespace
+
+void RefreshLateAllowlist() {
+    // One indexed lookup per entry, no object-array walk. The index trails the engine by a drain, so a class it
+    // does not list yet (or no longer lists) leaves the slot as it was: a held class is kept, as the eager list
+    // keeps its own.
+    for (size_t i = 0; i < P::name::kNpcLateAllowlistSize; ++i) {
+        void* const cls = ue_wrap::object_index::ClassByName(P::name::kNpcLateAllowlist[i]);
+        if (cls) HoldLate(i, cls, "loaded with its event");
+    }
+}
+
+bool AdmitLateClass(void* cls) {
+    // The class's own chain, by rendered name: a class loaded by the very spawn that asks is not in the index yet.
+    int hops = 0;
+    for (void* c = cls; c && hops < 16; c = R::SuperStructOf(c), ++hops) {
+        const std::wstring name = R::ToString(R::NameOf(c));
+        for (size_t i = 0; i < P::name::kNpcLateAllowlistSize; ++i) {
+            if (_wcsicmp(name.c_str(), P::name::kNpcLateAllowlist[i]) != 0) continue;
+            HoldLate(i, c, "met at its first spawn");
+            return true;
+        }
+    }
+    return false;
+}
+
 void Install(coop::net::Session* session) {
     SetSession(session);  // cache (caller guarantees outlives us)
-    if (g_installed.load(std::memory_order_acquire)) return;
+    if (g_installed.load(std::memory_order_acquire)) {
+        // The late classes load with their own events, after the lane went live: asked again every ~2 s.
+        static int s_lateCountdown = 0;
+        if (--s_lateCountdown <= 0) {
+            s_lateCountdown = 120;
+            RefreshLateAllowlist();
+        }
+        return;
+    }
     // The throttle guard: every Find call below walks the object array with a string allocation
     // per entry, so retries are bounded to about one per half second during the unresolved window.
     static int s_installRetryCountdown = 0;
@@ -271,6 +316,7 @@ void Install(coop::net::Session* session) {
         UE_LOGI("npc-suppress: allowlist[%zu] '%ls' = %p",
                 i, P::name::kNpcAllowlist[i], g_npcAllowlist[i]);
     }
+    RefreshLateAllowlist();
 }
 
 bool GetDevSpawnRefs(DevSpawnRefs& out) {

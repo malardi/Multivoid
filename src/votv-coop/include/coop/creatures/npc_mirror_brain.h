@@ -4,8 +4,8 @@
 // resumes, overlap and montage delegates, move callbacks) fires on the client's clock and acts there. The host's
 // copy is the creature; the pose stream shows the mirror. So a mirror of a parked family has its event graph refused
 // entry by entry but the few a table names, and the part of BeginPlay it needs to look right is done by our code.
-//   - FAMILIES: the zombie and every class below it, and the fossilhound; the table's class names decide it
-//     (IsParkedClass). Every other family keeps its own pair of hits until it is parked.
+//   - FAMILIES: the zombie and every class below it, the fossilhound, and Rufus (thiccfus below it); the table's
+//     class names decide it (IsParkedClass). Every other family keeps its own pair of hits until it is parked.
 //   - THE MARK: set when a mirror is born, or when a client's own save-loaded twin is bound; a client's own creature
 //     is never marked and runs whole. It is the actor's slot and the slot's serial, true only while the slot holds
 //     that serial, so a recycled address is never a mirror and a mark nothing removed matches nothing.

@@ -135,6 +135,19 @@ inline constexpr const wchar_t* kNpcAllowlist[] = {
 };
 inline constexpr size_t kNpcAllowlistSize = sizeof(kNpcAllowlist) / sizeof(kNpcAllowlist[0]);
 
+// The late NPC classes: allowlisted like the list above, but their packages load with their own event, not with
+// the level, so the lane goes live without them and each is looked up again until it loads (and after, in case
+// it unloads; coop/creatures/npc_sync_install.cpp's RefreshLateAllowlist).
+//   rufus_C: the funny console's gooseworx.rufus creature; thiccfus_C (gooseworx.thiccfus) inherits it. A
+//   Character. The plush prop_thiccfus_C is a prop and no relative. Born on the host through the console's own
+//   deferred spawn (the EX-spawn catch, source ui_console_C).
+// Adapted from ElvardFIC/WatchersOfTheVoid src/votv-coop/include/ue_wrap/core/sdk_profile_names.h (MIT).
+inline constexpr const wchar_t* NpcClass_Rufus        = L"rufus_C";
+inline constexpr const wchar_t* kNpcLateAllowlist[] = {
+    NpcClass_Rufus,
+};
+inline constexpr size_t kNpcLateAllowlistSize = sizeof(kNpcLateAllowlist) / sizeof(kNpcLateAllowlist[0]);
+
 // The non-Character event actors the Character-only NPC mirror cannot replicate: npc_pose_drive
 // drives position, yaw and the CMC, so these AActor/APawn ships and saucers get a transform-only
 // full-rotation mirror (coop::element::WorldActor, coop/world_actor_sync). A second BeginDeferred

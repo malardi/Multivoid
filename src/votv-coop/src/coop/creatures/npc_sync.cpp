@@ -85,7 +85,12 @@ thread_local PendingNpcSpawn t_pendingNpc{coop::element::kInvalidId, nullptr};
 // ue_wrap::reflection::IsDescendantOfAny so the SuperStruct offset stays in the wrapper; one
 // chain walk checking every base per hop.
 bool IsClassOrDerivedFromAnyAllowlisted(void* cls) {
-    return R::IsDescendantOfAny(cls, g_npcAllowlist, P::name::kNpcAllowlistSize);
+    if (R::IsDescendantOfAny(cls, g_npcAllowlist, P::name::kNpcAllowlistSize)) return true;
+    // The late classes (sdk_profile_names.h), read once each: a slot not yet loaded is null and matches nothing.
+    void* late[P::name::kNpcLateAllowlistSize];
+    for (size_t i = 0; i < P::name::kNpcLateAllowlistSize; ++i)
+        late[i] = g_npcLateAllowlist[i].load(std::memory_order_acquire);
+    return R::IsDescendantOfAny(cls, late, P::name::kNpcLateAllowlistSize);
 }
 
 }  // namespace; the callbacks below are named, registered by npc_sync_install.cpp

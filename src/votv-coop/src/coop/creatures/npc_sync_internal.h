@@ -26,6 +26,10 @@ namespace coop::npc_sync {
 // subclass-aware allowlist walk (IsClassOrDerivedFromAnyAllowlisted) on every interceptor fire.
 extern void* g_npcAllowlist[ue_wrap::profile::name::kNpcAllowlistSize];
 
+// The late classes (P::name::kNpcLateAllowlist), each looked up again by RefreshLateAllowlist on the game thread
+// while the interceptor may read them on a worker, so each slot is atomic. Null until the class loads.
+extern std::atomic<void*> g_npcLateAllowlist[ue_wrap::profile::name::kNpcLateAllowlistSize];
+
 // BeginDeferredSpawnFromClass param offsets (resolved once at Install). Read per interceptor /
 // POST fire on the ProcessEvent-dispatching thread (may be a parallel-anim worker).
 extern int32_t g_npcSpawnActorClassParamOff;

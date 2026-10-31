@@ -138,7 +138,9 @@ void OnEntitySpawn(const coop::net::EntitySpawnPayload& payload) {
         return;
     }
     // The allowlist gate: a peer could send any className, so only subclasses of the NPC bases
-    // materialise.
+    // materialise. A late class (the console's Rufus) the pump has not met yet is admitted by its
+    // name first.
+    if (!coop::npc_sync::IsAllowlistedClass(actorClass)) coop::npc_sync::AdmitLateClass(actorClass);
     if (!coop::npc_sync::IsAllowlistedClass(actorClass)) {
         UE_LOGW("npc-sync[client OnSpawn]: class '%ls' is NOT on NPC allowlist -- "
                 "rejecting (eid=%u; peer is broadcasting non-NPC EntitySpawn?)",
