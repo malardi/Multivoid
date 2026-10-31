@@ -12,7 +12,11 @@
 //
 // The verb watched is each class's own upd(): every mutation ends there and no tick or look-at
 // path calls it. The watch is a script_gate one, not a ProcessEvent observer -- the prop calls its
-// own upd() from inside its Blueprint, a route ProcessEvent never sees. The .cpp carries the rest.
+// own upd() from inside its Blueprint, a route ProcessEvent never sees. The .cpp carries the rest:
+// the crypto miner, the water bucket, and the building material -- a concrete bucket's portions and dry
+// flag and a cement bag's units, published by the host on change and by a client whose player's verb
+// changed them, with a client's copy of a concrete bucket kept from ticking (spilling, drying,
+// replacing itself) on its own.
 
 #pragma once
 

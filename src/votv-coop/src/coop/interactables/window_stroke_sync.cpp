@@ -10,6 +10,7 @@
 
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/reflection.h"
+#include "ue_wrap/core/script_gate.h"
 #include "ue_wrap/core/ufunction_hook.h"
 #include "ue_wrap/devices/window_canvas.h"
 #include "ue_wrap/engine/world_identity.h"
@@ -52,8 +53,15 @@ bool g_hookArmed = false;
 ue_wrap::facts::Resolved g_drawHook;  // the function the post-hook is installed on, armed and disarmed there
 int  g_resolveRetry = 0;   // frames left before the next resolve attempt (GT only)
 
-// Outbound: stroke corners taken inside the Func hook, sent from Tick (both game thread).
-std::vector<std::pair<float, float>> g_outbound;
+// Outbound: dabs taken inside the Func hook, sent from Tick (both game thread). Each keeps the draw's
+// own corner and edge and the brush material it drew with, so a thrown sponge's dab, or one whose
+// sponge left the hand before the tick, is described by what it drew rather than by the hand.
+struct Outbound {
+    float x, y, size;
+    void* material;
+    int32_t materialIdx;
+};
+std::vector<Outbound> g_outbound;
 
 // Inbound: dabs waiting for the window to be present and the canvas to be free.
 struct Pending {
@@ -107,29 +115,52 @@ void* ResolveWindow() {
     return R::IsLiveByIndex(g_window, g_windowIdx) ? g_window : nullptr;
 }
 
-// Func post-hook on UCanvas::K2_DrawMaterial: game thread, deep inside the engine call, so field
-// reads and a vector push only.
-void OnDrawPost(void* /*canvas*/, void* sourceObject, void* /*result*/) {
-    if (g_wireApplyDepth > 0 || !g_armed.load(std::memory_order_relaxed)) return;
-    if (!WC::IsStrokeDraw(sourceObject)) return;
-    float x = 0.f, y = 0.f;
-    if (!WC::ReadStrokeCorner(sourceObject, x, y) || g_outbound.size() >= kMaxQueued) return;
-    g_outbound.emplace_back(x, y);
+// Func pre-hook on UCanvas::K2_DrawMaterial: game thread, deep inside the engine call, so raw reads
+// and a vector push only. A pre hook, not a post one, because the draw's own arguments -- the brush
+// material, the corner and the edge -- are readable only from its parameter frame, and the old read of
+// the HELD sponge at the next tick missed every thrown sponge's dab (and any dab whose sponge had left
+// the hand by then): the thrower's window came clean and everyone else's stayed dirty. Never refuses.
+ue_wrap::script_gate::Verdict OnDrawPre(void* /*canvas*/, void* sourceObject, const uint8_t* parms) {
+    if (g_wireApplyDepth > 0 || !g_armed.load(std::memory_order_relaxed)) return ue_wrap::script_gate::Verdict::Run;
+    if (!WC::IsStrokeDraw(sourceObject) || g_outbound.size() >= kMaxQueued) return ue_wrap::script_gate::Verdict::Run;
+    Outbound o{};
+    if (!WC::ReadDrawArgs(parms, o.material, o.x, o.y, o.size)) {
+        // The frame did not read: fall back to the window's corner, the brush read off the hand at the tick.
+        if (!WC::ReadStrokeCorner(sourceObject, o.x, o.y)) return ue_wrap::script_gate::Verdict::Run;
+        o.size = 0.f;
+        o.material = nullptr;
+    }
+    o.materialIdx = o.material ? R::InternalIndexOf(o.material) : -1;
+    g_outbound.push_back(o);
+    return ue_wrap::script_gate::Verdict::Run;
 }
 
 void SendOutbound(coop::net::Session* s) {
     if (g_outbound.empty()) return;
-    float size = 0.f, opac = 0.f, col = 0.f;
-    if (!WC::ReadHeldBrush(coop::players::Registry::Get().Local(), size, opac, col)) {
-        g_unsent += g_outbound.size();  // not the local hand's sponge: a thrown sponge hit the window
-        if (Verbose()) UE_LOGI("window_stroke: %zu dab(s) without a held sponge -- not sent", g_outbound.size());
-        g_outbound.clear();
-        return;
-    }
-    for (const auto& corner : g_outbound) {
+    // The hand's brush, read once and only if a dab needs it (its draw arguments did not read).
+    bool handRead = false, haveHand = false;
+    float handSize = 0.f, handOpac = 0.f, handCol = 0.f;
+    for (const auto& dab : g_outbound) {
+        float size = dab.size, opac = 0.f, col = 0.f;
+        const bool fromDraw = dab.material && size > 0.f && R::IsLiveByIndex(dab.material, dab.materialIdx) &&
+                              WC::ReadBrushScalars(dab.material, opac, col);
+        if (!fromDraw) {
+            if (!handRead) {
+                handRead = true;
+                haveHand = WC::ReadHeldBrush(coop::players::Registry::Get().Local(), handSize, handOpac, handCol);
+            }
+            if (!haveHand) {
+                ++g_unsent;  // its material is gone and no sponge is in the hand: nothing says how it painted
+                if (Verbose()) UE_LOGI("window_stroke: a dab at (%.1f,%.1f) has no readable brush -- not sent", dab.x, dab.y);
+                continue;
+            }
+            if (size <= 0.f) size = handSize;
+            opac = handOpac;
+            col = handCol;
+        }
         coop::net::WindowStrokePayload p{};
-        p.x = corner.first;
-        p.y = corner.second;
+        p.x = dab.x;
+        p.y = dab.y;
         p.size = size;
         p.opac = opac;
         p.col = col;
@@ -230,17 +261,17 @@ void Tick() {
         // the Func slot reads null or the table is full, and the first of those can be a resolve
         // that has not settled. Without the retry one bad tick left the lane dead for the process.
         g_drawHook = ue_wrap::facts::Resolve(kRowK2DrawMaterial);
-        const bool ok = ue_wrap::ufunction_hook::InstallPostHook(g_drawHook, &OnDrawPost, /*armed=*/connected);
+        const bool ok = ue_wrap::ufunction_hook::InstallPreHook(g_drawHook, &OnDrawPre, /*armed=*/connected);
         if (ok) {
             g_hookInstalled = true;
             g_hookArmed = connected;
-            UE_LOGI("window_stroke: K2_DrawMaterial post-hook installed");
+            UE_LOGI("window_stroke: K2_DrawMaterial pre-hook installed");
         } else {
             g_resolveRetry = 60;
             static bool s_saidFailed = false;
             if (!s_saidFailed) {
                 s_saidFailed = true;
-                UE_LOGW("window_stroke: K2_DrawMaterial post-hook FAILED -- retrying; no dab of this "
+                UE_LOGW("window_stroke: K2_DrawMaterial pre-hook FAILED -- retrying; no dab of this "
                         "peer's own will be seen until it installs");
             }
             return;
@@ -249,7 +280,7 @@ void Tick() {
     // The hook sits on a native the game draws through with no session at all, so it is armed only
     // while there is one: disarmed, the forwarder pays one load and a branch and never calls back.
     if (g_hookInstalled && g_hookArmed != connected) {
-        ue_wrap::ufunction_hook::SetArmed(g_drawHook.Fn(), &OnDrawPost, connected);
+        ue_wrap::ufunction_hook::SetArmed(g_drawHook.Fn(), &OnDrawPre, connected);
         g_hookArmed = connected;
     }
     if (!connected) {
