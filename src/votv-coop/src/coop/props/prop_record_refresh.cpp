@@ -5,6 +5,9 @@
 #include "coop/net/session.h"
 #include "coop/props/join_membership_sweep.h"
 #include "coop/props/prop_save_data.h"
+#include "coop/player/hand_item.h"
+#include "coop/player/local_streams.h"
+#include "coop/session/net_pump.h"
 
 #include "ue_wrap/actors/prop.h"
 #include "ue_wrap/core/call.h"
@@ -13,16 +16,19 @@
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/object_index.h"
 #include "ue_wrap/core/reflection.h"
+#include "ue_wrap/core/reflection_props.h"
 #include "ue_wrap/core/script_gate.h"
 #include "ue_wrap/facts/function_row.h"
 
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <chrono>
 #include <iterator>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace coop::props::prop_record_refresh {
 namespace {
@@ -176,6 +182,8 @@ constexpr Watched kWatched[] = {
 ue_wrap::facts::Resolved g_watchedFn[std::size(kWatched)] = {};  // game thread only
 
 void HostMinerBeat();  // below: the host's slow republish of every live miner
+void BucketBeat();     // below: a bucket's water, the host's and a holder's
+void ArmBucketTick(); // below: a client's copy of a bucket spills nothing on its own
 
 // The trailing publishes whose window has closed. Game thread, from the per-tick pump.
 void FlushTrailing() {
@@ -271,6 +279,8 @@ void Install(coop::net::Session* session) {
     g_session.store(session, std::memory_order_release);
     if (!GT::IsGameThread()) return;
     HostMinerBeat();
+    ArmBucketTick();
+    BucketBeat();
     FlushTrailing();
     // Throttle the class walks while a class is unresolved, the shape prop_spawn_authoring and
     // prop_drop_intent use: this Install is the per-tick retry pump, a FindClass MISS is not cached
@@ -370,5 +380,141 @@ void OnDisconnect() {
     g_cRelooked  = 0;
     g_session.store(nullptr, std::memory_order_release);
 }
+
+
+namespace {
+// ---- the bucket's water -----------------------------------------------------------------------------
+// A bucket's water (height, its soap and alcohol) is its save record, and nothing carried it: each peer's
+// copy filled and spilled by its own tick (which empties it down to its rim whenever its copy tilts, and
+// fills it while it floats), so a bucket read 44 on the host and 40 on a client ("133%" against "123%").
+// The host's water is the one that counts: a client's copy runs its tick but keeps the water it had, unless
+// its own player holds it, and the record travels when the water changes -- from the host, or from the
+// client whose hand changed it (an intent the host re-publishes).
+UE_FACT_FN(kRowBucketTick, "prop_record_refresh", L"prop_bucket_C", L"ReceiveTick", Declared);
+constexpr int kBucketTickTag = 0x424B5454;  // 'BKTT'
+bool g_bucketTickArmed = false;
+
+struct BucketOffs { int32_t height = -1, interp = -1, soap = -1, alcOff = -1, emptyOff = -1; uint8_t alcMask = 0, emptyMask = 0; bool ok = false; };
+BucketOffs OffsFor(void* b) {
+    BucketOffs o;
+    void* cls = b ? R::ClassOf(b) : nullptr;
+    if (!cls) return o;
+    o.height = R::FindPropertyOffset(cls, L"height");
+    o.interp = R::FindPropertyOffset(cls, L"height_interp");
+    o.soap   = R::FindPropertyOffset(cls, L"soap");
+    R::FindBoolProperty(cls, L"alcohol", o.alcOff, o.alcMask);
+    R::FindBoolProperty(cls, L"empty", o.emptyOff, o.emptyMask);
+    o.ok = o.height >= 0 && o.soap >= 0;
+    return o;
+}
+float ReadF(void* b, int32_t off) { float v = 0.f; std::memcpy(&v, static_cast<const char*>(b) + off, sizeof v); return v; }
+
+bool IsMine(void* b) {
+    return b == coop::local_streams::LastHeldActor() || coop::hand_item::IsHandAxisActor(b);
+}
+
+// The tick's height before the body, per object (a tick does not nest on one object).
+std::unordered_map<void*, float> g_tickHeight;
+
+sg::Verdict OnBucketTickPre(const sg::Call& c) {
+    auto* s = g_session.load(std::memory_order_acquire);
+    if (!s || !s->connected() || s->role() == coop::net::Role::Host || !c.object) return sg::Verdict::Run;
+    if (IsMine(c.object) || !coop::net_pump::IsInAnnouncedWorld(c.object)) return sg::Verdict::Run;
+    const BucketOffs o = OffsFor(c.object);
+    if (o.ok) g_tickHeight[c.object] = ReadF(c.object, o.height);
+    return sg::Verdict::Run;
+}
+
+void OnBucketTickPost(const sg::Call& c) {
+    if (!c.object) return;
+    auto it = g_tickHeight.find(c.object);
+    if (it == g_tickHeight.end()) return;
+    const float before = it->second;
+    g_tickHeight.erase(it);
+    const BucketOffs o = OffsFor(c.object);
+    if (!o.ok) return;
+    const float now = ReadF(c.object, o.height);
+    if (std::fabs(now - before) < 0.0001f) return;
+    // The copy spilled or filled on its own: the host's water stays, and the look follows it.
+    std::memcpy(static_cast<char*>(c.object) + o.height, &before, sizeof before);
+    if (o.interp >= 0) std::memcpy(static_cast<char*>(c.object) + o.interp, &before, sizeof before);
+    static int sSaid = 0;
+    if (sSaid++ < 5)
+        UE_LOGI("prop_record_refresh: a client copy of bucket %p kept its water %.1f (its own tick made it %.1f)",
+                c.object, before, now);
+}
+
+void ArmBucketTick() {
+    if (g_bucketTickArmed) return;
+    g_bucketTickArmed = sg::WatchName(kRowBucketTick, kBucketTickTag, &OnBucketTickPre, &OnBucketTickPost);
+    if (g_bucketTickArmed) UE_LOGI("prop_record_refresh: a client's copy of a bucket keeps the host's water");
+}
+
+struct BucketSeen { float height = 0.f; int32_t soap = 0; bool alcohol = false; Clock::time_point published{}; bool have = false; };
+std::unordered_map<void*, BucketSeen> g_buckets;
+
+void BucketBeat() {
+    auto* s = g_session.load(std::memory_order_acquire);
+    if (!s || !s->connected()) { g_buckets.clear(); return; }
+    static Clock::time_point sNext{};
+    const auto now = Clock::now();
+    if (now < sNext) return;
+    sNext = now + std::chrono::milliseconds(500);
+    const bool host = s->role() == coop::net::Role::Host;
+    struct Ctx { coop::net::Session* s; bool host; Clock::time_point now; std::vector<void*> live; } ctx{s, host, now, {}};
+    // The water bucket and the mop's: exact classes, so each is walked.
+    for (const wchar_t* name : {L"prop_bucket_C", L"prop_bucket_mop_C"}) {
+        void* cls = ue_wrap::object_index::ClassByName(name);
+        if (!cls) continue;
+        ue_wrap::object_index::ForEachInstance(cls, [](void* c, void* obj, int32_t) {
+            if (!obj || !R::IsLive(obj) || R::NameStartsWith(R::NameOf(obj), L"Default__")) return;
+            static_cast<Ctx*>(c)->live.push_back(obj);
+        }, &ctx);
+    }
+    for (auto it = g_buckets.begin(); it != g_buckets.end();) {
+        bool still = false;
+        for (void* b : ctx.live) if (b == it->first) { still = true; break; }
+        it = still ? std::next(it) : g_buckets.erase(it);
+    }
+    for (void* b : ctx.live) {
+        const BucketOffs o = OffsFor(b);
+        if (!o.ok) continue;
+        const float h = ReadF(b, o.height);
+        int32_t soap = 0;
+        std::memcpy(&soap, static_cast<const char*>(b) + o.soap, sizeof soap);
+        const bool alc = o.alcOff >= 0 && (static_cast<const uint8_t*>(b)[o.alcOff] & o.alcMask);
+        // A landed record writes the height and leaves `empty` as it was, which hides the water until a
+        // tick of a simulating copy recomputes it: set from the water here, and repainted.
+        if (!host && o.emptyOff >= 0 && o.emptyMask && !IsMine(b)) {
+            uint8_t& flags = static_cast<uint8_t*>(b)[o.emptyOff];
+            const bool empty = (flags & o.emptyMask) != 0;
+            if (empty != (h <= 0.f)) {
+                flags = h <= 0.f ? static_cast<uint8_t>(flags | o.emptyMask) : static_cast<uint8_t>(flags & ~o.emptyMask);
+                if (o.interp >= 0) std::memcpy(static_cast<char*>(b) + o.interp, &h, sizeof h);
+                if (void* fn = R::FindDispatchFunctionCached(R::ClassOf(b), L"upd")) {
+                    ue_wrap::ParamFrame f(fn);
+                    if (f.valid()) ue_wrap::Call(b, f);
+                }
+            }
+        }
+        BucketSeen& seen = g_buckets[b];
+        const bool changed = !seen.have || std::fabs(seen.height - h) > 0.05f || seen.soap != soap || seen.alcohol != alc;
+        const bool first = !seen.have;
+        seen.height = h; seen.soap = soap; seen.alcohol = alc; seen.have = true;
+        if (first || !changed) continue;   // a first sighting is the save both peers loaded
+        // Who speaks for the water: the host, and a client for the bucket in its own hand.
+        if (!host && !IsMine(b)) continue;
+        const std::wstring key = ue_wrap::prop::GetInteractableKeyString(b);
+        if (key.empty() || key == L"None") continue;
+        if (coop::prop_save_data::Publish(s, b, key)) {
+            seen.published = now;
+            g_lastPublish[b] = now;   // a host echo landing inside the window does not undo the hand's change
+            ++g_cPublished;
+            UE_LOGI("prop_record_refresh: bucket key='%ls' water %.1f soap %d alcohol %d -- published (%s)",
+                    key.c_str(), h, soap, alc ? 1 : 0, host ? "host" : "client hand");
+        }
+    }
+}
+}  // namespace
 
 }  // namespace coop::props::prop_record_refresh

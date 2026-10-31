@@ -40,6 +40,8 @@ UE_FACT_FN(kRowCameraActionOptionIndex, "toggle_verbs", L"prop_camera_bad_C", L"
 UE_FACT_FN(kRowCameraUpd, "toggle_verbs", L"prop_camera_bad_C", L"upd", Declared);
 UE_FACT_FN(kRowCameraUpdState, "toggle_verbs", L"prop_camera_bad_C", L"updState", Declared);
 UE_FACT_FN(kRowCursedReceiveTick, "toggle_verbs", L"prop_camera_cursed_C", L"ReceiveTick", Declared);
+// The cremator's isActive is written at its lever's swing end, not in the lever's own call.
+UE_FACT_FN(kRowCrematorHandleEnd, "toggle_verbs", L"cremator_C", L"handleLimeline__FinishedFunc", Declared);
 
 struct Row {
     const ue_wrap::facts::Function* verb;
@@ -56,6 +58,8 @@ const Row kRows[] = {
     { &kRowActionOptionIndex, 0x41504149 /*'APAI'*/, "an appliance's action", &ue_wrap::appliance::IsAppliance,
       &coop::interactable_sync::OnApplianceVerb },
     { &kRowVisual, 0x41505653 /*'APVS'*/, "a server box's visual", &ue_wrap::appliance::IsAppliance,
+      &coop::interactable_sync::OnApplianceVerb },
+    { &kRowCrematorHandleEnd, 0x43524D48 /*'CRMH'*/, "a cremator lever's swing end", &ue_wrap::appliance::IsAppliance,
       &coop::interactable_sync::OnApplianceVerb },
     { &kRowOpen, 0x44424F50 /*'DBOP'*/, "a locker's open", &ue_wrap::door_box::IsLocker,
       &coop::interactable_sync::OnDoorBoxVerb },

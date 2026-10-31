@@ -30,6 +30,9 @@ struct Desc {
     const wchar_t* applyFn;
     const wchar_t* applyFn2;       // optional 2nd refresh verb (sink: upd() AFTER updIsOn()); nullptr if none
     const wchar_t* applyParam;     // the setter's bool parameter; nullptr for a no-arg refresh verb
+    // The apply verb TOGGLES the bool, and late (a timeline's end writes it): the apply calls it only
+    // when the state differs and the verb is not mid-swing, and never writes the bool itself.
+    bool toggleVerb = false;
     // Resolved lazily (game-thread serial -- no lock). The class is kept only while its slot and serial
     // still hold it, a Blueprint class being able to get a new object in a new world; the verbs resolve
     // per instance; the offsets are the class's layout, the same in every world, so they are read once.
@@ -62,6 +65,12 @@ Desc g_descs[] = {
     // The wood chipper: its red button (actionOptionIndex on button_del) flips `active` and calls checkActive,
     // which starts or stops the motor from it and the fuel. Its chipping is the host's (coop/world/spawn_authority).
     { L"woodchipper_C",    L"active",       L"checkActive", nullptr, nullptr },
+    // The cremator: its lever (useLever, actionOptionIndex action 4) swings the handle, and the swing's end
+    // (handleLimeline__FinishedFunc) collects what is inside, closes and locks the door (setClosed) and
+    // sets isActive; pulled again while active it swings back and clears isActive. Only the puller's
+    // machine burned: on the other peer the door stayed unlocked and whoever was inside was never hurt.
+    // The far peer pulls its own lever, so its door locks and its burn hurts its own player inside.
+    { L"cremator_C",       L"isActive",     L"useLever",  nullptr, nullptr, true },
 };
 constexpr int kNumDescs = sizeof(g_descs) / sizeof(g_descs[0]);
 
@@ -171,9 +180,37 @@ bool TryReadState(void* a, bool& on) {
     return true;
 }
 
+// The cremator's lever, driven to `on`: pulled only when the state differs and the handle is at rest.
+// Turning it on with the door still open here (its close is on its way) would end in the game's own
+// "The door is open" refusal, so the door is shut and locked first, as the swing's end does itself.
+bool ApplyLever(void* a, const Desc& d, bool on) {
+    const bool cur = *reinterpret_cast<const bool*>(reinterpret_cast<const char*>(a) + d.boolOff);
+    if (cur == on) return true;
+    void* cls = R::ClassOf(a);
+    const int32_t animOff = cls ? R::FindPropertyOffset(cls, L"anim") : -1;
+    if (animOff >= 0 && *reinterpret_cast<const bool*>(reinterpret_cast<const char*>(a) + animOff))
+        return false;  // mid-swing: the swing's end decides, and that end is sent from here in turn
+    if (on) {
+        const int32_t closedOff = cls ? R::FindPropertyOffset(cls, L"isClosed") : -1;
+        const bool closed = closedOff >= 0 &&
+                            *reinterpret_cast<const bool*>(reinterpret_cast<const char*>(a) + closedOff);
+        if (!closed) {
+            if (void* const fn = Verb(a, L"setClosed")) {
+                ParamFrame f(fn);
+                if (f.valid() && f.Set<bool>(L"Close", true)) Call(a, f);
+            }
+        }
+    }
+    void* const fn = Verb(a, d.applyFn);
+    if (!fn) return false;
+    ParamFrame f(fn);
+    return f.valid() && Call(a, f);
+}
+
 bool ApplyState(void* a, bool on) {
     Desc* d = DescFor(a);
     if (!d) return false;
+    if (d->toggleVerb) return d->boolOff >= 0 && ApplyLever(a, *d, on);
     if (d->applyParam) {
         // serverBox: visual(active) is `this.active = active` and a check() repaint, the call a kerfur
         // Omega makes; its setActive(bNewActive) only switches the loop and sound components and

@@ -3,6 +3,7 @@
 // coop/player/local_streams.h.
 
 #include "coop/player/local_streams.h"
+#include "coop/props/prop_drive_host.h"
 
 #include "coop/dev/perf_probe.h"
 #include "coop/element/element.h"
@@ -577,9 +578,15 @@ void Tick(coop::net::Session& session, void* local, void* controller) {
                     coop::element::quiescence_drain::SupersedePosCorrection(heldEid, "own release");
             }
         }
+        // The host's own let-go: each peer simulated the fall from the release velocity on its own, so
+        // a big awkward body (a bunk bed's frame against the lockers) came to rest differently on every
+        // peer and stayed so. The host now streams its fall until it rests, and the rest pose closes it.
+        void* const releasedActor = isTrashEid ? nullptr : g_lastHeldProp.Get();
         g_lastHeldProp.Reset();
         g_lastHeldKey = {};
         g_lastHeldEid = coop::element::kInvalidId;  // the cached held eid goes with the release
+        if (releasedActor && session.role() == coop::net::Role::Host)
+            coop::prop_drive_host::Coast(releasedActor, "host release");
         }
     }
 

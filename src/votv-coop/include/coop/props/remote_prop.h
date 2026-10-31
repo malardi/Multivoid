@@ -38,7 +38,8 @@ void Tick(coop::net::Session& session);
 // the wrong slot when two slots briefly held a prop with the same key). `localPlayer` gives the
 // thrown event a non-null player; the game's throw statistics credit the local player, a minor
 // inaccuracy for the natural effects.
-void OnRelease(int senderSlot, const coop::net::PropReleasePayload& payload, void* localPlayer);
+// Returns the prop the release set simulating on this peer (null when none), for the host to stream its fall.
+void* OnRelease(int senderSlot, const coop::net::PropReleasePayload& payload, void* localPlayer);
 
 // Close hold `holdGen` of the peer in `slot` (PropPoseSnapshot::holdGen): a pose of it that
 // arrives later is the tail of an ended stream and starts no drive. The release closes its own

@@ -33,6 +33,7 @@
 #include "coop/props/prop_drive_stream.h"  // the driven-prop end edge
 #include "coop/player/remote_player.h"
 #include "coop/props/prop_element_tracker.h"  // SessionIsHost
+#include "coop/props/prop_drive_host.h"
 #include "coop/props/remote_prop.h"
 #include "coop/props/remote_prop_spawn.h"
 #include "coop/props/join_membership_sweep.h"  // HasLoadTailQuiesced
@@ -296,7 +297,10 @@ bool HandleEntityEvent(net::Session& session,
                     p.angVelX, p.angVelY, p.angVelZ);
             break;
         }
-        remote_prop::OnRelease(msg.senderPeerSlot, p, localPlayer);
+        void* const fell = remote_prop::OnRelease(msg.senderPeerSlot, p, localPlayer);
+        // A client's let-go on the host: the host streams the fall until it rests, so every copy of a
+        // big body ends where the host's did, not where each peer's own simulation of the drop left it.
+        if (fell && session.role() == net::Role::Host) prop_drive_host::Coast(fell, "client release");
         break;
     }
     case net::ReliableKind::PropSpawn: {

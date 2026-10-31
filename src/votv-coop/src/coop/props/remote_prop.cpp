@@ -417,7 +417,7 @@ void CloseHold(int slot, uint16_t holdGen) {
     h.haveClosed = true;
 }
 
-void OnRelease(int senderSlot, const coop::net::PropReleasePayload& payload, void* localPlayer) {
+void* OnRelease(int senderSlot, const coop::net::PropReleasePayload& payload, void* localPlayer) {
     // Reads and clears the sender's drive; dispatched from event_feed on the game thread.
     UE_ASSERT_GAME_THREAD("g_drives (remote_prop::OnRelease)");
     const std::wstring keyW = KeyToWString(payload.key);
@@ -441,7 +441,7 @@ void OnRelease(int senderSlot, const coop::net::PropReleasePayload& payload, voi
         !coop::trash_channel::IsInboundStreamCtxFresh(payload.elementId, payload.ctx, /*requireCurrentGen=*/false)) {
         UE_LOGI("[PILE] CLIENT DROP stale release eid=%u ctx=%u (older than E's last transition)",
                 payload.elementId, static_cast<unsigned>(payload.ctx));
-        return;
+        return nullptr;
     }
     // The releasing peer is the envelope's sender slot, not a key scan: first-match-wins over
     // lastKey would clear the wrong slot when two slots briefly held the same key.
@@ -459,7 +459,7 @@ void OnRelease(int senderSlot, const coop::net::PropReleasePayload& payload, voi
             // The holder took the prop again before this release arrived: its new hold owns it.
             UE_LOGI("remote_prop: RELEASE of hold %u after hold %u took the same prop -- nothing to apply",
                     static_cast<unsigned>(payload.holdGen), static_cast<unsigned>(g_holds[senderSlot].driveGen));
-            return;
+            return nullptr;
         }
         if (driveHasIt) {
             releasedSlot = senderSlot;
@@ -498,7 +498,7 @@ void OnRelease(int senderSlot, const coop::net::PropReleasePayload& payload, voi
                                         !StickHoldsPhysicsOff(propActor) && !HostAuthorsTrashBody(propActor));
             ResetDriveState(g_drives[releasedSlot]);
         }
-        return;
+        return nullptr;
     }
     // A wall-attachable already stuck here was stuck by its stick, which arrived first on the same lane,
     // and the component's own re-trace placed it; read before the converge below, which freezes a
@@ -582,6 +582,8 @@ void OnRelease(int senderSlot, const coop::net::PropReleasePayload& payload, voi
     if (releasedSlot >= 0) {
         ResetDriveState(g_drives[releasedSlot]);
     }
+    // The prop this release set simulating here, for the host to stream its fall (the dispatch).
+    return (propActor && meshToActOn && !HostAuthorsTrashBody(propActor)) ? propActor : nullptr;
 }
 
 namespace {
