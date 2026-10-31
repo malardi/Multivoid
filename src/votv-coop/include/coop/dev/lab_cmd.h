@@ -29,6 +29,7 @@
 // Looking:
 //   cam <target> [d] [yaw] [h]      a camera d cm from the target at compass yaw, h up, aimed at it;
 //                                   the view goes to it until `cam off` (shot then shows the target)
+//   goto <target> [d] [dz]          stand d cm in front of the target (its forward), look at it
 //   funcs <target|Class> [text]     the class's functions and their parameters into <tag>_funcs.txt
 
 #pragma once

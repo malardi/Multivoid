@@ -819,6 +819,40 @@ void Run(long long id, const std::string& verb, const std::string& rest) {
         g_keepFed = (v != "0" && v != "off");
         if (g_keepFed) Feed();
         Answer(id, true, std::string("keepfed ") + (g_keepFed ? "on" : "off"));
+    } else if (verb == "goto") {
+        // goto <target> [dist] [dz]: stand `dist` cm in front of the target (along its own forward, where a
+        // switch, a screen or a door faces), `dz` cm above its origin, and look at it -- the spot a player
+        // stands to use it. A negative dist stands behind it.
+        std::string t;
+        in >> t;
+        float dist = 90.f, dz = 0.f;
+        if (!(in >> dist)) dist = 90.f;
+        if (!(in >> dz)) dz = 0.f;
+        void* obj = Target(t);
+        ue_wrap::FVector at{};
+        ue_wrap::FRotator r{};
+        if (!obj || !ue_wrap::engine::TryGetActorLocation(obj, at) || !ue_wrap::engine::TryGetActorRotation(obj, r)) {
+            Answer(id, false, "goto: no target " + t);
+            return;
+        }
+        const double rad = r.Yaw * 3.14159265358979 / 180.0;
+        const float x = at.X + static_cast<float>(std::cos(rad) * dist);
+        const float y = at.Y + static_cast<float>(std::sin(rad) * dist);
+        const float z = at.Z + dz;
+        const float faceYaw = static_cast<float>(std::atan2(at.Y - y, at.X - x) * 180.0 / 3.14159265358979);
+        const bool ok = coop::teleport_client::ApplyLocally({x, y, z, 0.f, faceYaw, 0.f});
+        if (void* ctrl = LocalController()) {
+            void* local = coop::players::Registry::Get().Local();
+            ue_wrap::FVector me{x, y, z};
+            if (local) ue_wrap::engine::TryGetActorLocation(local, me);
+            const float eyeZ = me.Z + 64.f;
+            const float dxy = std::sqrt((at.X - x) * (at.X - x) + (at.Y - y) * (at.Y - y));
+            const float pitch = static_cast<float>(std::atan2(at.Z - eyeZ, (std::max)(dxy, 1.f)) * 180.0 / 3.14159265358979);
+            ue_wrap::engine::SetControlRotation(ctrl, ue_wrap::FRotator{pitch, faceYaw, 0.f});
+        }
+        char b[160];
+        std::snprintf(b, sizeof(b), "goto %s: stand (%.0f,%.0f,%.0f) facing %.0f", t.c_str(), x, y, z, faceYaw);
+        Answer(id, ok, b);
     } else if (verb == "funcs") {
         // funcs <target|Class> [text]: the functions (and their parameters) into <tag>_funcs.txt.
         std::string t, filter;
