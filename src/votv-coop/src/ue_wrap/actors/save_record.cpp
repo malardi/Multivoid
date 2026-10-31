@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstring>
 #include <unordered_map>
+#include <utility>
 
 namespace ue_wrap::save_record {
 namespace {
@@ -395,6 +396,21 @@ void SpliceGroups(std::vector<V>& dst, const std::vector<V>& src) {
     for (size_t i = 0; i < src.size(); ++i) SpliceElements(dst[i], src[i]);
 }
 
+// CaptureLeafInto's splice: over the base's own extent (`shape`), the KEPT record's element where it has
+// one and the base's where it does not; past it, whatever `dst` already held stands.
+template <class T>
+void OverlayElements(std::vector<T>& dst, const std::vector<T>& shape, const std::vector<T>& keep) {
+    if (dst.size() < shape.size()) dst.resize(shape.size());
+    for (size_t i = 0; i < shape.size(); ++i) dst[i] = i < keep.size() ? keep[i] : shape[i];
+}
+
+template <class V>
+void OverlayGroups(std::vector<V>& dst, const std::vector<V>& shape, const std::vector<V>& keep) {
+    if (dst.size() < shape.size()) dst.resize(shape.size());
+    const V none{};
+    for (size_t g = 0; g < shape.size(); ++g) OverlayElements(dst[g], shape[g], g < keep.size() ? keep[g] : none);
+}
+
 }  // namespace
 
 bool OverridesGetData(void* cls) {
@@ -411,6 +427,31 @@ bool CaptureRecord(void* actor, SaveRecord& out) {
     // convention must not be published, or every receiver would drop what it sent.
     if (!EnsureConventionChecked(actor, cls)) return false;
     return CallForRecord(actor, v->getData, out);
+}
+
+bool CaptureLeafInto(void* actor, SaveRecord& stored) {
+    if (!actor || !EnsurePropClass() || !g_baseGetData) return false;
+    SaveRecord live;
+    if (!CaptureRecord(actor, live)) return false;   // no leaf state, or a class off the lane's convention
+    if (live.className != stored.className || live.key != stored.key) return false;
+    SaveRecord base;
+    if (!CallForRecord(actor, g_baseGetData, base)) return false;
+    OverlayGroups(live.bools,      base.bools,      stored.bools);
+    OverlayGroups(live.floats,     base.floats,     stored.floats);
+    OverlayGroups(live.ints,       base.ints,       stored.ints);
+    OverlayGroups(live.strings,    base.strings,    stored.strings);
+    OverlayGroups(live.classes,    base.classes,    stored.classes);
+    OverlayGroups(live.vectors,    base.vectors,    stored.vectors);
+    OverlayGroups(live.rotators,   base.rotators,   stored.rotators);
+    OverlayGroups(live.transforms, base.transforms, stored.transforms);
+    OverlayGroups(live.bytes,      base.bytes,      stored.bytes);
+    OverlayGroups(live.names,      base.names,      stored.names);
+    OverlayElements(live.signals,  base.signals,    stored.signals);   // flat, so one level up
+    live.className = stored.className;
+    live.xform     = stored.xform;
+    live.key       = stored.key;
+    stored = std::move(live);
+    return true;
 }
 
 bool ApplyRecord(void* actor, const SaveRecord& r, ClassResolver resolve) {

@@ -143,6 +143,15 @@ bool OverridesGetData(void* cls);
 // VOTV mod, publishes as a rule's spawn payload on its README Blueprint page (docs/credits.md).
 bool CaptureRecord(void* actor, SaveRecord& out);
 
+// Refresh `stored` -- a record of `actor`'s item kept elsewhere, an inventory slot's -- with the leaf
+// state the live actor has NOW: the actor's own getData, with every element Aprop_C::getData writes
+// (key, names, the saved bools, scale, lifespan) taken from `stored` as ApplyRecord splices them, and the
+// stored class, transform and key kept. The game's hold slot keeps the record its hand item was given at
+// the equip, so this is how the water, cement or bites the hand has spent since are read. False, with
+// `stored` untouched, when a capture fails, the class carries no leaf state, or the live record names
+// another class or key.
+bool CaptureLeafInto(void* actor, SaveRecord& stored);
+
 // Hand a record back to `actor` through its own `loadData` -- the LEAF half of it only.
 //
 // Aprop_C::loadData restores the save Key, the two names, the four saved bools, the scale and the

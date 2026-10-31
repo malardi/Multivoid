@@ -6,6 +6,7 @@
 #include "coop/config/config.h"
 #include "coop/items/inventory_wire.h"
 #include "coop/items/player_profile.h"
+#include "coop/player/hand_item.h"  // LocalHandActor, the held item as it is now
 #include "coop/player/player_profile_store.h"
 #include "coop/player/players_registry.h"
 #include "coop/net/protocol.h"
@@ -46,6 +47,7 @@ coop::blob_chunks::Assembler g_assembler;
 
 // Client: the send-dedup state.
 uint64_t          g_lastItemsHash = 0;  // the items half of the last profile sent
+uint64_t          g_lastStoredHash = 0; // the same items as the save slot stores them, the held item unrefreshed
 Clock::time_point g_lastSend{};
 uint64_t          g_oversizeHash = 0;  // the state already reported as too large to send
 uint32_t          g_sendSeq = 0;
@@ -62,6 +64,10 @@ constexpr auto kClientPoll  = std::chrono::seconds(1);
 // which is the most a crash or a kill of the client can cost them.
 constexpr auto kVitalsCadence = std::chrono::seconds(30);
 constexpr auto kAsmTtl      = std::chrono::seconds(30);
+// A change of the held item's own state alone -- water poured, cement spent, a bite taken, a charge
+// drained -- goes at this cadence: a held food's temperature moves every frame, and the whole profile
+// is not worth re-sending at the poll rate for it.
+constexpr auto kHeldCadence = std::chrono::seconds(5);
 
 // The live per-player apply on join. The host pushes each joiner its profile (the one the store
 // holds, else <mod data dir>/coop_players/<slot>/<guid>.json); the client buffers it and the
@@ -162,9 +168,24 @@ static bool SendProfile(coop::net::Session* s, std::vector<uint8_t> blob, uint64
     return false;  // refused -> retry next poll under a fresh seq
 }
 
+// The held item as it is NOW, into items.hold[0]. saveSlot.hold keeps the record the hand was given
+// at its equip, so the water, cement, concrete, bites or charge the item had then, and not what the
+// hand did with it since: a client who filled a bucket in its hand and left came back holding the
+// bucket as it was picked up. The live hand actor's own getData describes its leaf state now; the
+// stored record keeps its base half, transform and key (save_record::CaptureLeafInto), and only the
+// same item is taken (same class, same key). True when the record was refreshed. Game thread.
+// Adapted from ElvardFIC/WatchersOfTheVoid src/votv-coop/include/coop/items/held_record_capture.h (MIT).
+bool RefreshHeldRecord(ue_wrap::inventory::PlayerInventory& items) {
+    if (items.hold.empty()) return false;
+    ue_wrap::save_record::SaveRecord& stored = items.hold[0].data;
+    if (stored.className.empty() || stored.key.empty() || stored.key == L"None") return false;
+    void* hand = coop::hand_item::LocalHandActor();
+    return hand && ue_wrap::save_record::CaptureLeafInto(hand, stored);
+}
+
 // Client: poll the carried, worn and held items at 1 Hz and stream the profile to the host. A
-// change of the items goes at once; the vitals and the pose alone go at kVitalsCadence, and are
-// not even read on a poll that will not send.
+// change of the items goes at once; a change of the held item's own state at kHeldCadence; the
+// vitals and the pose alone go at kVitalsCadence, and are not even read on a poll that will not send.
 void ClientStreamTick(coop::net::Session* s) {
     const Clock::time_point now = Clock::now();
     if (now - g_lastPoll < kClientPoll) return;
@@ -174,9 +195,16 @@ void ClientStreamTick(coop::net::Session* s) {
     if (!ue_wrap::inventory::ReadAll(items)) return;  // world not up yet
     SampleStandingPose();
     std::vector<uint8_t> blob = coop::inventory_wire::SerializeItems(items);
-    const uint64_t itemsHash = coop::blob_chunks::Fnv64(blob);
+    const uint64_t storedHash = coop::blob_chunks::Fnv64(blob);
+    uint64_t itemsHash = storedHash;
+    const bool refreshed = RefreshHeldRecord(items);
+    if (refreshed) {
+        blob = coop::inventory_wire::SerializeItems(items);
+        itemsHash = coop::blob_chunks::Fnv64(blob);
+    }
     if (itemsHash == g_lastItemsHash && now - g_lastSend < kVitalsCadence) return;
-    SendProfile(s, std::move(blob), itemsHash, items.inventory.size(), now);
+    if (refreshed && storedHash == g_lastStoredHash && now - g_lastSend < kHeldCadence) return;
+    if (SendProfile(s, std::move(blob), itemsHash, items.inventory.size(), now)) g_lastStoredHash = storedHash;
 }
 
 // Host: sweep stale half-assemblies and push each newly connected joiner its per-player apply
@@ -444,10 +472,14 @@ bool SendProfileNow(coop::net::Session* s) {
     ue_wrap::inventory::PlayerInventory items;
     if (!ue_wrap::inventory::ReadAll(items)) return false;
     SampleStandingPose();
+    const uint64_t storedHash = coop::blob_chunks::Fnv64(coop::inventory_wire::SerializeItems(items));
+    RefreshHeldRecord(items);
     std::vector<uint8_t> blob = coop::inventory_wire::SerializeItems(items);
     const uint64_t itemsHash = coop::blob_chunks::Fnv64(blob);
     // No hash or cadence check: the caller has just changed the vitals the profile carries.
-    return SendProfile(s, std::move(blob), itemsHash, items.inventory.size(), Clock::now());
+    const bool sent = SendProfile(s, std::move(blob), itemsHash, items.inventory.size(), Clock::now());
+    if (sent) g_lastStoredHash = storedHash;
+    return sent;
 }
 
 void OnReliable(const coop::net::BlobChunkPayload& p, uint8_t senderPeerSlot) {
@@ -644,6 +676,7 @@ void OnDisconnect() {
     // its assembler, so a rejoin waits for a fresh host push and never applies a stale inventory
     // to a new world.
     g_lastItemsHash = 0;
+    g_lastStoredHash = 0;
     g_lastSend = Clock::time_point{};
     g_joinPose = {};
     g_joinPlacement = JoinPlacement::StartPoint;
