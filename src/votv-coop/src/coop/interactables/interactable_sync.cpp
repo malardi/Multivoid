@@ -83,8 +83,9 @@ const Adapter g_lightAdapter = {
     // The receiver replays use() so the switch flips and clicks. On a client that is presentation
     // only: the runTrigger use() ends in is refused there, since the group is the host's to move
     // (coop/interactables/lightgroup_verbs). On the host the full use() runs: replaying the client's
-    // switch edge is how its press becomes an authoritative group change.
-    [](void* a, bool /*on*/) -> bool { return ue_wrap::lightswitch::CallUse(a); },
+    // switch edge is how its press becomes an authoritative group change. The replay's click is
+    // placed at the switch, not played 2D across the map (lightswitch::CallUseReplayed).
+    [](void* a, bool /*on*/) -> bool { return ue_wrap::lightswitch::CallUseReplayed(a); },
 };
 // The light group (Atrigger_lightRoot_C), the state a player sees. The switch adapter syncs the
 // switch's `a`, this one the group's isActive: the game keeps them decoupled (use() toggles `a`
