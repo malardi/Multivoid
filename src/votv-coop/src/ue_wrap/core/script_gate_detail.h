@@ -22,10 +22,16 @@ namespace R = ue_wrap::reflection;
 // exact watch keys on the UFunction pointer, a name watch on the FName's two indices (its
 // unresolved placeholder holds a second slot). What fills a table is its KEYED slots, retired
 // ones included, so the cap counts those: at most 3/8 of a table, the load at which a miss
-// probes under two slots. A name watch, class-scoped or not, holds two keyed slots, so the name table
-// takes 384 name watches: each peer of a two-peer smoke held 163-166, eighteen of them one lane's
-// device entries, and every polled state moved onto a watch adds its own.
-constexpr int kSlotBits = 11;
+// probes under two slots. A name watch, class-scoped or not, holds two keyed slots (its placeholder
+// and its resolved key), so the name table takes 1536 name watches. At 2048 slots the budget was 384:
+// a two-peer smoke held 163-166 per peer, but every lane and every polled state moved onto a watch
+// adds its own, and once the startup registrations passed the cap the rest were refused, or resolved
+// dead, behind a single log line, leaving door, light-group, toggle and container watches silently
+// inert after a join. The size grows, the load cap does not, so lookups stay lock-free with the same
+// probe lengths; the whole-table scans (the re-watch search, the live and settled questions, the
+// resolve) and the tables' static footprint grow fourfold.
+// Adapted from ElvardFIC/WatchersOfTheVoid src/votv-coop/src/ue_wrap/core/script_gate_detail.h (MIT).
+constexpr int kSlotBits = 13;
 constexpr int kSlots = 1 << kSlotBits;
 constexpr int kMaxKeyed = kSlots * 3 / 8;
 
