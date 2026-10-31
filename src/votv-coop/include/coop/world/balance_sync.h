@@ -24,13 +24,15 @@ namespace coop::balance_sync {
 
 void SetSession(coop::net::Session* session);
 
-// Per-tick (net_pump game thread): on the HOST, poll Points + broadcast BalanceSync on
-// change; on a CLIENT, retry applying the latest pending host balance until the saveSlot
-// resolves (a connect-edge sync can arrive before the gamemode loads). No-op when not
-// connected.
+// Per-tick (net_pump game thread): on the HOST, poll Points + send BalanceSync to every ready
+// slot that has not ACCEPTED the current value (or has an undelivered SendCurrentToSlot request);
+// a refused send stays owed and is retried next tick. On a CLIENT, retry applying the latest
+// pending host balance (write + HUD repaint) until the saveSlot resolves (a connect-edge sync can
+// arrive before the gamemode loads). No-op when not connected.
 void Tick();
 
-// HOST: send the current balance to ONE slot, right now. Two callers, one reason -- the
+// HOST: send the current balance to ONE slot, right now, or record it as owed so Tick retries
+// it (slot not ready, Points unresolved, send refused). Two callers, one reason -- the
 // change-polled broadcast in Tick() fires only when the host's Points MOVES, so anything that needs
 // a specific peer to converge while the value is STATIC has to say so directly:
 //   * the connect edge, since a joiner's balance would otherwise stay wrong until the host next
@@ -54,7 +56,7 @@ void ApplyFromHost(int32_t total);
 // from the render thread (the menu).
 void CreditLocal(int32_t amount);
 
-// Reset the broadcast dedup on session teardown (so a reconnect re-broadcasts).
+// Reset the per-slot delivery rows and the client pending mirror on session teardown.
 void OnDisconnect();
 
 }  // namespace coop::balance_sync
