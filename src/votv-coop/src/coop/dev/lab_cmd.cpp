@@ -579,6 +579,11 @@ std::string Widgets(void* root, const std::string& filter) {
             if (!inside) continue;
         } else if (!sUserWidget || !R::IsDescendantOfAny(R::ClassOf(obj), &sUserWidget, 1, 32)) {
             continue;
+        } else if (filter.empty()) {
+            // The screens themselves: a user widget nested in another's tree (a slider of a server
+            // minigame, a row of a list) is listed under its owner, with a target or a filter.
+            void* outer = R::OuterOf(obj);
+            if (outer && R::ClassNameOf(outer) == L"WidgetTree") continue;
         }
         const std::string line = Narrow(cn) + " " + Narrow(name);
         if (!filter.empty() && Lower(line).find(filter) == std::string::npos) continue;
@@ -1140,7 +1145,7 @@ void Run(long long id, const std::string& verb, const std::string& rest) {
         void* obj = Target(t);
         if (!obj) { Answer(id, false, "drag: no target " + t); return; }
         const ActionPair ap = ActionEvents(obj, action);
-        if (!ap.press) { Answer(id, false, "drag: no press event for " + action + " on " + t); return; }
+        if (ap.press.empty()) { Answer(id, false, "drag: no press event for " + action + " on " + t); return; }
         const auto until = Clock::now() + std::chrono::milliseconds(static_cast<int>(secs * 1000.f));
         std::string axes;
         while (in >> kv) {
@@ -1156,10 +1161,11 @@ void Run(long long id, const std::string& verb, const std::string& rest) {
             g_timed.push_back(tm);
             axes += " " + kv;
         }
-        const bool ok = CallInput(obj, ap.press, false, 0.f);
-        if (ap.release) {
+        bool ok = true;
+        for (void* fn : ap.press) ok = CallInput(obj, fn, false, 0.f) && ok;  // every bound row, as press does
+        for (void* fn : ap.release) {
             Timed tm;
-            tm.obj = obj; tm.idx = R::InternalIndexOf(obj); tm.fn = ap.release; tm.axis = false;
+            tm.obj = obj; tm.idx = R::InternalIndexOf(obj); tm.fn = fn; tm.axis = false;
             tm.until = until;
             tm.what = "drag " + action;
             g_timed.push_back(tm);
