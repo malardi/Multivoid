@@ -2,6 +2,8 @@
 
 #include "coop/dev/lab_cmd.h"
 
+#include "coop/dev/lab_window.h"   // window show|hide, type (the parked window's own messages)
+
 #include "coop/element/portable_identity.h"
 
 #include "coop/net/session.h"
@@ -156,6 +158,24 @@ void* Target(const std::string& t) {
     if (t.rfind("near:", 0) == 0) {  // the nearest live actor whose class name holds the text
         const auto v = ActorsAround(Lower(t.substr(5)), 1e9f);
         return v.empty() ? nullptr : v.front().obj;
+    }
+    if (t.rfind("obj:", 0) == 0) {
+        // obj:<Name>[@<Class>]: the first live object of exactly that name, and with @ only one whose
+        // outer chain holds an object of that class -- a widget the designer left unexposed (no
+        // variable to chain to), named inside the user widget that owns it: obj:Button_3@laptopUI_C.
+        std::string name = t.substr(4), owner;
+        const size_t at = name.find('@');
+        if (at != std::string::npos) { owner = name.substr(at + 1); name = name.substr(0, at); }
+        const std::wstring wname = Wide(name), wowner = Wide(owner);
+        const int32_t n = R::NumObjects();
+        for (int32_t i = 0; i < n; ++i) {
+            void* obj = R::ObjectAt(i);
+            if (!obj || !R::IsLive(obj) || R::ToString(R::NameOf(obj)) != wname) continue;
+            if (owner.empty()) return obj;
+            for (void* o = R::OuterOf(obj); o; o = R::OuterOf(o))
+                if (R::ClassNameOf(o) == wowner) return obj;
+        }
+        return nullptr;
     }
     return nullptr;
 }
@@ -500,6 +520,177 @@ std::string Funcs(const std::string& t, const std::string& filter) {
     }
     WriteText(PathOf(L"_funcs.txt"), o.str());
     return std::to_string(n) + " function(s) in " + Narrow(g_tag) + "_funcs.txt";
+}
+
+
+// ---- screens: the widgets a player clicks, reached without a mouse ---------------------------------
+// A UMG button's click is its OnClicked multicast delegate broadcast: every function the screen's
+// blueprint bound to it (BndEvt__<Button>_..._OnButtonClickedEvent) runs, which is all a mouse click
+// on it does past Slate's hit test. The lab copy's window is off-screen and its cursor is the owner's,
+// so the hit test is the one part a lab click skips; the screen's own logic runs whole.
+
+// FScriptDelegate (4.27): the bound object's weak pointer {ObjectIndex, SerialNumber} and the
+// function's FName; a multicast delegate's invocation list is a TArray of them.
+struct ScriptDelegate { int32_t objIdx; int32_t serial; R::FName fn; };
+static_assert(sizeof(ScriptDelegate) == 16, "FScriptDelegate is 16 bytes in 4.27");
+
+int Broadcast(void* obj, const std::wstring& delegateName, std::string& out) {
+    const int32_t off = R::FindPropertyOffset(R::ClassOf(obj), delegateName.c_str());
+    if (off < 0) { out = " no delegate " + Narrow(delegateName); return -1; }
+    struct Arr { ScriptDelegate* data; int32_t num; int32_t max; };
+    const Arr& arr = *reinterpret_cast<const Arr*>(static_cast<uint8_t*>(obj) + off);
+    // A copy first: a handler may rebind the button (a screen that swaps its page does).
+    std::vector<ScriptDelegate> list(arr.data, arr.data + (std::max)(0, (std::min)(arr.num, 64)));
+    int ran = 0;
+    for (const ScriptDelegate& d : list) {
+        void* target = R::ResolveWeakObject(d.objIdx, d.serial);
+        const std::wstring fnName = R::ToString(d.fn);
+        void* fn = target ? R::FindDispatchFunction(R::ClassOf(target), fnName.c_str(), nullptr) : nullptr;
+        out += " " + Narrow(fnName) + (fn ? "" : "(gone)");
+        if (!fn) continue;
+        ue_wrap::ParamFrame f(fn);  // a click's signature has no parameters; any other stays zeroed
+        if (!f.valid()) continue;
+        R::SetGameAttributedDepth(1);  // the player's own act: the sync lanes see it as a change to send
+        if (ue_wrap::Call(target, f)) ++ran;
+        R::SetGameAttributedDepth(0);
+    }
+    return ran;
+}
+
+// widgets: with no target, every live user widget (a screen, a menu, a HUD part) by class; with one,
+// every object inside it (its widget tree: buttons, text, edit boxes), each with its class, and a
+// button's bound click count. Into <tag>_widgets.txt.
+std::string Widgets(void* root, const std::string& filter) {
+    static void* sUserWidget = nullptr;
+    if (!sUserWidget) sUserWidget = R::FindClass(L"UserWidget");
+    std::ostringstream o;
+    int n = 0;
+    const int32_t count = R::NumObjects();
+    for (int32_t i = 0; i < count; ++i) {
+        void* obj = R::ObjectAt(i);
+        if (!obj || obj == root || !R::IsLive(obj)) continue;
+        const std::wstring name = R::ToString(R::NameOf(obj));
+        if (R::NameStartsWith(R::NameOf(obj), L"Default__")) continue;
+        const std::wstring cn = R::ClassNameOf(obj);
+        if (root) {
+            bool inside = false;
+            int depth = 0;
+            for (void* p = R::OuterOf(obj); p && depth < 8 && !inside; p = R::OuterOf(p), ++depth) inside = (p == root);
+            if (!inside) continue;
+        } else if (!sUserWidget || !R::IsDescendantOfAny(R::ClassOf(obj), &sUserWidget, 1, 32)) {
+            continue;
+        }
+        const std::string line = Narrow(cn) + " " + Narrow(name);
+        if (!filter.empty() && Lower(line).find(filter) == std::string::npos) continue;
+        o << line;
+        const int32_t clickOff = R::FindPropertyOffset(R::ClassOf(obj), L"OnClicked");
+        if (clickOff >= 0) o << "  OnClicked n=" << *reinterpret_cast<const int32_t*>(static_cast<uint8_t*>(obj) + clickOff + 8);
+        if (void* outer = R::OuterOf(obj)) o << "  in " << Narrow(R::ClassNameOf(outer)) << ":" << Narrow(R::ToString(R::NameOf(outer)));
+        o << "\r\n";
+        if (++n >= 2000) break;
+    }
+    WriteText(PathOf(L"_widgets.txt"), o.str());
+    return std::to_string(n) + " widget(s) in " + Narrow(g_tag) + "_widgets.txt";
+}
+
+
+// ---- watches: named values written into the state file every second, for comparing peers ---------
+// The same name watched on the host and on the client gives the lab's `compare` a pair to hold side by
+// side: a door's open flag, a disc's file count, a prop's location. The target is resolved once and
+// kept while it lives (a near: search every second would cost frames the fps line then blames on us).
+struct Watch {
+    std::string name, target, prop;
+    void* obj = nullptr;
+    int32_t idx = -1;
+};
+std::vector<Watch> g_watches;
+
+std::string WatchValue(Watch& w) {
+    if (!w.obj || !R::IsLiveByIndex(w.obj, w.idx)) {
+        w.obj = Target(w.target);
+        w.idx = w.obj ? R::InternalIndexOf(w.obj) : -1;
+    }
+    if (!w.obj) return "-";
+    char b[96];
+    if (w.prop == "@loc" || w.prop == "@rot") {
+        if (w.prop == "@loc") {
+            ue_wrap::FVector l{};
+            if (!ue_wrap::engine::TryGetActorLocation(w.obj, l)) return "?";
+            std::snprintf(b, sizeof(b), "%.0f %.0f %.0f", l.X, l.Y, l.Z);
+        } else {
+            ue_wrap::FRotator r{};
+            if (!ue_wrap::engine::TryGetActorRotation(w.obj, r)) return "?";
+            std::snprintf(b, sizeof(b), "%.0f %.0f %.0f", r.Pitch, r.Yaw, r.Roll);
+        }
+        return b;
+    }
+    if (w.prop == "@live") return "1";
+    if (w.prop == "@class") return Narrow(R::ClassNameOf(w.obj));
+    return ReadValue(R::ClassOf(w.obj), w.obj, Wide(w.prop));
+}
+
+
+// ---- smoothness: how a peer's puppet moves here, frame by frame -------------------------------------
+// The eye's complaint about a remote body is a step: a frame it jumps (a late packet caught up), a run
+// of frames it stands while it should walk (the buffer ran dry), a speed that changes every frame (the
+// interpolation hunting). Each frame's displacement is kept for the second and reduced to those three
+// at the state write, so a run can say "smooth" with numbers instead of a screenshot.
+struct Track {
+    bool have = false;
+    ue_wrap::FVector last{};
+    std::chrono::steady_clock::time_point lastAt{};
+    std::vector<float> d, dt;  // this second's per-frame displacement (cm) and frame time (s)
+};
+Track g_track[coop::players::kMaxPeers];
+
+void SamplePuppets(std::chrono::steady_clock::time_point now) {
+    for (int slot = 0; slot < coop::players::kMaxPeers; ++slot) {
+        Track& t = g_track[slot];
+        auto& p = coop::puppet_drive::Puppet(slot);
+        ue_wrap::FVector l{};
+        if (!p.valid() || !p.TryGetLocation(l)) { t = Track{}; continue; }
+        if (t.have && t.d.size() < 1000) {
+            const float dx = l.X - t.last.X, dy = l.Y - t.last.Y, dz = l.Z - t.last.Z;
+            t.d.push_back(std::sqrt(dx * dx + dy * dy + dz * dz));
+            t.dt.push_back(static_cast<float>(std::chrono::duration<double>(now - t.lastAt).count()));
+        }
+        t.have = true;
+        t.last = l;
+        t.lastAt = now;
+    }
+}
+
+// One line per puppet: frames, mean speed, the mean and worst frame-to-frame change of speed, the
+// frames that jumped (over four times the median step and 10 cm), and the frames it stood still while
+// the second's mean speed says it walks.
+std::string SmoothLines() {
+    std::ostringstream o;
+    for (int slot = 0; slot < coop::players::kMaxPeers; ++slot) {
+        Track& t = g_track[slot];
+        if (t.d.size() < 2) { t.d.clear(); t.dt.clear(); continue; }
+        double sumD = 0, sumT = 0;
+        for (size_t i = 0; i < t.d.size(); ++i) { sumD += t.d[i]; sumT += t.dt[i]; }
+        const double speed = sumT > 0 ? sumD / sumT : 0;
+        std::vector<float> sorted = t.d;
+        std::nth_element(sorted.begin(), sorted.begin() + static_cast<long>(sorted.size() / 2), sorted.end());
+        const float median = sorted[sorted.size() / 2];
+        int pops = 0, still = 0;
+        double dvSum = 0, dvMax = 0, prevV = -1;
+        for (size_t i = 0; i < t.d.size(); ++i) {
+            if (t.d[i] > 4.f * median && t.d[i] > 10.f) ++pops;
+            if (speed > 30.0 && t.d[i] < 0.01f) ++still;
+            const double v = t.dt[i] > 0 ? t.d[i] / t.dt[i] : 0;
+            if (prevV >= 0) { const double dv = std::fabs(v - prevV); dvSum += dv; dvMax = (std::max)(dvMax, dv); }
+            prevV = v;
+        }
+        char b[192];
+        std::snprintf(b, sizeof(b), "smooth %d n=%zu speed=%.0f dv=%.0f dvmax=%.0f pops=%d still=%d\r\n", slot,
+                      t.d.size(), speed, dvSum / static_cast<double>(t.d.size() - 1), dvMax, pops, still);
+        o << b;
+        t.d.clear();
+        t.dt.clear();
+    }
+    return o.str();
 }
 
 void Run(long long id, const std::string& verb, const std::string& rest) {
@@ -900,6 +1091,98 @@ void Run(long long id, const std::string& verb, const std::string& rest) {
     } else if (verb == "log") {
         UE_LOGI("[LAB] ---- %s ----", rest.c_str());
         Answer(id, true, "log");
+    } else if (verb == "window") {
+        // window show|hide: a copy launched hidden brought onto the screen (still not activated) for a
+        // look, or parked off it again.
+        std::string v;
+        in >> v;
+        const bool ok = lab_window::SetHidden(v != "show");
+        Answer(id, ok, ok ? "window " + v : std::string("window: this copy was not launched hidden"));
+    } else if (verb == "widgets") {
+        // widgets [target|-] [text]: the live user widgets, or the widgets inside one, to <tag>_widgets.txt.
+        std::string t, filter;
+        in >> t >> filter;
+        void* root = nullptr;
+        if (!t.empty() && t != "-") {
+            root = Target(t);
+            if (!root) { Answer(id, false, "widgets: no target " + t); return; }
+        }
+        Answer(id, true, "widgets " + t + ": " + Widgets(root, Lower(filter)));
+    } else if (verb == "click") {
+        // click <target> [delegate]: the button's OnClicked (or the named delegate: OnPressed, OnReleased,
+        // OnHovered) broadcast, as the mouse's click on it does.
+        std::string t, del;
+        in >> t >> del;
+        if (del.empty()) del = "OnClicked";
+        void* obj = Target(t);
+        if (!obj) { Answer(id, false, "click: no target " + t); return; }
+        std::string out;
+        const int ran = Broadcast(obj, Wide(del), out);
+        Answer(id, ran > 0, "click " + t + " " + del + ": " + std::to_string((std::max)(ran, 0)) + " handler(s)" + out);
+    } else if (verb == "focus") {
+        // focus <target>: the widget takes Slate's keyboard focus (an edit box before `type`).
+        std::string t;
+        in >> t;
+        void* obj = Target(t);
+        Answer(id, obj && CallNoParams(obj, L"SetKeyboardFocus"), "focus " + t);
+    } else if (verb == "type") {
+        // type <text>: the characters, and {enter} {tab} {back} {esc} {up} {down} {left} {right} {space}
+        // {del} as keys, posted to the game window for the focused widget, as the keyboard sends them.
+        const int n = lab_window::PostText(Wide(rest));
+        Answer(id, n > 0, "type: " + std::to_string(n) + " message(s) posted");
+    } else if (verb == "drag") {
+        // drag <target> <action> <seconds> <axis>=<value> ...: the action held for the seconds while each
+        // named axis is pushed for the same time -- a button held while the mouse moves (a brush across
+        // a window, a lever pulled through its arc).
+        std::string t, action, kv;
+        float secs = 1.f;
+        in >> t >> action >> secs;
+        void* obj = Target(t);
+        if (!obj) { Answer(id, false, "drag: no target " + t); return; }
+        const ActionPair ap = ActionEvents(obj, action);
+        if (!ap.press) { Answer(id, false, "drag: no press event for " + action + " on " + t); return; }
+        const auto until = Clock::now() + std::chrono::milliseconds(static_cast<int>(secs * 1000.f));
+        std::string axes;
+        while (in >> kv) {
+            const size_t eq = kv.find('=');
+            if (eq == std::string::npos) continue;
+            const auto ev = InputEvents(obj, true, kv.substr(0, eq));
+            if (ev.empty()) { Answer(id, false, "drag: no InpAxisEvt_" + kv.substr(0, eq) + " on " + t); return; }
+            Timed tm;
+            tm.obj = obj; tm.idx = R::InternalIndexOf(obj); tm.fn = ev[0]; tm.axis = true;
+            tm.value = std::strtof(kv.c_str() + eq + 1, nullptr);
+            tm.until = until;
+            tm.what = "drag axis " + kv;
+            g_timed.push_back(tm);
+            axes += " " + kv;
+        }
+        const bool ok = CallInput(obj, ap.press, false, 0.f);
+        if (ap.release) {
+            Timed tm;
+            tm.obj = obj; tm.idx = R::InternalIndexOf(obj); tm.fn = ap.release; tm.axis = false;
+            tm.until = until;
+            tm.what = "drag " + action;
+            g_timed.push_back(tm);
+        }
+        Answer(id, ok, "drag " + t + " " + action + " for " + std::to_string(secs) + " s with" + (axes.empty() ? " no axis" : axes));
+    } else if (verb == "watch") {
+        // watch <name> <target> <property|@loc|@rot|@live|@class>: a line "watch <name> <value>" in the
+        // state file every second, until unwatch.
+        Watch w;
+        in >> w.name >> w.target >> w.prop;
+        if (w.name.empty() || w.target.empty() || w.prop.empty()) { Answer(id, false, "watch <name> <target> <prop>"); return; }
+        g_watches.erase(std::remove_if(g_watches.begin(), g_watches.end(), [&](const Watch& x) { return x.name == w.name; }),
+                        g_watches.end());
+        g_watches.push_back(w);
+        Answer(id, true, "watch " + w.name + " = " + WatchValue(g_watches.back()));
+    } else if (verb == "unwatch") {
+        std::string name;
+        in >> name;
+        const size_t before = g_watches.size();
+        if (name.empty() || name == "all") g_watches.clear();
+        else g_watches.erase(std::remove_if(g_watches.begin(), g_watches.end(), [&](const Watch& x) { return x.name == name; }),
+                             g_watches.end());
+        Answer(id, true, "unwatch " + std::to_string(before - g_watches.size()));
     } else {
         Answer(id, false, "unknown verb '" + verb + "'");
     }
@@ -1024,6 +1307,9 @@ void WriteState() {
         std::snprintf(buf, sizeof(buf), "puppet %d %.0f %.0f %.0f\r\n", slot, l.X, l.Y, l.Z);
         o << buf;
     }
+    o << SmoothLines();
+    for (Watch& w : g_watches) o << "watch " << w.name << " " << WatchValue(w) << "\r\n";
+    o << "window " << (lab_window::Hidden() ? "hidden" : "shown") << "\r\n";
     const std::wstring tmp = PathOf(L"_state.tmp");
     if (FILE* f = _wfopen(tmp.c_str(), L"wb")) {
         const std::string t = o.str();
@@ -1064,6 +1350,7 @@ void Tick() {
     if (now >= g_nextPoll) { g_nextPoll = now + std::chrono::milliseconds(200); Poll(); }
     RunQueue(now);
     TickTimed(now);
+    SamplePuppets(now);
     if (g_keepFed && now >= g_nextFeed) { g_nextFeed = now + std::chrono::seconds(5); Feed(); }
     if (now >= g_nextState) { g_nextState = now + std::chrono::seconds(1); WriteState(); }
 }

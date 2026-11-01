@@ -383,6 +383,7 @@ set(VOTVCOOP_SOURCES
     src/coop/world/dimension_travel.cpp
     src/coop/comms/log_mirror.cpp
     src/coop/dev/lab_cmd.cpp
+    src/coop/dev/lab_window.cpp
     src/coop/player/damage_ledger.cpp
     src/coop/creatures/walker_mirror.cpp
     src/coop/props/prop_synth_key.cpp

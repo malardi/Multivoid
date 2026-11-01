@@ -18,6 +18,7 @@
 #include "ui/game_build_dialog.h"    // the popup naming a game this Multivoid was not made for
 #include "ui/native_text_field.h"   // its un-gated editing selftest
 #include "coop/build_trust/build_trust.h"  // ComputeSelf -- this DLL's hash and type
+#include "coop/dev/lab_window.h"            // a lab copy's windows parked off-screen from the start
 #include "coop/game_build/game_build.h"    // which game build runs, and what it means for us
 #include "coop/net/protocol.h"  // kProtocolVersion -- the b<N> build rev in the banner
 #include "coop/version.h"
@@ -159,6 +160,9 @@ void StandDownUnsupportedBuild() {
 
 DWORD WINAPI BootThread(LPVOID rawTag) {
     const char* entryTag = static_cast<const char*>(rawTag);
+    // First of all, before the engine shows its window: a copy the test lab launched hidden
+    // (VOTVCOOP_LAB_HIDE=1) keeps every window off the owner's screen. Inert in a player's launch.
+    coop::dev::lab_window::Start();
     WriteMarker(entryTag);
     UE_LOGI("==== %s ====", coop::version::kDisplayLabel);
     // The Paper-pair identity line: game target + build number (= kProtocolVersion).
