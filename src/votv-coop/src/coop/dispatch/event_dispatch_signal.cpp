@@ -29,6 +29,7 @@
 #include "coop/props/safe_sync.h"  // SafeUnlock
 #include "coop/world/media_sync.h"  // MediaState
 #include "coop/props/prop_fire_sync.h"  // PropFire
+#include "coop/interactables/kitchen_sync.h"  // KitchenState, KitchenIntent
 #include "coop/world/radio_sync.h"  // RadioState
 #include "coop/interactables/drive_payload_sync.h"  // DrivePayload
 #include "coop/interactables/drive_sync.h"       // DriveSlotState
@@ -301,6 +302,24 @@ bool HandleSignalEvent(const net::Session::ReliableMessage& msg) {
         net::PropFirePayload fp{};
         std::memcpy(&fp, msg.payload, sizeof(fp));
         coop::prop_fire_sync::Receive(fp, static_cast<uint8_t>(msg.senderPeerSlot));
+        break;
+    }
+    case net::ReliableKind::KitchenState: {
+        // The host's row of one kitchen machine (a Host kind: the receive edge refuses a client's).
+        if (msg.payloadLen != sizeof(net::KitchenStatePayload) || msg.senderPeerSlot != 0) break;
+        net::KitchenStatePayload kp{};
+        std::memcpy(&kp, msg.payload, sizeof(kp));
+        coop::kitchen_sync::OnState(kp);
+        break;
+    }
+    case net::ReliableKind::KitchenIntent: {
+        // A client's use of a kitchen machine, run by the host.
+        if (msg.payloadLen != sizeof(net::KitchenIntentPayload) || msg.senderPeerSlot < 1 ||
+            msg.senderPeerSlot >= net::kMaxPeers)
+            break;
+        net::KitchenIntentPayload ki{};
+        std::memcpy(&ki, msg.payload, sizeof(ki));
+        coop::kitchen_sync::OnIntent(ki, static_cast<uint8_t>(msg.senderPeerSlot));
         break;
     }
     case net::ReliableKind::MediaState: {

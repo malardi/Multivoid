@@ -109,6 +109,7 @@ constexpr ClientAuthorship AuthorshipOf(ReliableKind k) {
     case ReliableKind::CoffeeActionIntent:
     case ReliableKind::RadioState:
     case ReliableKind::PropFire:
+    case ReliableKind::KitchenIntent:
     case ReliableKind::HookState:
     case ReliableKind::HookDestroy:
     case ReliableKind::HookAnchorCommit:
@@ -240,6 +241,7 @@ constexpr ClientAuthorship AuthorshipOf(ReliableKind k) {
     case ReliableKind::MadnessState:
     case ReliableKind::PipeState:
     case ReliableKind::MediaState:
+    case ReliableKind::KitchenState:
         return ClientAuthorship::Host;
     }
     return ClientAuthorship::NotAKind;  // a byte value that names no kind: refused like Host

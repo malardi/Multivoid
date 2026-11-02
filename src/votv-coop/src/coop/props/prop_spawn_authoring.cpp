@@ -2,6 +2,7 @@
 
 #include "coop/props/prop_spawn_authoring.h"
 
+#include "coop/interactables/kitchen_sync.h"  // LidTakeActive -- the grill's lid in a client's hand
 #include "ue_wrap/core/fname_utils.h"     // StringToFName -- the two verb names, once
 #include "ue_wrap/core/game_thread.h"
 #include "ue_wrap/core/hot_path_guard.h"   // UE_ASSERT_GAME_THREAD
@@ -69,6 +70,12 @@ void*    g_holeUberFn = nullptr;
 // ElvardFIC/WatchersOfTheVoid src/votv-coop/src/coop/props/prop_spawn_authoring.cpp (MIT).
 R::FName g_benchUberName{0, 0};   // "ExecuteUbergraph_prop_workbench" on prop_workbench_C
 void*    g_benchUberFn = nullptr;
+// The grill: taking its lid off (actionOptionIndex 7) finishes the lid prop in the grill's own ubergraph, on the
+// taker's machine alone, and the lid bit crosses by kitchen_sync. Admitted only while the local player's take runs
+// (kitchen_sync::LidTakeActive): the same graph also runs a world load's and a remote grill's copies. Adapted from
+// ElvardFIC/WatchersOfTheVoid src/votv-coop/src/coop/props/prop_spawn_authoring.cpp (MIT).
+R::FName g_grillUberName{0, 0};   // "ExecuteUbergraph_prop_bbq" on prop_bbq_C
+void*    g_grillUberFn = nullptr;
 
 // Is `fn` a function named `name` whose owner (a UFunction's Outer is its declaring class) is
 // called `className`? Both compares are allocation-free: the FName pair is two ints, and the
@@ -147,6 +154,8 @@ void Install(bool isClient) {
         g_holeUberName = ue_wrap::fname_utils::StringToFName(L"ExecuteUbergraph_dirthole");
     if (g_benchUberName.ComparisonIndex == 0)
         g_benchUberName = ue_wrap::fname_utils::StringToFName(L"ExecuteUbergraph_prop_workbench");
+    if (g_grillUberName.ComparisonIndex == 0)
+        g_grillUberName = ue_wrap::fname_utils::StringToFName(L"ExecuteUbergraph_prop_bbq");
 
     ue_wrap::facts::Resolved gamemodeSpawn;
     if (!g_gamemodeSpawnFn) {
@@ -189,6 +198,15 @@ bool BirthIsPlayerAuthored() {
     if (caller == g_eatFn) return true;
     if (caller == g_holeUberFn) return true;
     if (caller == g_benchUberFn) return true;
+    if (coop::kitchen_sync::LidTakeActive()) {
+        if (caller == g_grillUberFn) return true;
+        if (!g_grillUberFn && FunctionIs(const_cast<void*>(caller), g_grillUberName, L"prop_bbq_C")) {
+            g_grillUberFn = const_cast<void*>(caller);
+            UE_LOGI("prop_spawn_authoring: the grill's ubergraph is the calling frame of a lid take -- the lid is a "
+                    "player's birth");
+            return true;
+        }
+    }
     if (!g_benchUberFn && FunctionIs(const_cast<void*>(caller), g_benchUberName, L"prop_workbench_C")) {
         g_benchUberFn = const_cast<void*>(caller);
         UE_LOGI("prop_spawn_authoring: the workbench's ubergraph is the calling frame -- a crafted item is a "

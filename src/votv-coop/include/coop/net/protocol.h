@@ -1214,6 +1214,14 @@ enum class ReliableKind : uint8_t {
     // A burning prop (coop/props/prop_fire_sync): a client's ignite or extinguish as a request, the host's fire as
     // the canonical. PropFirePayload. Not relayed. Ported from the WatchersOfTheVoid fork (MIT).
     PropFire = 217,
+    // The kitchen machines' cooking state (coop/interactables/kitchen_sync): the microwave's run, mode and timer, the
+    // mini oven's switch, mode and power, the grill's fire, coals, lid and burn, as the host has them.
+    // KitchenStatePayload. Not relayed. The doors are swinger_pose_sync's, the cremator's lever toggle_verbs'.
+    KitchenState = 220,
+    // A client's use of a kitchen machine (coop/interactables/kitchen_sync): a button press, the grill's ignite or
+    // extinguish, a coal or the lid it just put in or took off; the host runs or writes it on its own copy.
+    // KitchenIntentPayload. Not relayed.
+    KitchenIntent = 221,
 };
 
 #pragma pack(push, 1)
@@ -4164,6 +4172,41 @@ struct PropFirePayload {
     uint16_t playerNo;
 };
 static_assert(sizeof(PropFirePayload) == 48, "PropFirePayload must be 48 bytes");
+
+// One kitchen machine as the host has it (KitchenState): `kind` 1 microwave, 2 mini oven, 3 grill; `flags` the
+// bits of ue_wrap::kitchen_machine::Flag (1 runs or burns, 2 powered, 4 the grill's lid on, 8 its cooking loop).
+// `mode` is the microwave's timeMode or the oven's mode, `remaining`/`timer` the microwave's time and timer, `power`
+// the oven's, `coals`/`burn`/`volume` the grill's. `revision` is the host's, a newer one wins.
+struct KitchenStatePayload {
+    WireKey  key;        // 32 -- the machine's prop key
+    uint32_t revision;   // 4
+    uint8_t  kind;       // 1
+    uint8_t  flags;      // 1
+    uint8_t  pad[2];     // 2
+    int32_t  mode;       // 4
+    float    remaining;  // 4
+    float    timer;      // 4
+    float    power;      // 4
+    int32_t  coals;      // 4
+    float    burn;       // 4
+    float    volume;     // 4
+};
+static_assert(sizeof(KitchenStatePayload) == 68, "KitchenStatePayload must be 68 bytes");
+
+// A client's use of a kitchen machine (KitchenIntent). op 1: a press, `action` its actionOptionIndex action (4, or
+// the microwave's 8) and `control` the oven's aimed control (1 switch, 2 temperature); op 2: light the grill; op 3:
+// put it out; op 4: a coal went in, `value` the client's count after it; op 5: the lid went on (`value` 1) or came
+// off (0). `sequence` counts the sender's intents from 1.
+struct KitchenIntentPayload {
+    WireKey  key;       // 32 -- the machine's prop key
+    uint32_t sequence;  // 4
+    uint8_t  op;        // 1
+    uint8_t  action;    // 1
+    uint8_t  control;   // 1
+    uint8_t  pad;       // 1
+    int32_t  value;     // 4
+};
+static_assert(sizeof(KitchenIntentPayload) == 44, "KitchenIntentPayload must be 44 bytes");
 
 #pragma pack(pop)
 
