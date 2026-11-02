@@ -110,6 +110,7 @@ constexpr ClientAuthorship AuthorshipOf(ReliableKind k) {
     case ReliableKind::RadioState:
     case ReliableKind::PropFire:
     case ReliableKind::HandFire:
+    case ReliableKind::HandExtinguisher:
     case ReliableKind::HookState:
     case ReliableKind::HookDestroy:
     case ReliableKind::HookAnchorCommit:

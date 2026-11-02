@@ -15,6 +15,8 @@
 
 #pragma once
 
+#include "ue_wrap/core/types.h"
+
 namespace ue_wrap::fire_extinguisher {
 
 // Resolve the two class names. Dispatches the string-to-name conversion, so call it from a
@@ -36,5 +38,17 @@ void* MountedExtinguisher(void* mount);
 bool ReadCharge(void* ext, float& out);
 bool ReadSpraying(void* ext, bool& out);
 bool ReadThrusting(void* ext, bool& out);
+
+// Write the charge (0..1.5) or the spray flag; false for anything that is not one. Game thread.
+bool WriteCharge(void* ext, float value);
+bool WriteSpraying(void* ext, bool value);
+
+// A hand display mirror's spray (coop/player/hand_extinguisher_sync). The game's fire() starts a tick that
+// traces from this machine's camera and spends the charge, so a mirror's tick is turned off and only the
+// spray's particle (`eff_ext`) and its sound (`fireExtFire`) are switched; the flag is written to match.
+// AimRemoteSpray points the particle along a puppet's aim. Ported from the WatchersOfTheVoid fork (MIT).
+// Game thread.
+bool SetRemoteSpray(void* ext, bool spraying);
+bool AimRemoteSpray(void* ext, const FRotator& rotation);
 
 }  // namespace ue_wrap::fire_extinguisher

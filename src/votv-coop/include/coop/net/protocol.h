@@ -1217,6 +1217,10 @@ enum class ReliableKind : uint8_t {
     // The flame of the item in a player's hand (coop/player/hand_fire_sync): the owner's sample, tied to its hand
     // generation; the host keeps and relays a client's. HandFirePayload. Ported from the WatchersOfTheVoid fork (MIT).
     HandFire = 230,
+    // The spray and the charge of a fire extinguisher or a pressure washer in a player's hand
+    // (coop/player/hand_extinguisher_sync): the owner's sample, tied to its hand generation; the host keeps and
+    // relays a client's. HandExtinguisherPayload. Ported from the WatchersOfTheVoid fork (MIT).
+    HandExtinguisher = 231,
 };
 
 #pragma pack(push, 1)
@@ -4177,6 +4181,21 @@ struct HandFirePayload {
     uint16_t reserved;  // zero
 };
 static_assert(sizeof(HandFirePayload) == 20, "HandFirePayload must be 20 bytes");
+
+// The extinguisher or washer in `slot`'s hand (HandExtinguisher). tool 0: an extinguisher, `charge` its life
+// (0..1.5); tool 1: a washer, `charge` its water (0..10). `playerNo` names the owner's person; `sequence` is
+// the owner's sample count.
+struct HandExtinguisherPayload {
+    uint8_t  slot;
+    uint8_t  spraying;
+    uint8_t  tool;
+    uint8_t  reserved;  // zero
+    uint32_t generation;
+    uint32_t sequence;
+    float    charge;
+    uint16_t playerNo;
+};
+static_assert(sizeof(HandExtinguisherPayload) == 18, "HandExtinguisherPayload must be 18 bytes");
 
 #pragma pack(pop)
 

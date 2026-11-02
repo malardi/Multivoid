@@ -304,7 +304,7 @@ host. A setting that holds a password is never set or shown by command.
 | `RagdollPose` (stream) | each peer, while ragdolled | pelvis transform and velocity |
 | `Join`, `RosterRow` | each peer; the host | identity, nickname, skin, preferences; who occupies each slot |
 | `SkinChange`, `NameplateChange`, `NickColorChange` | each peer, relayed | the three preferences |
-| `HandItem`, `ItemActivate` | each peer, relayed | the held item's class, its actor's name, its hold slot's item name (the key of the game's item tables) and the hand generation (the owner's number for that actor in the hand, which a lane describing the held item names it by: `HandFire`, the flame of a burning item in the hand); the flashlight state |
+| `HandItem`, `ItemActivate` | each peer, relayed | the held item's class, its actor's name, its hold slot's item name (the key of the game's item tables) and the hand generation (the owner's number for that actor in the hand, which a lane describing the held item names it by: `HandFire`, the flame of a burning item in the hand; `HandExtinguisher`, the spray and charge of an extinguisher or a pressure washer); the flashlight state |
 | `PlayerHit` | host to the hit peer | a parked creature's hit on the peer's puppet: the verb (addDamage or punch) to run on its own player |
 | `SleepState` | a client to the host; the host to all | a rest state with its bed (awake, resting, dreaming); the host's sleeping flag; one peer's rest state relayed |
 | `PlayerInventoryBlob` | both | the per-player profile (items, vitals, standing spot), pre-world |

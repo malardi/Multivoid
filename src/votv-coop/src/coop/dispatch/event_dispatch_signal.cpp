@@ -30,6 +30,7 @@
 #include "coop/world/media_sync.h"  // MediaState
 #include "coop/props/prop_fire_sync.h"  // PropFire
 #include "coop/player/hand_fire_sync.h"  // HandFire
+#include "coop/player/hand_extinguisher_sync.h"  // HandExtinguisher
 #include "coop/world/radio_sync.h"  // RadioState
 #include "coop/interactables/drive_payload_sync.h"  // DrivePayload
 #include "coop/interactables/drive_sync.h"       // DriveSlotState
@@ -310,6 +311,15 @@ bool HandleSignalEvent(const net::Session::ReliableMessage& msg) {
         net::HandFirePayload hf{};
         std::memcpy(&hf, msg.payload, sizeof(hf));
         coop::hand_fire_sync::Receive(hf, static_cast<uint8_t>(msg.senderPeerSlot));
+        break;
+    }
+    case net::ReliableKind::HandExtinguisher: {
+        if (msg.payloadLen != sizeof(net::HandExtinguisherPayload) || msg.senderPeerSlot < 0 ||
+            msg.senderPeerSlot >= net::kMaxPeers)
+            break;
+        net::HandExtinguisherPayload he{};
+        std::memcpy(&he, msg.payload, sizeof(he));
+        coop::hand_extinguisher_sync::Receive(he, static_cast<uint8_t>(msg.senderPeerSlot));
         break;
     }
     case net::ReliableKind::MediaState: {
