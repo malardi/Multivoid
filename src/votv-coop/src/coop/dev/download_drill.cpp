@@ -3,6 +3,7 @@
 #include "coop/dev/download_drill.h"
 
 #include "coop/config/config.h"
+#include "coop/interactables/console_state_sync.h"  // IsResetLogLine: the reset line in this game's language
 #include "coop/interactables/download_arm_sync.h"
 #include "coop/interactables/signal_catch_sync.h"
 #include "coop/net/session.h"
@@ -43,7 +44,6 @@ constexpr int kTagFormCount = 0x44444646;   // 'DDFF'
 constexpr int kTagLogCount  = 0x4444464C;   // 'DDFL'
 UE_FACT_FN(kRowFormDownload, "dev.download_drill", L"analogDScreenTest_C", L"formDownload", Declared);
 UE_FACT_FN(kRowWriteToCoordLog2, "dev.download_drill", L"analogDScreenTest_C", L"writeToCoordLog_2", Declared);
-const wchar_t* const kLogLine = L"Signal data deleted";
 
 enum class HStep : uint8_t { Wait, Catch, CatchWait, Arm, Reset, AwaitLeave, JoinWindow, JoinCatchWait, JoinArm, Done };
 enum class CStep : uint8_t { Ready, Replays, Done };
@@ -60,7 +60,16 @@ uint64_t g_mark = 0;
 bool     g_formWatch = false;
 bool     g_logWatch = false;
 int      g_formBodies = 0;  // formDownload bodies this peer ran (a refused call runs none)
-int      g_resetLines = 0;  // the game's reset line written here, by any writer, counted at the write
+// Every coord-log line written here, by any writer, kept at the write and judged at the count: the reset line is
+// the game's text in the game's language (a translated build writes its own words, not "Signal data deleted"),
+// which console_state_sync learns as the game writes it -- by the count, whatever the order of the two watches.
+std::vector<std::wstring> g_logLines;
+int ResetLines() {
+    int n = 0;
+    for (const std::wstring& l : g_logLines)
+        if (coop::console_state_sync::IsResetLogLine(l)) ++n;
+    return n;
+}
 ue_wrap::space_renderer::SignalRow g_source;
 
 const std::string& Mode() {
@@ -85,8 +94,7 @@ void Abandon(const char* why) {
 void OnFormPost(const sg::Call&) { ++g_formBodies; }
 
 sg::Verdict OnLogPre(const sg::Call& call) {
-    const std::wstring line = CD::ReadCoordLogWrite(call.function, call.locals);
-    if (line.compare(0, ::wcslen(kLogLine), kLogLine) == 0) ++g_resetLines;
+    if (g_logLines.size() < 512) g_logLines.push_back(CD::ReadCoordLogWrite(call.function, call.locals));
     return sg::Verdict::Run;
 }
 
@@ -241,7 +249,7 @@ void ClientReady() {
         return;
     }
     g_formBodies = 0;
-    g_resetLines = 0;
+    g_logLines.clear();
     g_client = CStep::Replays;
 }
 
@@ -285,10 +293,10 @@ void ClientRun(const AS::Counts& c) {
         return;
     }
     // Each replay's own measure: one formDownload body an arm, one reset line a reset, whatever connect row came too.
-    if (static_cast<uint64_t>(g_formBodies) != c.replayedArm || static_cast<uint64_t>(g_resetLines) != c.replayedReset) {
+    if (static_cast<uint64_t>(g_formBodies) != c.replayedArm || static_cast<uint64_t>(ResetLines()) != c.replayedReset) {
         char why[192];
         std::snprintf(why, sizeof(why), "formDownload ran %d time(s) and the reset line was written %d time(s), for %llu "
-                      "arms and %llu resets replayed", g_formBodies, g_resetLines,
+                      "arms and %llu resets replayed", g_formBodies, ResetLines(),
                       static_cast<unsigned long long>(c.replayedArm), static_cast<unsigned long long>(c.replayedReset));
         Fail(why);
         return;
@@ -296,10 +304,10 @@ void ClientRun(const AS::Counts& c) {
     // This client's own arm and reset: the machine is the host's, so both are refused and neither body runs.
     const uint64_t refusedBefore = c.refused;
     const int bodiesBefore = g_formBodies;
-    const int linesBefore = g_resetLines;
+    const int linesBefore = ResetLines();
     CD::ArmDownloadFromSignal(0.f, -1);
     CD::CallDeleteActiveSignal();
-    if (AS::LaneCounts().refused != refusedBefore + 2 || g_formBodies != bodiesBefore || g_resetLines != linesBefore ||
+    if (AS::LaneCounts().refused != refusedBefore + 2 || g_formBodies != bodiesBefore || ResetLines() != linesBefore ||
         CD::DownloadMeshValid()) {
         Fail("this client's own formDownload or deleteActiveSignal was not refused");
         return;
@@ -364,7 +372,7 @@ void OnDisconnect() {
     g_saidLife1 = false;
     g_mark = 0;
     g_formBodies = 0;
-    g_resetLines = 0;
+    g_logLines.clear();
 }
 
 }  // namespace coop::dev::download_drill

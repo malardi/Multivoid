@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include <string>
+
 #include "coop/net/protocol.h"
 
 #include <cstdint>
@@ -41,6 +43,10 @@ void OnDeskLogLine(const coop::net::DeskLogLinePayload& p, uint8_t senderSlot);
 // Host: send the current sky snapshot, the desk scalars as an adopt and the committed dish
 // locks to a joining peer at world-ready.
 void QueueConnectBroadcastForSlot(int peerSlot);
+
+// Whether `line` is the game's reset line (deleteActiveSignal's "Signal data deleted"), in English or in the
+// language this peer learned it in when the game wrote it: each peer writes that line itself, so it never ships.
+bool IsResetLogLine(const std::wstring& line);
 
 // Teardown: clear the mirrors; a client restores its native sky roller.
 void OnDisconnect();

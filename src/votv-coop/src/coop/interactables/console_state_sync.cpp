@@ -11,6 +11,8 @@
 #include "ue_wrap/desk/console_desk.h"
 #include "ue_wrap/desk/coords_panel.h"
 #include "ue_wrap/core/log.h"
+#include "ue_wrap/core/script_gate.h"
+#include "ue_wrap/facts/function_row.h"
 #include "ue_wrap/desk/space_renderer.h"
 
 #include <atomic>
@@ -249,6 +251,47 @@ void SendDeskState(coop::net::Session* s, const CD::Scalars& sc, uint8_t adopt, 
 // each client. The other event families are gated on the presser's own inputs or on the ping
 // machine, which never run on a mirror, so they ship as normal producer lines; their volume is
 // bounded by the 1000-char cap at the 1 Hz producer.
+//
+// The reset line is the game's own text in the game's language: the English build writes "Signal data deleted", a
+// translated one (the owner's Russian) its own words, and a filter that knew only the English one shipped the
+// host's translated line to every client, whose own replay of the reset wrote it again -- each reset showed twice
+// on a client's terminal. So the line is also learned where the game writes it: whatever writeToCoordLog_2 writes
+// inside the panel's intComs_signalDeleted (deleteActiveSignal's call into the desk) is the reset line of this
+// peer's language, on the host before its producer diff reads it, on a client as its replay writes it.
+std::vector<std::wstring> g_learnedResetLines;   // at most a few: one per language this process has seen
+int g_inSignalDeleted = 0;                       // nesting of the panel's intComs_signalDeleted bodies
+
+UE_FACT_FN(kRowSignalDeleted, "console_state_sync", L"analogDScreenTest_C", L"intComs_signalDeleted", Declared);
+UE_FACT_FN(kRowWriteCoordLog, "console_state_sync", L"analogDScreenTest_C", L"writeToCoordLog_2", Declared);
+constexpr int kResetTag = 0x5253544C;  // 'RSTL'
+bool g_resetWatch = false, g_logWatch = false;
+
+ue_wrap::script_gate::Verdict OnSignalDeletedPre(const ue_wrap::script_gate::Call&) {
+    ++g_inSignalDeleted;
+    return ue_wrap::script_gate::Verdict::Run;
+}
+void OnSignalDeletedPost(const ue_wrap::script_gate::Call&) {
+    if (g_inSignalDeleted > 0) --g_inSignalDeleted;
+}
+ue_wrap::script_gate::Verdict OnCoordLogPre(const ue_wrap::script_gate::Call& call) {
+    if (g_inSignalDeleted <= 0) return ue_wrap::script_gate::Verdict::Run;
+    const std::wstring line = CD::ReadCoordLogWrite(call.function, call.locals);
+    if (line.empty()) return ue_wrap::script_gate::Verdict::Run;
+    for (const std::wstring& l : g_learnedResetLines)
+        if (l == line) return ue_wrap::script_gate::Verdict::Run;
+    if (g_learnedResetLines.size() < 4) {
+        g_learnedResetLines.push_back(line);
+        UE_LOGI("console_state: learned this game's reset line (%zu chars) -- each peer writes it itself", line.size());
+    }
+    return ue_wrap::script_gate::Verdict::Run;
+}
+
+void ArmResetLineWatches() {
+    if (!g_resetWatch)
+        g_resetWatch = ue_wrap::script_gate::WatchName(kRowSignalDeleted, kResetTag, &OnSignalDeletedPre, &OnSignalDeletedPost);
+    if (!g_logWatch) g_logWatch = ue_wrap::script_gate::WatchName(kRowWriteCoordLog, kResetTag, &OnCoordLogPre, nullptr);
+}
+
 bool IsPeerWrittenLogLine(const std::wstring& line) {
     static const wchar_t* const kPrefixes[] = {
         L"CDOWN: [",
@@ -256,6 +299,8 @@ bool IsPeerWrittenLogLine(const std::wstring& line) {
     };
     for (const wchar_t* p : kPrefixes)
         if (line.compare(0, ::wcslen(p), p) == 0) return true;
+    for (const std::wstring& l : g_learnedResetLines)
+        if (line == l) return true;
     return false;
 }
 
@@ -317,9 +362,17 @@ void Install(coop::net::Session* session) {
     g_session.store(session, std::memory_order_release);
 }
 
+bool IsResetLogLine(const std::wstring& line) {
+    if (line.compare(0, 19, L"Signal data deleted") == 0) return true;
+    for (const std::wstring& l : g_learnedResetLines)
+        if (line == l) return true;
+    return false;
+}
+
 void Tick() {
     auto* s = g_session.load(std::memory_order_acquire);
     if (!s || !s->running()) return;
+    ArmResetLineWatches();
     const bool srUp = SR::EnsureResolved() && SR::Instance();
     const bool cdUp = CD::EnsureResolved() && CD::Instance();
     if (!srUp && !cdUp) return;
