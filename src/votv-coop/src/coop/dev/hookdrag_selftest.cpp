@@ -93,6 +93,7 @@ constexpr float    kPickRadiusCm =  1500.f;
 // The leg out ends at a point a NavMesh route reaches that is this much farther from the prop than the
 // walker stood when it planted, so the cable (the length it had at the plant) is overrun by at least this.
 constexpr float    kWalkCm       =  1200.f;
+constexpr int      kRingPoints   =    16;   // the ring's points asked for that route, every 22.5 degrees
 constexpr float    kArriveCm     =   100.f; // a leg ends this close to its point (the runs on record
                                             // ended 7..22 cm from the start they walked back to)
 constexpr float    kRestCm       =     1.f; // a sample this close to the one before it (4 cm/s) is a prop at
@@ -311,9 +312,15 @@ bool BeginWalkOut(void* player, void* target, const char*& why) {
     if (!E::TryGetActorLocation(target, tl)) { why = "the prop's position could not be read"; return false; }
     const float dx = g_walkBase.X - tl.X, dy = g_walkBase.Y - tl.Y;
     const float ring = std::sqrt(dx * dx + dy * dy) + kWalkCm;
+    // ReachableStandpoints asks `count` points spread round the ring and returns those a route reaches,
+    // shortest first: one point asked was the ring's east point alone, and a wall or the NavMesh's edge
+    // there failed the run wherever the rest of the ring stood open. The shortest of the reachable ones.
     const std::vector<ue_wrap::FVector> points =
-        coop::director::ReachableStandpoints(player, tl, ring, 1, kArriveCm);
-    if (points.empty()) { why = "no NavMesh route reaches a point beyond the prop's cable"; return false; }
+        coop::director::ReachableStandpoints(player, tl, ring, kRingPoints, kArriveCm);
+    if (points.empty()) {
+        why = "no NavMesh route reaches any of the ring's points beyond the prop's cable";
+        return false;
+    }
     UE_LOGI("hookdrag_selftest: WALK OUT by the director to (%.1f,%.1f,%.1f), %.0f cm from the prop, from "
             "(%.1f,%.1f,%.1f)", points[0].X, points[0].Y, points[0].Z, ring, g_walkBase.X, g_walkBase.Y,
             g_walkBase.Z);
