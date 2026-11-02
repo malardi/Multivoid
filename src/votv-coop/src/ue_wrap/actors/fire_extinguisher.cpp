@@ -2,10 +2,14 @@
 
 #include "ue_wrap/actors/fire_extinguisher.h"
 
+#include "ue_wrap/core/call.h"
+#include "ue_wrap/core/component_calls.h"
 #include "ue_wrap/core/fname_utils.h"
+#include "ue_wrap/engine/engine.h"
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/core/sdk_profile.h"
 
+#include <cmath>
 #include <cstdint>
 
 namespace ue_wrap::fire_extinguisher {
@@ -24,7 +28,7 @@ struct Member {
     uint8_t mask = 0;   // a bool's mask; 0 for a non-bool
     bool    tried = false;
 };
-Member g_mountHeld, g_charge, g_spraying, g_thrusting;
+Member g_mountHeld, g_charge, g_spraying, g_thrusting, g_effect, g_audio;
 
 bool SameName(const R::FName& a, const R::FName& b) {
     return a.ComparisonIndex == b.ComparisonIndex && a.Number == b.Number;
@@ -99,6 +103,54 @@ bool ReadSpraying(void* ext, bool& out) {
 
 bool ReadThrusting(void* ext, bool& out) {
     return ReadBool(ext, g_thrusting, P::name::FireExtThrustingProp, out);
+}
+
+bool WriteCharge(void* ext, float value) {
+    if (!std::isfinite(value) || value < 0.f || value > 1.5f || !IsExtinguisher(ext) ||
+        !Resolve(g_charge, ext, P::name::FireExtChargeProp, false))
+        return false;
+    *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(ext) + g_charge.offset) = value;
+    return true;
+}
+
+bool WriteSpraying(void* ext, bool value) {
+    if (!IsExtinguisher(ext) || !Resolve(g_spraying, ext, P::name::FireExtSprayingProp, true)) return false;
+    uint8_t* byte = reinterpret_cast<uint8_t*>(ext) + g_spraying.offset;
+    *byte = value ? static_cast<uint8_t>(*byte | g_spraying.mask) : static_cast<uint8_t>(*byte & ~g_spraying.mask);
+    return true;
+}
+
+namespace {
+// An object member of the extinguisher (a component), or null.
+void* Component(void* ext, Member& m, const wchar_t* name) {
+    if (!Resolve(m, ext, name, false)) return nullptr;
+    void* c = *reinterpret_cast<void* const*>(reinterpret_cast<const uint8_t*>(ext) + m.offset);
+    return c && R::IsLive(c) ? c : nullptr;
+}
+// UAudioComponent::Play(StartTime) or Stop(), resolved on the component's class.
+bool SetAudioPlaying(void* audio, bool playing) {
+    void* fn = R::FindDispatchFunctionCached(R::ClassOf(audio), playing ? L"Play" : L"Stop");
+    ParamFrame f(fn);
+    if (!f.valid() || (playing && !f.Set<float>(L"StartTime", 0.f))) return false;
+    return Call(audio, f);
+}
+}  // namespace
+
+bool SetRemoteSpray(void* ext, bool spraying) {
+    if (!IsExtinguisher(ext) || !R::IsLive(ext)) return false;
+    void* effect = Component(ext, g_effect, L"eff_ext");
+    void* audio = Component(ext, g_audio, L"fireExtFire");
+    if (!effect || !audio) return false;
+    if (!engine::SetActorTickEnabled(ext, false) || !R::IsLive(ext) || !WriteSpraying(ext, spraying)) return false;
+    if (!component_calls::SetActive(effect, spraying, false) || !R::IsLive(ext) || !R::IsLive(audio)) return false;
+    component_calls::SetVolumeMultiplier(audio, .5f);
+    return R::IsLive(audio) && SetAudioPlaying(audio, spraying);
+}
+
+bool AimRemoteSpray(void* ext, const FRotator& rotation) {
+    if (!IsExtinguisher(ext) || !R::IsLive(ext)) return false;
+    void* effect = Component(ext, g_effect, L"eff_ext");
+    return effect && engine::SetComponentWorldRotation(effect, rotation);
 }
 
 }  // namespace ue_wrap::fire_extinguisher

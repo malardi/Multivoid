@@ -153,7 +153,11 @@ void* Target(const std::string& t) {
         void* base = Target(t.substr(0, slash));
         if (!base) return nullptr;
         const int32_t off = R::FindPropertyOffset(R::ClassOf(base), Wide(t.substr(slash + 1)).c_str());
-        return off < 0 ? nullptr : *reinterpret_cast<void**>(static_cast<char*>(base) + off);
+        if (off < 0) return nullptr;
+        // The member may name an object already gone (a torch's flameBase after its own ignite): a dead one is no
+        // target, never a class read through a stale pointer.
+        void* member = *reinterpret_cast<void**>(static_cast<char*>(base) + off);
+        return R::IsLive(member) ? member : nullptr;
     }
     if (t == "player") return coop::players::Registry::Get().Local();
     if (t == "gm") return ue_wrap::world_singleton::Gamemode();
@@ -168,6 +172,12 @@ void* Target(const std::string& t) {
     if (t.rfind("puppet:", 0) == 0) {  // a peer's body here, by slot
         auto& p = coop::puppet_drive::Puppet(std::atoi(t.substr(7).c_str()));
         return p.valid() ? p.GetActor() : nullptr;
+    }
+    if (t.rfind("hand:", 0) == 0) {  // the item in a slot's hand: this peer's own hand actor, or its display mirror
+        const int slot = std::atoi(t.substr(5).c_str());
+        if (slot < 0 || slot >= static_cast<int>(coop::players::kMaxPeers)) return nullptr;
+        if (slot == coop::players::Registry::Get().LocalPeerId()) return coop::hand_item::LocalHandActor();
+        return coop::hand_item::MirrorActorForSlot(static_cast<uint8_t>(slot));
     }
     if (t.rfind("key:", 0) == 0) return coop::prop_key_index::Find(Wide(t.substr(4)));  // a keyed prop by its key
     if (t.rfind("key:", 0) == 0) return coop::prop_key_index::Find(Wide(t.substr(4)));  // a keyed prop by its key
@@ -1267,6 +1277,16 @@ void Run(long long id, const std::string& verb, const std::string& rest) {
         g_grab.id = id;
         g_grab.grab = std::make_unique<coop::director::AimedGrab>(local, obj);
         g_grab.until = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+    } else if (verb == "hold") {
+        // hold <target>: the player's own "Hold Object" with the target -- the hand's pickup (the R key), the world
+        // actor gone and the item in the hotbar hand. On a client a shared prop's pickup is asked of the host, so the
+        // hand fills a round trip later: read hand:<slot> or the state file's hand line after it.
+        std::string t;
+        in >> t;
+        void* obj = Target(t);
+        bool collected = false;
+        const bool ok = obj && local && ue_wrap::engine::CallMainPlayerHoldObject(local, obj, collected);
+        Answer(id, ok, "hold " + t + (collected ? ": collected" : ": not collected (yet)"));
     } else if (verb == "drop") {
         // drop: the hand lets go of what it holds, by the player's own dropGrabObject.
         const bool ok = local && coop::director::CallOnPlayer(local, L"dropGrabObject");
@@ -1574,7 +1594,10 @@ void WriteState() {
     else o << "hand -\r\n";
     for (int slot = 0; slot < coop::players::kMaxPeers; ++slot) {
         const std::wstring held = coop::hand_item::HeldItem(static_cast<uint8_t>(slot));
-        if (!held.empty()) o << "handof " << slot << " " << Narrow(held) << "\r\n";
+        // The hand generation, and on a remote slot the generation of its placed mirror (0: none matches yet).
+        if (!held.empty())
+            o << "handof " << slot << " " << Narrow(held) << " gen=" << coop::hand_item::Generation(static_cast<uint8_t>(slot))
+              << " mirror=" << coop::hand_item::MirrorGeneration(static_cast<uint8_t>(slot)) << "\r\n";
     }
     o << SmoothLines();
     for (Watch& w : g_watches) o << "watch " << w.name << " " << WatchValue(w) << "\r\n";

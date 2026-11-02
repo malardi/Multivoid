@@ -10,7 +10,7 @@
 // The model is MTA's: a ped's current weapon is PLAYER STATE attached to the ped locally on
 // every machine, so the hand item is part of the player's EXPRESSION like skin and nick colour.
 // The owner polls mainPlayer.holding_actor (Aprop_C only -- the trash clump/pile carry keeps its
-// own lane) and broadcasts a small reliable HandItem{class, name, item} on change; every peer keeps a
+// own lane) and broadcasts a small reliable HandItem{class, name, item, generation} on change; every peer keeps a
 // display-only mirror. Nothing goes per-tick on the wire, switch latency is one reliable
 // message, and late join replays per-slot state. All functions game-thread only.
 
@@ -84,6 +84,28 @@ bool IsHandAxisActor(void* actor);
 // player's hand item that this peer performs on that player's behalf -- the host running a
 // client's broom stroke -- runs on it. Game thread only.
 void* MirrorActorForSlot(uint8_t slot);
+
+// Hand GENERATIONS. Each hand edge the owner announces -- a new actor in the hand (a same-class
+// replacement among them: updateHold respawns the actor, and its fire or charge is the new one's), a
+// rename in place, an emptied hand -- takes the owner's next number, and the HandItem carries it. Every
+// peer keeps the number with the state, so a lane describing the item in a hand (its flame, its spray)
+// names the exact item by (slot, generation), and a sample for an item that has since left the hand
+// matches nothing and is dropped. A receiver also drops a HandItem not newer than the one it applied.
+// The owner's count starts at a wall-clock value, so a peer back in a fresh process outnumbers the
+// count its previous process left anywhere. 0 means no current hand.
+//
+// Generation: `slot`'s current hand generation, or 0 when it holds nothing. For this peer's own slot,
+// also 0 while the live hand actor is not the one announced (the tick between an updateHold and its
+// announce). MirrorGeneration: the generation of `slot`'s live display mirror when that mirror is
+// the current one and has been placed on the puppet at least once, else 0. IsMirrorActor: whether
+// `actor` is any slot's live display mirror. All game thread.
+uint32_t Generation(uint8_t slot);
+uint32_t MirrorGeneration(uint8_t slot);
+bool IsMirrorActor(void* actor);
+
+// The generation a HandItem this peer writes itself takes (the hostile drill's forged hand): the next one
+// of its own count, so the owner's next announce still outnumbers it. Game thread only.
+uint32_t ClaimOwnGeneration();
 
 // Whether `slot`'s hand holds an item of the class named `cls`, as its owner last announced. A host
 // asks it of a client's intent that only a held item can author (a keycard's swipe). Game thread

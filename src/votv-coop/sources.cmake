@@ -146,6 +146,8 @@ set(VOTVCOOP_SOURCES
     src/ue_wrap/actors/swinger.cpp
     src/ue_wrap/actors/broom.cpp
     src/ue_wrap/actors/fire_extinguisher.cpp
+    src/ue_wrap/actors/pressure_washer.cpp
+    src/ue_wrap/actors/torch.cpp
     src/ue_wrap/actors/chip_pile.cpp
     src/ue_wrap/engine/engine_pawn.cpp
     src/ue_wrap/engine/engine_physics.cpp
@@ -235,6 +237,8 @@ set(VOTVCOOP_SOURCES
     src/coop/player/nick_color.cpp
     src/coop/player/nickname_arbiter.cpp
     src/coop/player/hand_item.cpp
+    src/coop/player/hand_fire_sync.cpp
+    src/coop/player/hand_extinguisher_sync.cpp
     src/coop/player/hand_history.cpp
     src/coop/player/hand_history_selftest.cpp
     src/coop/player/hand_item_pose.cpp

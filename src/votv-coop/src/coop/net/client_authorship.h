@@ -109,6 +109,8 @@ constexpr ClientAuthorship AuthorshipOf(ReliableKind k) {
     case ReliableKind::CoffeeActionIntent:
     case ReliableKind::RadioState:
     case ReliableKind::PropFire:
+    case ReliableKind::HandFire:
+    case ReliableKind::HandExtinguisher:
     case ReliableKind::WorldDigest:
     case ReliableKind::HookState:
     case ReliableKind::HookDestroy:

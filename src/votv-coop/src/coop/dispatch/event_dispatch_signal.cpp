@@ -29,6 +29,8 @@
 #include "coop/props/safe_sync.h"  // SafeUnlock
 #include "coop/world/media_sync.h"  // MediaState
 #include "coop/props/prop_fire_sync.h"  // PropFire
+#include "coop/player/hand_fire_sync.h"  // HandFire
+#include "coop/player/hand_extinguisher_sync.h"  // HandExtinguisher
 #include "coop/session/desync_watch.h"  // WorldDigest
 #include "coop/world/radio_sync.h"  // RadioState
 #include "coop/interactables/drive_payload_sync.h"  // DrivePayload
@@ -311,6 +313,23 @@ bool HandleSignalEvent(const net::Session::ReliableMessage& msg) {
         net::PropFirePayload fp{};
         std::memcpy(&fp, msg.payload, sizeof(fp));
         coop::prop_fire_sync::Receive(fp, static_cast<uint8_t>(msg.senderPeerSlot));
+        break;
+    }
+    case net::ReliableKind::HandFire: {
+        if (msg.payloadLen != sizeof(net::HandFirePayload) || msg.senderPeerSlot < 0 || msg.senderPeerSlot >= net::kMaxPeers)
+            break;
+        net::HandFirePayload hf{};
+        std::memcpy(&hf, msg.payload, sizeof(hf));
+        coop::hand_fire_sync::Receive(hf, static_cast<uint8_t>(msg.senderPeerSlot));
+        break;
+    }
+    case net::ReliableKind::HandExtinguisher: {
+        if (msg.payloadLen != sizeof(net::HandExtinguisherPayload) || msg.senderPeerSlot < 0 ||
+            msg.senderPeerSlot >= net::kMaxPeers)
+            break;
+        net::HandExtinguisherPayload he{};
+        std::memcpy(&he, msg.payload, sizeof(he));
+        coop::hand_extinguisher_sync::Receive(he, static_cast<uint8_t>(msg.senderPeerSlot));
         break;
     }
     case net::ReliableKind::MediaState: {

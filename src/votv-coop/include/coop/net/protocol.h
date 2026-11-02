@@ -1214,6 +1214,13 @@ enum class ReliableKind : uint8_t {
     // A burning prop (coop/props/prop_fire_sync): a client's ignite or extinguish as a request, the host's fire as
     // the canonical. PropFirePayload. Not relayed. Ported from the WatchersOfTheVoid fork (MIT).
     PropFire = 217,
+    // The flame of the item in a player's hand (coop/player/hand_fire_sync): the owner's sample, tied to its hand
+    // generation; the host keeps and relays a client's. HandFirePayload. Ported from the WatchersOfTheVoid fork (MIT).
+    HandFire = 230,
+    // The spray and the charge of a fire extinguisher or a pressure washer in a player's hand
+    // (coop/player/hand_extinguisher_sync): the owner's sample, tied to its hand generation; the host keeps and
+    // relays a client's. HandExtinguisherPayload. Ported from the WatchersOfTheVoid fork (MIT).
+    HandExtinguisher = 231,
     // The world digest (coop/session/desync_watch): the host's count of keyed props every 5 s, a client's answer;
     // a parting that lasts is said in the game. WorldDigestPayload. Not relayed.
     WorldDigest = 240,
@@ -4168,6 +4175,31 @@ struct PropFirePayload {
 };
 static_assert(sizeof(PropFirePayload) == 48, "PropFirePayload must be 48 bytes");
 
+// The flame of the item in `slot`'s hand (HandFire): the owner's hand generation it belongs to, the owner's
+// sample count, and the fire as sampled (fuel burns down at fuelSpeed a second; receivers age it). kind 0: a burning
+// prop's flame (comp_flammable_C); 1: a torch's own flame (fuel as the torch keeps it, fuelSpeed 0).
+struct HandFirePayload {
+    uint32_t generation, sequence;
+    float    fuel, fuelSpeed;
+    uint8_t  slot, burning;
+    uint16_t kind;
+};
+static_assert(sizeof(HandFirePayload) == 20, "HandFirePayload must be 20 bytes");
+
+// The extinguisher or washer in `slot`'s hand (HandExtinguisher). tool 0: an extinguisher, `charge` its life
+// (0..1.5); tool 1: a washer, `charge` its water (0..10). `playerNo` names the owner's person; `sequence` is
+// the owner's sample count.
+struct HandExtinguisherPayload {
+    uint8_t  slot;
+    uint8_t  spraying;
+    uint8_t  tool;
+    uint8_t  reserved;  // zero
+    uint32_t generation;
+    uint32_t sequence;
+    float    charge;
+    uint16_t playerNo;
+};
+static_assert(sizeof(HandExtinguisherPayload) == 18, "HandExtinguisherPayload must be 18 bytes");
 // One world digest (WorldDigest). op 0: the host's, op 1: a client's answer to the host's `sequence`.
 struct WorldDigestPayload {
     uint32_t sequence;
