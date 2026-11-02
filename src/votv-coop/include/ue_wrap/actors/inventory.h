@@ -79,8 +79,9 @@ struct LivePersonalStore {
 // coop/props/container_contents_sync -- deliberately, from opposite sides of one boundary:
 // that lane must never author a personal store, and this reader must never read anything
 // else. ReadAll is the lane's reader and goes through this; coop/dev/live_store_readout prints
-// the same records by content. The only writer is ApplyToSaveObject below, which the lane calls
-// on a save object whose world does not exist yet.
+// the same records by content. The writers are ApplyToSaveObject below, which the lane calls on a
+// save object whose world does not exist yet, and the two that undo a container edit the host
+// refused (RemoveCarriedByKey, AddCarriedRecord).
 bool ReadLivePersonalStore(LivePersonalStore& out);
 
 // How many records the live personal store holds RIGHT NOW, without decoding any of them: the
@@ -99,6 +100,14 @@ int32_t LivePersonalStoreCount();
 // carries that key, or the verb does not resolve or refuses. Game thread, never from inside a
 // Blueprint body (it dispatches).
 bool RemoveCarriedByKey(const std::wstring& key);
+
+// Give `rec` back to the live personal store: appended as data, the way the container lane writes
+// a world container's slice, then the names and the volume re-derived through the game's own verbs.
+// For a record the player carried a moment ago and put into a world container whose write the host
+// refused. False, having changed nothing, when the store does not resolve, the record has no class
+// or key, or a record with that key is carried already. The quick-slot bar is the caller's to
+// rebuild. Game thread, never from inside a Blueprint body (it dispatches).
+bool AddCarriedRecord(const ue_wrap::save_record::SaveRecord& rec);
 
 // The WRITE side, the apply on join: overwrite the player's GObjStack slot, equipment and hold
 // on `saveSlot` with `inv`, as engine-OWNED TArrays built through reflection::EngineAlloc (FNames

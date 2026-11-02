@@ -35,6 +35,20 @@ inline constexpr size_t kMaxTakes = 64;
 // runs: `index` is the record about to leave. Reads the container's record and the carried store.
 void NoteTake(uint32_t eid, void* inv, int32_t index, uint64_t nowMs);
 
+// The other direction, a put. The inventory screen moves an item into a container as the game's own
+// pair: the player's store gives up its record (getObject -> takeObj on the player's own inventory), an
+// actor is born from it, and addObject takes that actor into the container. Refused, the container went
+// back and the item was in neither place. So the record is noted as it leaves the player's store, and a
+// put of an actor carrying that record's key into a world container right after is held like a take:
+// a refusal of the slice it ships in gives the record back to the store.
+//
+// At the takeObj verb edge on this player's own store, before the body runs.
+void NotePersonalTake(void* inv, int32_t index, uint64_t nowMs);
+// At the addObject verb edge on a world container's inventory, before the body runs: `actor` is going
+// in. Held only when it is the record the player's own store gave up a moment ago -- a put of a held
+// or thrown world prop is not (see the .cpp).
+void NotePut(uint32_t eid, void* actor, uint64_t nowMs);
+
 // Each tick, ahead of the drain that ships slices: finds the carried record each new take became, and
 // forgets what has settled by age.
 void Tick(uint64_t nowMs);
@@ -44,8 +58,8 @@ void Tick(uint64_t nowMs);
 void NoteShipped(uint32_t eid, uint64_t sliceId);
 
 // The host refused slice `sliceId` of container `eid` and re-published its truth. Every take that
-// slice carried leaves the carried store again; the takes of that container shipped before it are
-// settled. The number of records taken back.
+// slice carried leaves the carried store again and every put returns to it; the edits of that
+// container shipped before it are settled. The number of records taken back or returned.
 size_t OnRefused(uint32_t eid, uint64_t sliceId);
 
 // The session ended.

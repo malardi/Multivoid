@@ -587,6 +587,17 @@ sg::Verdict OnVerbEntry(const sg::Call& br) {
     if (!ci::IsInventory(br.object)) return sg::Verdict::Run;
     // A takeObj on any inventory component arms the extraction latch; addObject must not.
     if (br.tag == kVerbTakeObj) g_takeObjInFlight.store(true, std::memory_order_relaxed);
+    // A client's own store giving up a record is the first half of a put from the inventory screen;
+    // the ledger keeps the record until the addObject that completes the put (see below).
+    if (!IsHost() && br.tag == kVerbTakeObj && br.locals && !ci::IsWorldInventory(br.object)) {
+        static R::ParamOffset s_ownIndex{L"Index"};
+        const int32_t off = s_ownIndex.Of(br.function);
+        if (off >= 0) {
+            int32_t index = -1;
+            std::memcpy(&index, br.locals + off, sizeof(index));
+            tl::NotePersonalTake(br.object, index, NowMs());
+        }
+    }
     void* owner = ci::OwnerOf(br.object);
     if (!owner) return sg::Verdict::Run;
     // A client's world it has not announced ready is loading: the containers' loadData fills them through the
@@ -613,6 +624,17 @@ sg::Verdict OnVerbEntry(const sg::Call& br) {
                 UE_LOGW("container_contents: takeObj's Index parameter does not resolve -- a refused "
                         "take cannot be taken back");
             }
+        }
+    }
+    // And a put: the actor going in, matched by the ledger against the record the client's own store
+    // gave up -- refused, that record goes back to the store.
+    if (!IsHost() && br.tag == kVerbDirty && br.locals && ci::IsWorldInventory(br.object)) {
+        static R::ParamOffset s_actor{L"Actor"};
+        const int32_t off = s_actor.Of(br.function);
+        if (off >= 0) {
+            void* actor = nullptr;
+            std::memcpy(&actor, br.locals + off, sizeof(actor));
+            if (actor && R::IsLive(actor)) tl::NotePut(eid, actor, NowMs());
         }
     }
     g_dirty.insert(eid);   // resolve identity AT THE EDGE; deref nothing later

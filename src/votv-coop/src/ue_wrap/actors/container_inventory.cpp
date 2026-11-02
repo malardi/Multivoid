@@ -142,8 +142,12 @@ void RederiveShownState(void* container, void* inventory) {
                     "-- applied contents will show a STALE currVol / names", updateVol, recalcNames);
         }
     }
-    if (updateVol)   ue_wrap::component_calls::CallParamless(container, updateVol);
+    // The names first: recalculateNames rebuilds nameData from the records, and updateVolumesAndMass
+    // sums the volume and mass rows from nameData, not from the records. Run the other way round, the
+    // volume was the previous contents' one -- a written slice showed the old currVol until the next
+    // verb on that container re-derived it.
     if (recalcNames) ue_wrap::component_calls::CallParamless(inventory, recalcNames);
+    if (updateVol)   ue_wrap::component_calls::CallParamless(container, updateVol);
 }
 
 bool CurrentVolume(void* inventory, float& out) {

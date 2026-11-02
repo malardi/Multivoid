@@ -135,7 +135,11 @@ the same thing kept a copy. So the answer names the slice it refuses, and the au
 of what each of its slices took into the inventory (`coop/props/container_take_ledger`): the named
 slice's takes leave the inventory again. Acceptance says nothing back, so a take is settled by a
 later answer about the same container, or by age. An answer the transport does not take is retried
-until it is, for thirty seconds.
+until it is, for thirty seconds. A put from the inventory screen is the same pair the other way --
+the player's store gives up its record, and an actor born from it goes into the container -- so the
+ledger keeps that record, and a refusal writes it back into the player's store. A held or thrown prop
+put in is not given back: its actor's end has already crossed to the host as a destroy, and returning
+it would be a world birth, which is another lane's.
 
 Two things can arrive before they can be judged, and neither is refused for it. A slice whose
 container has not spawned on this machine yet waits in a holding pen -- one entry per container,

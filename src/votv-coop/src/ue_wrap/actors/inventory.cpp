@@ -134,7 +134,7 @@ void BuildAndSwapArray(void* base, int32_t off, int32_t stride,
 // makes its decision on. The remover asks for the container and its component as well, which are
 // what it calls the game's own verbs on.
 int32_t ValidatedPersonalSlot(SR::Arr& contents, void** outContainer = nullptr,
-                              void** outInventory = nullptr) {
+                              void** outInventory = nullptr, uint8_t** outSlot = nullptr) {
     void* save = ResolveSaveSlot();
     void* gm = world_singleton::Gamemode();
     if (!save || !gm) return -1;
@@ -183,6 +183,7 @@ int32_t ValidatedPersonalSlot(SR::Arr& contents, void** outContainer = nullptr,
     contents = SR::ReadArr(stack.data + static_cast<size_t>(idx) * SR::kMxStride, 0);
     if (outContainer) *outContainer = pc;
     if (outInventory) *outInventory = inv;
+    if (outSlot) *outSlot = const_cast<uint8_t*>(stack.data) + static_cast<size_t>(idx) * SR::kMxStride;
     return idx;
 }
 
@@ -306,6 +307,40 @@ bool RemoveCarriedByKey(const std::wstring& key) {
     ue_wrap::ParamFrame f(takeObj);
     if (!f.valid() || !f.Set<int32_t>(L"Index", at) || !f.Set<bool>(L"removeVol", false)) return false;
     if (!ue_wrap::Call(inv, f) || !f.Get<bool>(L"Return")) return false;
+    ue_wrap::container_inventory::RederiveShownState(pc, inv);
+    return true;
+}
+
+bool AddCarriedRecord(const SR::SaveRecord& rec) {
+    if (rec.className.empty() || rec.key.empty() || rec.key == L"None") return false;
+    SR::Arr contents{};
+    void* pc = nullptr;
+    void* inv = nullptr;
+    uint8_t* slot = nullptr;
+    if (ValidatedPersonalSlot(contents, &pc, &inv, &slot) < 0 || !pc || !inv || !slot) return false;
+    for (int32_t i = 0; i < contents.num; ++i) {
+        SR::SaveRecord r;
+        SR::ReadSaveRecord(contents.data + static_cast<size_t>(i) * SR::kSaveStride, r);
+        if (r.key == rec.key) return false;   // carried already: giving it again would be a copy
+    }
+    if (void* probe = R::EngineAlloc(16)) {
+        R::EngineFree(probe);
+    } else {
+        return false;   // GMalloc unresolved: the store is not rewritten through an allocator we cannot match
+    }
+    // The record goes in as data, the way the container lane writes a world container's slice: there
+    // is no verb that adds a record without an actor, and an actor spawned for it here would be a birth
+    // the drop-intent lane has to be talked out of. The existing elements move into the new buffer as
+    // they are -- the old buffer is orphaned, never freed, so nothing is owned twice -- and the
+    // record is appended after them, where addObject appends.
+    const int32_t n = contents.num + 1;
+    auto* buf = static_cast<uint8_t*>(SR::AllocZeroed(static_cast<size_t>(n), SR::kSaveStride));
+    if (!buf) return false;
+    if (contents.num > 0)
+        std::memcpy(buf, contents.data, static_cast<size_t>(contents.num) * SR::kSaveStride);
+    SR::WriteSaveRecord(buf + static_cast<size_t>(contents.num) * SR::kSaveStride, rec);
+    SR::WriteArrHeader(slot, 0, buf, n);
+    // The names come from the records and the volume from the names, so the names first.
     ue_wrap::container_inventory::RederiveShownState(pc, inv);
     return true;
 }

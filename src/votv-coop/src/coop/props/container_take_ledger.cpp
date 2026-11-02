@@ -5,6 +5,7 @@
 #include "coop/props/container_slice_wire.h"  // kMaxRecords
 #include "ue_wrap/actors/container_inventory.h"
 #include "ue_wrap/actors/inventory.h"
+#include "ue_wrap/actors/prop.h"  // GetInteractableKeyString: the key the put actor carries
 #include "ue_wrap/actors/save_record.h"
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/hotbar/icons.h"  // Rebuild: the quick-slot bar after a record is taken back
@@ -24,6 +25,8 @@ namespace SR  = ue_wrap::save_record;
 
 struct Take {
     uint32_t eid = 0;
+    bool put = false;                         // a put: putRecord goes back to the store on a refusal
+    SR::SaveRecord putRecord;
     std::wstring takenClass;                  // the container record's class
     std::vector<std::wstring> carriedBefore;  // the keys the carried store held at the take
     bool resolved = false;                    // the carried store has been looked at since
@@ -36,6 +39,18 @@ struct Take {
 // Oldest first. A deque because the settling erases from anywhere and the cap pops the front.
 std::deque<Take> g_takes;
 uint64_t g_shipSeq = 0;
+
+// The record this player's own store gave up last, until a put claims it or it ages out. The pair the
+// inventory screen runs is one Blueprint call, so a put follows its take within the same frame; the
+// bound only keeps a take that went elsewhere (a drop, a hold) from being claimed by a later put.
+SR::SaveRecord g_lastPersonal;
+uint64_t g_lastPersonalMs = 0;
+constexpr uint64_t kPutPairMs = 2000;
+
+void Push(Take&& t) {
+    if (g_takes.size() >= kMaxTakes) g_takes.pop_front();
+    g_takes.push_back(std::move(t));
+}
 
 bool Claimed(const std::wstring& key) {
     for (const Take& t : g_takes)
@@ -65,8 +80,37 @@ void NoteTake(uint32_t eid, void* inv, int32_t index, uint64_t nowMs) {
     } else {
         t.resolved = true;   // no store to diff against later: there is nothing this take can name
     }
-    if (g_takes.size() >= kMaxTakes) g_takes.pop_front();
-    g_takes.push_back(std::move(t));
+    Push(std::move(t));
+}
+
+void NotePersonalTake(void* inv, int32_t index, uint64_t nowMs) {
+    std::vector<SR::SaveRecord> recs;
+    if (!ci::ReadContents(inv, recs, cw::kMaxRecords) || index < 0 ||
+        index >= static_cast<int32_t>(recs.size()))
+        return;
+    g_lastPersonal = std::move(recs[static_cast<size_t>(index)]);
+    g_lastPersonalMs = nowMs;
+}
+
+void NotePut(uint32_t eid, void* actor, uint64_t nowMs) {
+    if (!actor || g_lastPersonalMs == 0 || nowMs - g_lastPersonalMs > kPutPairMs) return;
+    const std::wstring key = ue_wrap::prop::GetInteractableKeyString(actor);
+    if (key.empty() || key == L"None" || key != g_lastPersonal.key) return;
+    // A held or thrown world prop put in is not held here: its actor's end crossed to the host as a
+    // destroy of its own, and what giving it back would take -- a world birth -- is the drop-intent
+    // lane's, not this one's.
+    Take t;
+    t.eid = eid;
+    t.put = true;
+    t.putRecord = std::move(g_lastPersonal);
+    t.takenClass = t.putRecord.className;
+    t.resolved = true;
+    t.atMs = nowMs;
+    g_lastPersonal = SR::SaveRecord{};
+    g_lastPersonalMs = 0;
+    UE_LOGI("container_take_ledger: a put of '%ls' (key '%ls') into eid=%u from the inventory -- held "
+            "until the host answers its slice", t.takenClass.c_str(), key.c_str(), eid);
+    Push(std::move(t));
 }
 
 void Tick(uint64_t nowMs) {
@@ -132,6 +176,19 @@ size_t OnRefused(uint32_t eid, uint64_t sliceId) {
                   g_takes.end());
     size_t back = 0;
     for (const Take& t : refused) {
+        if (t.put) {
+            if (INV::AddCarriedRecord(t.putRecord)) {
+                ++back;
+                UE_LOGI("container_take_ledger: refused put of '%ls' into eid=%u RETURNED to the inventory "
+                        "(key '%ls') -- the host's container never held it", t.takenClass.c_str(), eid,
+                        t.putRecord.key.c_str());
+            } else {
+                UE_LOGW("container_take_ledger: refused put of '%ls' into eid=%u could NOT be returned to "
+                        "the inventory (key '%ls': carried already, or the store does not resolve)",
+                        t.takenClass.c_str(), eid, t.putRecord.key.c_str());
+            }
+            continue;
+        }
         if (t.gainedKey.empty()) {
             // Taken into the world rather than the inventory, or the inventory had no room for it.
             UE_LOGI("container_take_ledger: refused take of '%ls' from eid=%u was never carried -- "
@@ -161,6 +218,8 @@ size_t OnRefused(uint32_t eid, uint64_t sliceId) {
 void Reset() {
     g_takes.clear();
     g_shipSeq = 0;
+    g_lastPersonal = SR::SaveRecord{};
+    g_lastPersonalMs = 0;
 }
 
 }  // namespace coop::props::container_take_ledger
