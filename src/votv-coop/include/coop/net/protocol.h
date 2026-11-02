@@ -1214,6 +1214,24 @@ enum class ReliableKind : uint8_t {
     // A burning prop (coop/props/prop_fire_sync): a client's ignite or extinguish as a request, the host's fire as
     // the canonical. PropFirePayload. Not relayed. Ported from the WatchersOfTheVoid fork (MIT).
     PropFire = 217,
+    // The kitchen machines' cooking state (coop/interactables/kitchen_sync): the microwave's run, mode and timer, the
+    // mini oven's switch, mode and power, the grill's fire, coals, lid and burn, as the host has them.
+    // KitchenStatePayload. Not relayed. The doors are swinger_pose_sync's, the cremator's lever toggle_verbs'.
+    KitchenState = 220,
+    // A client's use of a kitchen machine (coop/interactables/kitchen_sync): a button press, the grill's ignite or
+    // extinguish, a coal or the lid it just put in or took off; the host runs or writes it on its own copy.
+    // KitchenIntentPayload. Not relayed.
+    KitchenIntent = 221,
+    // The power cords (coop/interactables/cord_sync): the host's link of one cord, its socket (none when unplugged) and
+    // the socket's power, on change, as a refresh and to a joiner. CordStatePayload. Not relayed.
+    CordState = 222,
+    // A client's plug into a socket or out of it (cord_sync): the host checks reach and the cable's length and does it
+    // on its own copy. CordStatePayload, `powered` ignored. Not relayed.
+    CordIntent = 223,
+    // The player-built concrete walls (coop/world/wall_sync): the host's save record of each outline, wall and wet wall
+    // and its retirement; a client's placement, cancel, refresh request, damage dealt and creative build. Chunked blob
+    // (BlobChunkPayload): [u8 op] then a record or a key. Not relayed, not pre-world.
+    WallSave = 224,
     // The flame of the item in a player's hand (coop/player/hand_fire_sync): the owner's sample, tied to its hand
     // generation; the host keeps and relays a client's. HandFirePayload. Ported from the WatchersOfTheVoid fork (MIT).
     HandFire = 230,
@@ -4175,6 +4193,60 @@ struct PropFirePayload {
 };
 static_assert(sizeof(PropFirePayload) == 48, "PropFirePayload must be 48 bytes");
 
+// One kitchen machine as the host has it (KitchenState): `kind` 1 microwave, 2 mini oven, 3 grill; `flags` the
+// bits of ue_wrap::kitchen_machine::Flag (1 runs or burns, 2 powered, 4 the grill's lid on, 8 its cooking loop).
+// `mode` is the microwave's timeMode or the oven's mode, `remaining`/`timer` the microwave's time and timer, `power`
+// the oven's, `coals`/`burn`/`volume` the grill's. `revision` is the host's, a newer one wins.
+struct KitchenStatePayload {
+    WireKey  key;        // 32 -- the machine's prop key
+    uint32_t revision;   // 4
+    uint8_t  kind;       // 1
+    uint8_t  flags;      // 1
+    uint8_t  pad[2];     // 2
+    int32_t  mode;       // 4
+    float    remaining;  // 4
+    float    timer;      // 4
+    float    power;      // 4
+    int32_t  coals;      // 4
+    float    burn;       // 4
+    float    volume;     // 4
+};
+static_assert(sizeof(KitchenStatePayload) == 68, "KitchenStatePayload must be 68 bytes");
+
+// A client's use of a kitchen machine (KitchenIntent). op 1: a press, `action` its actionOptionIndex action (4, or
+// the microwave's 8) and `control` the oven's aimed control (1 switch, 2 temperature); op 2: light the grill; op 3:
+// put it out; op 4: a coal went in, `value` the client's count after it; op 5: the lid went on (`value` 1) or came
+// off (0). `sequence` counts the sender's intents from 1.
+struct KitchenIntentPayload {
+    WireKey  key;       // 32 -- the machine's prop key
+    uint32_t sequence;  // 4
+    uint8_t  op;        // 1
+    uint8_t  action;    // 1
+    uint8_t  control;   // 1
+    uint8_t  pad;       // 1
+    int32_t  value;     // 4
+};
+static_assert(sizeof(KitchenIntentPayload) == 44, "KitchenIntentPayload must be 44 bytes");
+
+// One end of a cord link (CordState, CordIntent). kind 0: none; 1: an actor by its key or eid; 2: a level-placed
+// socket by its object name; 3: a child actor (a socket on an appliance) of a keyed or eid parent, by its component
+// name. `name` is ASCII, zero-terminated.
+struct CordEndpoint {
+    WireKey  key;        // 32
+    uint32_t elementId;  // 4
+    char     name[64];   // 64
+    uint8_t  kind;       // 1
+};
+static_assert(sizeof(CordEndpoint) == 101, "CordEndpoint must be 101 bytes");
+
+// One cord's link: its plug's socket (kind 0 = unplugged) and, from the host, whether that socket carries power.
+struct CordStatePayload {
+    CordEndpoint cord;    // 101
+    CordEndpoint socket;  // 101
+    uint8_t      powered; // 1 -- the host's; ignored in an intent
+};
+static_assert(sizeof(CordStatePayload) == 203, "CordStatePayload must be 203 bytes");
+static_assert(sizeof(CordStatePayload) <= 256 - 20 - 8, "CordStatePayload must fit in one reliable datagram");
 // The flame of the item in `slot`'s hand (HandFire): the owner's hand generation it belongs to, the owner's
 // sample count, and the fire as sampled (fuel burns down at fuelSpeed a second; receivers age it). kind 0: a burning
 // prop's flame (comp_flammable_C); 1: a torch's own flame (fuel as the torch keeps it, fuelSpeed 0).

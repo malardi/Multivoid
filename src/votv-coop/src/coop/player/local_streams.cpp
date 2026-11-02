@@ -4,6 +4,7 @@
 
 #include "coop/player/local_streams.h"
 #include "coop/items/gravity_motion.h"  // a prop the gravity gun pushed or pulled streams as held
+#include "coop/interactables/cord_sync.h"  // a dragged cord plug rides the held-prop stream when no prop is held
 #include "coop/props/prop_drive_host.h"
 
 #include "coop/dev/perf_probe.h"
@@ -615,6 +616,11 @@ void Tick(coop::net::Session& session, void* local, void* controller) {
             coop::prop_drive_host::Coast(releasedActor, "host release");
         }
     }
+
+    // A cord's plug the player drags is no prop and never grabbing_actor: its head streams on the same one-per-player
+    // stream under a reserved key while no prop is held or still releasing (coop/interactables/cord_sync).
+    coop::cord_sync::UpdateLocalDragPose(
+        session, (heldActor && R::IsLive(heldActor)) || g_lastHeldProp.Alive());
 
     // The ragdoll physics stream: while the native ragdoll exists (the C key, a faint, a KO) the
     // pelvis world transform and velocities are published so each peer's mirror slaves its pelvis

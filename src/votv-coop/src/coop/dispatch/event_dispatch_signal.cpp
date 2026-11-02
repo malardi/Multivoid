@@ -29,6 +29,9 @@
 #include "coop/props/safe_sync.h"  // SafeUnlock
 #include "coop/world/media_sync.h"  // MediaState
 #include "coop/props/prop_fire_sync.h"  // PropFire
+#include "coop/interactables/kitchen_sync.h"  // KitchenState, KitchenIntent
+#include "coop/interactables/cord_sync.h"  // CordState, CordIntent
+#include "coop/world/wall_sync.h"  // WallSave
 #include "coop/player/hand_fire_sync.h"  // HandFire
 #include "coop/player/hand_extinguisher_sync.h"  // HandExtinguisher
 #include "coop/session/desync_watch.h"  // WorldDigest
@@ -313,6 +316,52 @@ bool HandleSignalEvent(const net::Session::ReliableMessage& msg) {
         net::PropFirePayload fp{};
         std::memcpy(&fp, msg.payload, sizeof(fp));
         coop::prop_fire_sync::Receive(fp, static_cast<uint8_t>(msg.senderPeerSlot));
+        break;
+    }
+    case net::ReliableKind::WallSave: {
+        // The host's walls (host->clients) and a client's placement and requests (client->host); the lane checks the
+        // direction by the role and the op.
+        if (msg.payloadLen < sizeof(net::BlobChunkPayload)) break;
+        net::BlobChunkPayload wp{};
+        std::memcpy(&wp, msg.payload, sizeof(wp));
+        if (msg.senderPeerSlot < 0 || msg.senderPeerSlot >= net::kMaxPeers) break;
+        coop::wall_sync::OnChunk(wp, static_cast<uint8_t>(msg.senderPeerSlot));
+        break;
+    }
+    case net::ReliableKind::CordState: {
+        // The host's link of one cord (a Host kind: the receive edge refuses a client's).
+        if (msg.payloadLen != sizeof(net::CordStatePayload) || msg.senderPeerSlot != 0) break;
+        net::CordStatePayload cs{};
+        std::memcpy(&cs, msg.payload, sizeof(cs));
+        coop::cord_sync::Apply(cs);
+        break;
+    }
+    case net::ReliableKind::CordIntent: {
+        // A client's plug or unplug, done by the host on its own copy.
+        if (msg.payloadLen != sizeof(net::CordStatePayload) || msg.senderPeerSlot < 1 ||
+            msg.senderPeerSlot >= net::kMaxPeers)
+            break;
+        net::CordStatePayload ci{};
+        std::memcpy(&ci, msg.payload, sizeof(ci));
+        coop::cord_sync::OnIntent(ci, static_cast<uint8_t>(msg.senderPeerSlot));
+        break;
+    }
+    case net::ReliableKind::KitchenState: {
+        // The host's row of one kitchen machine (a Host kind: the receive edge refuses a client's).
+        if (msg.payloadLen != sizeof(net::KitchenStatePayload) || msg.senderPeerSlot != 0) break;
+        net::KitchenStatePayload kp{};
+        std::memcpy(&kp, msg.payload, sizeof(kp));
+        coop::kitchen_sync::OnState(kp);
+        break;
+    }
+    case net::ReliableKind::KitchenIntent: {
+        // A client's use of a kitchen machine, run by the host.
+        if (msg.payloadLen != sizeof(net::KitchenIntentPayload) || msg.senderPeerSlot < 1 ||
+            msg.senderPeerSlot >= net::kMaxPeers)
+            break;
+        net::KitchenIntentPayload ki{};
+        std::memcpy(&ki, msg.payload, sizeof(ki));
+        coop::kitchen_sync::OnIntent(ki, static_cast<uint8_t>(msg.senderPeerSlot));
         break;
     }
     case net::ReliableKind::HandFire: {

@@ -5,6 +5,7 @@
 // coop/dispatch/event_dispatch.h.
 
 #include "event_dispatch.h"  // co-located private header (src tree, not include/)
+#include "coop/interactables/cord_sync.h"  // ApplyDragRelease: a cord plug's drag ends on PropRelease
 #include "coop/comms/log_mirror.h"  // OnChunk: a client's log on the host's machine
 #include "coop/world/blood_decal_sync.h"
 #include "coop/world/dig_hole_sync.h"
@@ -312,6 +313,8 @@ bool HandleEntityEvent(net::Session& session,
                     p.angVelX, p.angVelY, p.angVelZ);
             break;
         }
+        // A cord plug's drag ends here: cord_sync's reserved key names no prop.
+        if (coop::cord_sync::ApplyDragRelease(p, static_cast<uint8_t>(msg.senderPeerSlot))) break;
         void* const fell = remote_prop::OnRelease(msg.senderPeerSlot, p, localPlayer);
         // A client's let-go on the host: the host streams the fall until it rests, so every copy of a
         // big body ends where the host's did, not where each peer's own simulation of the drop left it.

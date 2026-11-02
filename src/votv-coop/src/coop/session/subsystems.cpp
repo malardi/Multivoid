@@ -41,6 +41,9 @@
 #include "coop/items/gravity_motion.h"  // the gravity gun's push and pull: its target streams as held
 #include "coop/session/desync_watch.h"  // a world the peers no longer share, said in the game
 #include "coop/props/prop_fire_sync.h"  // a burning prop: the host's fire, a client's ignite as a request
+#include "coop/interactables/kitchen_sync.h"  // the microwave, mini oven and grill cook on the host
+#include "coop/interactables/cord_sync.h"  // the power cords: the host's links, a client's plug as a request
+#include "coop/world/wall_sync.h"  // the concrete walls: the host's records, a client's placement as a request
 #include "coop/player/hand_fire_sync.h"  // the flame of the item in a hand
 #include "coop/player/hand_extinguisher_sync.h"  // the spray of an extinguisher or washer in a hand
 #include "coop/world/media_sync.h"  // TVs and file players: the host's MediaPlayer, sought on the others
@@ -275,6 +278,9 @@ void Install(coop::net::Session& session) {
     coop::laptop_sync::Install(&session);  // the stationary PC's power and the portable PC lid's wire
     coop::laptop_tab::Install(&session);  // the PC user's tab: the three tab watches, and the receive paths' session
     coop::shared_screen_sync::Install(&session);  // the PC operator's screen: the session, and the laptop claim's release hold
+    coop::wall_sync::Install(&session);  // the concrete walls: the host's records everywhere, a client's placement as a request
+    coop::cord_sync::Install(&session);  // the power cords: the host's links, a client's plug and drag
+    coop::kitchen_sync::Install(&session);  // the kitchen machines: the host's cooking state, a client's presses as intents
     coop::desync_watch::Install(&session);  // the host's world digest every 5 s, a client's answer
     coop::prop_fire_sync::Install(&session);  // a burning prop: the host's fire everywhere, a client's ignite or extinguish as a request
     coop::hand_fire_sync::Install(&session);  // the item burning in a hand: the owner's flame on every mirror of it
@@ -416,6 +422,9 @@ void ConnectReplayForSlot(int slot) {
     coop::shared_screen_sync::QueueConnectBroadcastForSlot(slot);  // the PC operator's screen
     coop::cargo_lift_sync::QueueConnect(slot);  // every lift's canonical
     coop::prop_fire_sync::QueueConnect(slot);  // every burning prop
+    coop::kitchen_sync::QueueConnect(slot);  // every kitchen machine's cooking state
+    coop::cord_sync::SendAllToSlot(slot);  // every cord's link
+    coop::wall_sync::QueueConnect(slot);  // every wall's record
     coop::hand_fire_sync::QueueConnect(slot);  // every hand's flame
     coop::hand_extinguisher_sync::QueueConnect(slot);  // every hand's spray and charge
     coop::plant_sync::QueueConnectBroadcastForSlot(slot);  // every plant of the host's garden
@@ -500,6 +509,9 @@ void DisconnectSlot(coop::net::Session& session, int slot) {
     coop::cargo_lift_sync::OnPeerLeft(slot);  // its requests and the canonicals it was owed
     coop::desync_watch::OnPeerLeft(slot);
     coop::prop_fire_sync::OnPeerLeft(slot);
+    coop::kitchen_sync::OnPeerLeft(slot);
+    coop::cord_sync::OnPeerLeft(slot);  // its dragged plug falls back
+    coop::wall_sync::OnPeerLeft(slot);  // its half-sent blobs, its placements not made yet
     coop::hand_fire_sync::OnPeerLeft(slot);
     coop::hand_extinguisher_sync::OnPeerLeft(slot);
     coop::plant_sync::OnPeerGone(slot);  // its half assemblies, the garden it was owed
@@ -633,6 +645,9 @@ DisconnectStats DisconnectAll() {
     coop::gravity_motion::OnDisconnect();
     coop::desync_watch::OnDisconnect();
     coop::prop_fire_sync::OnDisconnect();
+    coop::kitchen_sync::OnDisconnect();
+    coop::cord_sync::OnDisconnect();
+    coop::wall_sync::OnDisconnect();
     coop::hand_fire_sync::OnDisconnect();
     coop::hand_extinguisher_sync::OnDisconnect();
     coop::media_sync::OnDisconnect();
@@ -774,6 +789,9 @@ void TickGameplay(coop::net::Session& session, bool isConnected, bool isHost,
     { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:media"}; coop::media_sync::Tick(); }  // a TV or a music file the host is playing
     coop::desync_watch::Tick();  // HOST: the world digest out every 5 s
     { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:prop_fire"}; coop::prop_fire_sync::Tick(); }  // the host's fires out, a client's requests in
+    { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:kitchen"}; coop::kitchen_sync::Tick(); }  // the kitchen machines: the host's rows out, its intents run; a client's paints
+    { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:cord"}; coop::cord_sync::Tick(); }  // the cords: a client's intents and releases out, the host's links in; a dropped plug's stream timed out
+    { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:wall"}; coop::wall_sync::Tick(); }  // the walls: the host's census, feed and records; a client's applied, its placement sent
     { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:hand_fire"}; coop::hand_fire_sync::Tick(); }  // each hand's flame out, the others' onto their mirrors
     { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:hand_extinguisher"}; coop::hand_extinguisher_sync::Tick(); }  // each hand's spray out, the others' onto their mirrors
     { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:gravity"}; coop::gravity_motion::Tick(session); }  // the gravity gun's seams; its puppet copies' tick refused
