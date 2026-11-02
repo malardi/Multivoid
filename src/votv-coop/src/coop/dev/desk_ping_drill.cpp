@@ -114,13 +114,25 @@ sg::Verdict OnVerdictPre(const sg::Call&) {
 }
 void OnVerdictPost(const sg::Call&) { ++g_census.ran; }
 
+// "<r>" + a word + " [" + digits + "]" at the head of the line: the game's numbered error, any language.
+bool IsNumberedErrorLine(const std::wstring& line) {
+    if (line.compare(0, 3, L"<r>") != 0) return false;
+    const size_t open = line.find(L" [", 3);
+    if (open == std::wstring::npos || open > 40) return false;
+    size_t i = open + 2, digits = 0;
+    while (i < line.size() && line[i] >= L'0' && line[i] <= L'9') { ++i; ++digits; }
+    return digits > 0 && i < line.size() && line[i] == L']';
+}
+
 void OnLogPost(const sg::Call& c) {
     if (g_lineOff < 0) g_lineOff = R::FindParamOffset(c.function, L"B");
     if (g_lineOff < 0 || !c.locals) return;
     const std::wstring line = ue_wrap::field_io::ReadFStringAt(c.locals, g_lineOff);
-    if (line.find(L"Ping failed") == std::wstring::npos) return;
-    if (line.find(L"Error [") != std::wstring::npos) ++g_census.failed;
-    if (line.find(L"already pinging") != std::wstring::npos) ++g_census.busy;
+    // The verdict's failure line is the game's, in the game's language ("<r>Error [2]: Ping failed, ...</>" in
+    // English, its own words in the owner's Russian): it is known by its shape, a red line with a bracketed error
+    // number. The busy refusal is ours, in English, and carries no number.
+    if (IsNumberedErrorLine(line)) ++g_census.failed;
+    else if (line.find(L"already pinging") != std::wstring::npos) ++g_census.busy;
 }
 
 bool g_censusDead = false;  // a watch the gate refused or that settled dead: the drill cannot count
