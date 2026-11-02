@@ -31,6 +31,7 @@
 #include "coop/props/prop_fire_sync.h"  // PropFire
 #include "coop/interactables/kitchen_sync.h"  // KitchenState, KitchenIntent
 #include "coop/interactables/cord_sync.h"  // CordState, CordIntent
+#include "coop/world/wall_sync.h"  // WallSave
 #include "coop/world/radio_sync.h"  // RadioState
 #include "coop/interactables/drive_payload_sync.h"  // DrivePayload
 #include "coop/interactables/drive_sync.h"       // DriveSlotState
@@ -303,6 +304,16 @@ bool HandleSignalEvent(const net::Session::ReliableMessage& msg) {
         net::PropFirePayload fp{};
         std::memcpy(&fp, msg.payload, sizeof(fp));
         coop::prop_fire_sync::Receive(fp, static_cast<uint8_t>(msg.senderPeerSlot));
+        break;
+    }
+    case net::ReliableKind::WallSave: {
+        // The host's walls (host->clients) and a client's placement and requests (client->host); the lane checks the
+        // direction by the role and the op.
+        if (msg.payloadLen < sizeof(net::BlobChunkPayload)) break;
+        net::BlobChunkPayload wp{};
+        std::memcpy(&wp, msg.payload, sizeof(wp));
+        if (msg.senderPeerSlot < 0 || msg.senderPeerSlot >= net::kMaxPeers) break;
+        coop::wall_sync::OnChunk(wp, static_cast<uint8_t>(msg.senderPeerSlot));
         break;
     }
     case net::ReliableKind::CordState: {

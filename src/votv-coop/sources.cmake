@@ -89,6 +89,7 @@ set(VOTVCOOP_SOURCES
     src/ue_wrap/devices/coffee.cpp
     src/ue_wrap/devices/kitchen_machine.cpp
     src/ue_wrap/devices/cord.cpp
+    src/ue_wrap/actors/wall.cpp
     src/ue_wrap/devices/base_window.cpp
     src/ue_wrap/devices/window_canvas.cpp
     src/ue_wrap/devices/grime.cpp
@@ -218,6 +219,7 @@ set(VOTVCOOP_SOURCES
     src/coop/interactables/coffee_state.cpp
     src/coop/interactables/kitchen_sync.cpp
     src/coop/interactables/cord_sync.cpp
+    src/coop/world/wall_sync.cpp
     src/coop/props/prop_act_host.cpp
     src/coop/props/prop_act_request.cpp
     src/coop/props/prop_act_selftest.cpp

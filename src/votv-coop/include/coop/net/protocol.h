@@ -1228,6 +1228,10 @@ enum class ReliableKind : uint8_t {
     // A client's plug into a socket or out of it (cord_sync): the host checks reach and the cable's length and does it
     // on its own copy. CordStatePayload, `powered` ignored. Not relayed.
     CordIntent = 223,
+    // The player-built concrete walls (coop/world/wall_sync): the host's save record of each outline, wall and wet wall
+    // and its retirement; a client's placement, cancel, refresh request, damage dealt and creative build. Chunked blob
+    // (BlobChunkPayload): [u8 op] then a record or a key. Not relayed, not pre-world.
+    WallSave = 224,
 };
 
 #pragma pack(push, 1)

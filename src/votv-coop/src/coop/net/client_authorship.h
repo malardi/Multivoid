@@ -111,6 +111,7 @@ constexpr ClientAuthorship AuthorshipOf(ReliableKind k) {
     case ReliableKind::PropFire:
     case ReliableKind::KitchenIntent:
     case ReliableKind::CordIntent:
+    case ReliableKind::WallSave:
     case ReliableKind::HookState:
     case ReliableKind::HookDestroy:
     case ReliableKind::HookAnchorCommit:

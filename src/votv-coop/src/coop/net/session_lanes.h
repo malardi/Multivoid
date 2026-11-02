@@ -83,6 +83,7 @@ inline Lane LaneForKind(ReliableKind k) {
     case ReliableKind::SharedScreen:       return Lane::Bulk;
     // The plants are a slow world state (a few records a second at most) that orders against nothing.
     case ReliableKind::PlantSync:          return Lane::Bulk;
+    case ReliableKind::WallSave:           return Lane::Bulk;
     // PropConvert destroys the ball and spawns the pile, so it shares the spawn lane; on another
     // lane a convert could overtake the ball's spawn and leave a never-destroyed ball.
     case ReliableKind::PropConvert:    return Lane::Bulk;
