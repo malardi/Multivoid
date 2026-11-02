@@ -33,6 +33,13 @@ void* LocalTerminal();
 // it when the session ends or once its world is no longer the current one. Null on failure. Game thread.
 void* CreateTerminal(void* worldContext);
 
+// Put a terminal we made into the viewport where nobody sees or touches it -- fully transparent, never hit by
+// the mouse, beneath every other widget -- so the engine ticks it. A terminal's commands wait on Delays, which a
+// user widget's own tick advances (UUserWidget::NativeTick processes its latent actions), and one never shown
+// never ticks: a command that waits stops at its first Delay and the terminal stays busy for ever. Being built
+// into Slate runs its Construct, which binds the world's broken-device alerts to it; its caller filters those
+// lines. False when a verb did not resolve or a call failed. Game thread.
+bool TickUnseen(void* term);
 // A terminal we made, done with: marked for destruction now, so the Delays of a command it was still
 // running stop with it rather than whenever the collector gets to it. Its pin must be released first.
 void DiscardTerminal(void* term);

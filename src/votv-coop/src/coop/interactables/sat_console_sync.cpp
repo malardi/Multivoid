@@ -57,6 +57,7 @@ constexpr size_t kOutboxCap      = 512;   // blobs owed to one slot while its se
 constexpr auto   kResendEvery    = std::chrono::milliseconds(250);  // a refused slot is tried this often
 const wchar_t* const kBusyLine = L"<r>The terminal is busy</>";  // the game's answer to a line it cannot take
 const wchar_t* const kErrLine  = L"<r>err</>";                   // the game's answer to a line it cannot run
+int g_hostRunning = 0;  // HOST: inside RunCommand of a typist's line (its echo and its first lines)
 
 UE_FACT_FN(kRowEnterCommand, "sat_console_sync", L"ui_console_C", L"enterCommand", Declared);
 UE_FACT_FN(kRowUbergraph, "sat_console_sync", L"ui_console_C", L"ExecuteUbergraph_ui_console", Declared);
@@ -101,6 +102,8 @@ struct Terminal {
     int     lines = 0;        // lines run in the current window
     Clock::time_point windowStart{};
     Clock::time_point nextSpawnOk{};
+    std::wstring seenLog;     // HOST: the terminal's printed text as its typist last got it (the poll's baseline)
+    std::wstring pendingTail; // HOST: a last line the poll saw without its line break, held one poll
 };
 std::vector<Terminal> g_terms;
 bool g_saidRefused[kMaxPeers] = {};
@@ -247,6 +250,10 @@ void ClientOnBlob(const std::vector<uint8_t>& blob) {
             UE_LOGW("sat_console: a malformed line from the host -- dropped");
             return;
         }
+        static uint32_t s_got = 0;
+        if (s_got++ < 60)
+            UE_LOGI("sat_console: CLIENT got a host line (type %u, %zu chars, terminal %s)", static_cast<unsigned>(type),
+                    text.size(), term ? "here" : "MISSING");
         if (!term || !SC::CallWriteToLog(term, text, type))
             UE_LOGW("sat_console: a line from the host found no terminal here -- dropped");
         return;
@@ -254,6 +261,7 @@ void ClientOnBlob(const std::vector<uint8_t>& blob) {
     if (op == kOpBusy) {
         uint8_t busy = 0;
         if (!W::RdU8(blob, o, busy)) return;
+        UE_LOGI("sat_console: CLIENT got the host terminal's busy=%u", static_cast<unsigned>(busy));
         g_mirrorBusy = busy != 0;
         if (term && (g_mirrorBusy || !g_localHolds)) SC::WriteProcessing(term, g_mirrorBusy);
         return;
@@ -327,6 +335,10 @@ Terminal* TerminalFor(uint8_t slot, const std::string& guid) {
         SC::DiscardTerminal(term);
         return nullptr;
     }
+    // Ticked unseen, so a command's Delays run (the calibrations wait on them); without it the line starts,
+    // prints its first lines and the terminal stays busy.
+    if (!SC::TickUnseen(term)) UE_LOGW("sat_console: HOST slot %u's terminal could not be ticked -- its waiting "
+                                       "commands will stall", static_cast<unsigned>(slot));
     made.guid = guid;
     made.world = WI::CurrentWorld();  // null while unknown: the world term then fails open
     made.slot = slot;
@@ -440,11 +452,27 @@ void HostOnBlob(uint8_t slot, const std::vector<uint8_t>& blob) {
     if (spawns) t->nextSpawnOk = now + kSpawnEvery;
     UE_LOGI("sat_console: HOST runs '%ls' for slot %u (dish %d)", Printable(line).c_str(),
             static_cast<unsigned>(slot), dish);
-    if (!SC::RunCommand(t->pin.Raw(), line)) {
+    const uint64_t returnedBefore = g_counts.linesReturned;
+    ++g_hostRunning;
+    const bool ran = SC::RunCommand(t->pin.Raw(), line);
+    --g_hostRunning;
+    // What the run printed went out through the write hook; the poll takes it from here.
+    SC::ReadLog(t->pin.Raw(), t->seenLog);
+    t->pendingTail.clear();
+    if (!ran) {
         AnswerRefused(slot, line, kErrLine);
         return;
     }
     ++g_counts.linesRun;
+    // What the call did at once: a line the terminal took answers or turns busy; neither means it ran nothing.
+    static uint32_t s_said = 0;
+    if (s_said++ < 20) {
+        bool busy = false;
+        const bool read = SC::ReadProcessing(t->pin.Raw(), busy);
+        UE_LOGI("sat_console: HOST slot %u's line returned -- busy=%s, %llu line(s) answered at once",
+                static_cast<unsigned>(slot), read ? (busy ? "1" : "0") : "unreadable",
+                static_cast<unsigned long long>(g_counts.linesReturned - returnedBefore));
+    }
 }
 
 // Every write of a terminal's busy flag lies in its enterCommand or its ubergraph, the latent
@@ -463,6 +491,11 @@ sg::Verdict OnWritePre(const sg::Call& c) {
     std::wstring text;
     uint8_t type = 0;
     if (!SC::ReadWriteToLogArgs(c.locals, text, type)) return sg::Verdict::Run;
+    // Only the lines a typist's line writes while it runs here go out from this hook, with their bracket type.
+    // What a command prints after a Delay comes back through the latent action manager, where this hook is
+    // not reached: the poll (PollTerminals) sends those from the printed text. A line written outside both is
+    // the world's broken-device alert its Construct bound (TickUnseen), which the typist's own terminal prints.
+    if (!g_hostRunning) return sg::Verdict::Run;
     if (text.size() > kMaxLogChars) text.resize(kMaxLogChars);
     SendLog(static_cast<uint8_t>(t->slot), text, type);
     ++g_counts.linesReturned;
@@ -499,6 +532,63 @@ void Install(coop::net::Session* s) {
     EnsureWatched();
 }
 
+// HOST: what each typist's terminal printed since the last poll, and its busy level. A command that waits on
+// Delays prints its later lines -- a calibration's progress, its "Completed" -- from latent continuations, and
+// clears its busy flag there too; the script gate's hooks are not reached on that path, so the printed text
+// (`consoleLine`, the last few thousand characters) is diffed instead and its new lines sent bare, as printed.
+void PollTerminals() {
+    static Clock::time_point s_next{};
+    const auto now = Clock::now();
+    if (now < s_next) return;
+    s_next = now + std::chrono::milliseconds(150);
+    for (Terminal& t : g_terms) {
+        if (t.slot < 0) continue;
+        void* term = t.pin.Raw();
+        std::wstring cur;
+        const bool read = term && SC::ReadLog(term, cur);
+        static uint32_t s_polls = 0;
+        if (s_polls++ < 400 && (s_polls % 20) == 1)
+            UE_LOGI("sat_console: HOST poll slot %d -- read=%d text %zu chars, baseline %zu", t.slot, read ? 1 : 0,
+                    cur.size(), t.seenLog.size());
+        if (!read || cur == t.seenLog) {
+            if (!t.pendingTail.empty()) {  // a line whose break never came: it is complete
+                SendLog(static_cast<uint8_t>(t.slot), t.pendingTail, 2);
+                ++g_counts.linesReturned;
+                t.pendingTail.clear();
+            }
+        } else {
+            // The largest suffix of the baseline that prefixes the text is what both share (the text is trimmed
+            // at its front as it grows).
+            size_t k = (std::min)(t.seenLog.size(), cur.size());
+            for (; k > 0; --k)
+                if (cur.compare(0, k, t.seenLog, t.seenLog.size() - k, k) == 0) break;
+            std::wstring fresh = t.pendingTail + cur.substr(k);
+            static uint32_t s_grew = 0;
+            if (s_grew++ < 60)
+                UE_LOGI("sat_console: HOST slot %d's terminal printed %zu new chars (overlap %zu)", t.slot,
+                        fresh.size(), k);
+            t.pendingTail.clear();
+            t.seenLog = cur;
+            size_t pos = 0;
+            while (pos < fresh.size()) {
+                const size_t eol = fresh.find_first_of(L"\r\n", pos);
+                if (eol == std::wstring::npos) {
+                    t.pendingTail = fresh.substr(pos);
+                    break;
+                }
+                if (eol > pos) {
+                    std::wstring text = fresh.substr(pos, eol - pos);
+                    if (text.size() > kMaxLogChars) text.resize(kMaxLogChars);
+                    SendLog(static_cast<uint8_t>(t.slot), text, 2);
+                    ++g_counts.linesReturned;
+                }
+                pos = eol + 1;
+            }
+        }
+        HostAfterBody(t);  // the busy level after the lines it went with
+    }
+}
+
 void Tick() {
     if (!GT::IsGameThread()) return;
     auto* s = g_session.load(std::memory_order_acquire);
@@ -519,6 +609,7 @@ void Tick() {
             DiscardAt(i);
         }
     }
+    if (SessionIf(coop::net::Role::Host)) PollTerminals();
     if (!g_asm.Idle() && now >= g_nextSweep) {
         g_nextSweep = now + std::chrono::seconds(1);
         g_asm.Sweep(now, std::chrono::seconds(10));

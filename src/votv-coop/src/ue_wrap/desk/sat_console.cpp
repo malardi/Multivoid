@@ -171,8 +171,24 @@ void* CreateTerminal(void* worldContext) {
     return IsTerminal(made) ? made : nullptr;
 }
 
+bool TickUnseen(void* term) {
+    if (!IsTerminal(term)) return false;
+    void* cls = R::ClassOf(term);
+    ParamFrame vis(R::FindDispatchFunctionCached(cls, L"SetVisibility"));
+    const uint8_t kHitTestInvisible = 3;  // ESlateVisibility: drawn and ticked, never hit
+    if (!vis.valid() || !vis.Set<uint8_t>(L"InVisibility", kHitTestInvisible) || !Call(term, vis)) return false;
+    ParamFrame opacity(R::FindDispatchFunctionCached(cls, L"SetRenderOpacity"));
+    if (!opacity.valid() || !opacity.Set<float>(L"InOpacity", 0.f) || !Call(term, opacity)) return false;
+    ParamFrame add(R::FindDispatchFunctionCached(cls, L"AddToViewport"));
+    return add.valid() && add.Set<int32_t>(L"ZOrder", -10000) && Call(term, add);
+}
+
 void DiscardTerminal(void* term) {
-    if (IsTerminal(term)) R::MarkPendingKill(term);
+    if (!IsTerminal(term)) return;
+    // Out of the viewport first: a terminal TickUnseen put there is held by the viewport's own widget list.
+    ParamFrame remove(R::FindDispatchFunctionCached(R::ClassOf(term), L"RemoveFromParent"));
+    if (remove.valid()) Call(term, remove);
+    R::MarkPendingKill(term);
 }
 
 bool ReadEnterCommandLine(const uint8_t* locals, std::wstring& out) {
