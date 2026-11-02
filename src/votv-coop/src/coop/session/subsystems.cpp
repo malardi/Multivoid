@@ -36,6 +36,12 @@
 #include "coop/interactables/shared_screen_sync.h"  // the PC operator's screen on every peer
 #include "coop/props/destroy_flood_guard.h"  // the refused destroys given back
 #include "coop/props/plant_sync.h"  // the growing plants: the host's garden on every peer
+#include "coop/world/cargo_lift_sync.h"  // the cargo lift: the host's trip on every peer
+#include "coop/props/safe_sync.h"  // the safe: opened once, on the host
+#include "coop/items/gravity_motion.h"  // the gravity gun's push and pull: its target streams as held
+#include "coop/props/prop_fire_sync.h"  // a burning prop: the host's fire, a client's ignite as a request
+#include "coop/world/media_sync.h"  // TVs and file players: the host's MediaPlayer, sought on the others
+#include "coop/world/radio_sync.h"  // the internet radio: the host's track and time
 #include "coop/interactables/laptop_buffer_sync.h"  // the PC buffer quad lane
 #include "coop/interactables/portable_pc_lid.h"  // the portable PC's lid lane
 #include "coop/interactables/sleepingbag_sync.h"  // client fold/unfold verbs run on the host's source prop
@@ -266,6 +272,11 @@ void Install(coop::net::Session& session) {
     coop::laptop_sync::Install(&session);  // the stationary PC's power and the portable PC lid's wire
     coop::laptop_tab::Install(&session);  // the PC user's tab: the three tab watches, and the receive paths' session
     coop::shared_screen_sync::Install(&session);  // the PC operator's screen: the session, and the laptop claim's release hold
+    coop::prop_fire_sync::Install(&session);  // a burning prop: the host's fire everywhere, a client's ignite or extinguish as a request
+    coop::media_sync::Install(&session);  // TVs and file players: the host's MediaPlayer, sought on the others
+    coop::radio_sync::Install(&session);  // the internet radio: the host's track, a client's change as a request
+    coop::safe_sync::Install(&session);  // a client's safe opening as a request, the contents born once
+    coop::cargo_lift_sync::Install(&session);  // the cargo lift: a client's press as a request, the host's trip replayed
     coop::plant_sync::Install(&session);  // the growing plants: the host's garden, a client's planting and tending as intents
     coop::portable_pc_lid::Install(&session);  // the portable PC's lid, on its own verb
     coop::sleepingbag_sync::Install(&session);  // sleepingbag transitions use host-authored prop births
@@ -397,6 +408,8 @@ void ConnectReplayForSlot(int slot) {
     coop::laptop_sync::QueueConnectBroadcastForSlot(slot);  // the PC's power (its disc slot is floppy_slot_sync's)
     coop::laptop_tab::QueueConnectBroadcastForSlot(slot);  // the tab the PC's user is on
     coop::shared_screen_sync::QueueConnectBroadcastForSlot(slot);  // the PC operator's screen
+    coop::cargo_lift_sync::QueueConnect(slot);  // every lift's canonical
+    coop::prop_fire_sync::QueueConnect(slot);  // every burning prop
     coop::plant_sync::QueueConnectBroadcastForSlot(slot);  // every plant of the host's garden
     coop::portable_pc_lid::QueueConnectBroadcastForSlot(slot);  // every open portable PC lid
     coop::floppybox_sync::QueueConnectBroadcastForSlot(slot);  // one canonical per live box
@@ -476,6 +489,8 @@ void DisconnectSlot(coop::net::Session& session, int slot) {
     coop::prop_save_data::OnPeerGone(static_cast<uint8_t>(slot));
     coop::floppy_slot_sync::OnPeerGone(static_cast<uint8_t>(slot));
     coop::shared_screen_sync::OnPeerGone(slot);  // its half assemblies, its report order, what it was owed
+    coop::cargo_lift_sync::OnPeerLeft(slot);  // its requests and the canonicals it was owed
+    coop::prop_fire_sync::OnPeerLeft(slot);
     coop::plant_sync::OnPeerGone(slot);  // its half assemblies, the garden it was owed
     coop::dish_hashcode_sync::OnPeerGone(static_cast<uint8_t>(slot));
     coop::sat_console_sync::OnPeerGone(static_cast<uint8_t>(slot));  // its terminal kept, running its command, for its return
@@ -604,6 +619,12 @@ DisconnectStats DisconnectAll() {
     coop::laptop_sync::OnDisconnect();
     coop::laptop_tab::OnDisconnect();
     coop::shared_screen_sync::OnDisconnect();
+    coop::gravity_motion::OnDisconnect();
+    coop::prop_fire_sync::OnDisconnect();
+    coop::media_sync::OnDisconnect();
+    coop::radio_sync::OnDisconnect();
+    coop::safe_sync::OnDisconnect();
+    coop::cargo_lift_sync::OnDisconnect();
     coop::plant_sync::OnDisconnect();
     coop::destroy_flood_guard::Reset();
     coop::portable_pc_lid::OnDisconnect();
@@ -734,6 +755,12 @@ void TickGameplay(coop::net::Session& session, bool isConnected, bool isHost,
     { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:laptop_tab"}; coop::laptop_tab::Tick(session); }  // the tab watches until live, the refusal window, and a tab report owed by its pace; BEFORE the occupancy poll, so a leaving user's last tab goes ahead of the claim's release
     { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:shared_screen"}; coop::shared_screen_sync::Tick(); }  // the PC operator's screen: lease, inherited repaint, capture, the host's sends; BEFORE the occupancy poll, whose release hold flushes the final screen
     { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:plant"}; coop::plant_sync::Tick(); }  // the growing plants: the host's beat, a client's intents and refusals
+    { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:cargo_lift"}; coop::cargo_lift_sync::Tick(); }  // the cargo lift: the host's requests and canonicals, a client's replays
+    { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:safe"}; coop::safe_sync::Tick(); }  // the safe: a client's requests, the host's records owed
+    { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:media"}; coop::media_sync::Tick(); }  // a TV or a music file the host is playing
+    { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:prop_fire"}; coop::prop_fire_sync::Tick(); }  // the host's fires out, a client's requests in
+    { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:gravity"}; coop::gravity_motion::Tick(session); }  // the gravity gun's seams; its puppet copies' tick refused
+    { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:radio"}; coop::radio_sync::Tick(); }  // the host's radios out, a client's requests in
     coop::destroy_flood_guard::Tick();  // HOST: the props whose destroy was refused, given back to the peers
     { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:device_occupancy"}; coop::device_occupancy::Tick(); }  // device occupancy: activeInterface edge poll + pending claim retry
     { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:console_state"}; coop::console_state_sync::Tick(); }  // signal-catcher: host sky poll / client mirror sweep / desk + dish owner streams

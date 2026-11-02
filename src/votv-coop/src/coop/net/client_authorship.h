@@ -104,6 +104,11 @@ constexpr ClientAuthorship AuthorshipOf(ReliableKind k) {
     case ReliableKind::FloppySlotState:
     case ReliableKind::SharedScreen:
     case ReliableKind::PlantSync:
+    case ReliableKind::CargoLift:
+    case ReliableKind::SafeUnlock:
+    case ReliableKind::CoffeeActionIntent:
+    case ReliableKind::RadioState:
+    case ReliableKind::PropFire:
     case ReliableKind::HookState:
     case ReliableKind::HookDestroy:
     case ReliableKind::HookAnchorCommit:
@@ -234,6 +239,7 @@ constexpr ClientAuthorship AuthorshipOf(ReliableKind k) {
     case ReliableKind::AtvSetComplete:
     case ReliableKind::MadnessState:
     case ReliableKind::PipeState:
+    case ReliableKind::MediaState:
         return ClientAuthorship::Host;
     }
     return ClientAuthorship::NotAKind;  // a byte value that names no kind: refused like Host

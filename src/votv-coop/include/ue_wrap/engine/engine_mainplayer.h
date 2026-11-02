@@ -57,6 +57,8 @@ struct MainPlayerGrabState {
     bool   grabsHeavy;     // AmainPlayer_C::grabsHeavy     (PCC heavy-grab BP flag)
     bool   heavy;          // AmainPlayer_C::Heavy          (BP-side heavy state mirror)
     float  grabLen;        // AmainPlayer_C::grabLen        (Timeline current grab length)
+    void*  gravityActor;   // comp_gravitygun_C::obj (beam-held world actor, or null)
+    void*  physicsActor;   // the selected prop_physgun_C's objectPickup while it holds, or null
 };
 
 bool ReadMainPlayerGrabState(void* mainPlayer, MainPlayerGrabState& out);

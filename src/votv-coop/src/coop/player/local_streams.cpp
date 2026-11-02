@@ -3,6 +3,7 @@
 // coop/player/local_streams.h.
 
 #include "coop/player/local_streams.h"
+#include "coop/items/gravity_motion.h"  // a prop the gravity gun pushed or pulled streams as held
 #include "coop/props/prop_drive_host.h"
 
 #include "coop/dev/perf_probe.h"
@@ -249,7 +250,16 @@ void Tick(coop::net::Session& session, void* local, void* controller) {
         // fallback, gated on IsKeyedInteractable since it can point at other carry targets. An
         // Aprop_C in holding_actor is the hotbar hand item, player expression rather than a world
         // entity (updateHold respawns it per switch), and goes to coop::hand_item; only the trash
-        // lineage stays here.
+        // lineage stays here. A prop the gravity gun's beam or a physgun holds, or one the gravity gun
+        // just pushed or pulled (coop/items/gravity_motion), streams as a held prop.
+        if (!heldActor) {
+            heldActor = gs.gravityActor;
+            if (!heldActor) heldActor = gs.physicsActor;
+            if (!heldActor) heldActor = coop::gravity_motion::Target();
+            // A gun can select an actor outside prop_C: never feed a Character or an arbitrary actor to the
+            // prop movement path merely because the weapon points at it.
+            if (heldActor && !ue_wrap::prop::IsKeyedInteractable(heldActor)) heldActor = nullptr;
+        }
         if (gs.holdingActor && R::IsLive(gs.holdingActor) &&
             ue_wrap::prop::IsKeyedInteractable(gs.holdingActor)) {
             if (ue_wrap::prop::IsDescendantOfProp(gs.holdingActor))
@@ -434,6 +444,7 @@ void Tick(coop::net::Session& session, void* local, void* controller) {
             // An unreadable held prop streams no pose this tick; its identity is kept below.
         } else if (pp.key.len > 0 || pp.elementId != 0) {
             session.SetLocalPropPose(true, pp);
+            coop::gravity_motion::NoteStreamed(heldActor);
             // The first 3 and every 60th, matching the receiver's throttle so the two logs diff
             // line for line.
             const uint64_t n = ++g_propEmitCount;

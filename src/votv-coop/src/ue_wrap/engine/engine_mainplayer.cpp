@@ -6,6 +6,7 @@
 // engine-substrate accessors; gameplay code uses them in place of inline offset
 // dereferences. The caches here are file-private plain pointers, resolved once per process.
 
+#include "ue_wrap/actors/physics_gun.h"
 #include "ue_wrap/engine/engine.h"
 #include "ue_wrap/engine/engine_component.h"   // GetComponentLocation (the hold frame's camera)
 #include "ue_wrap/engine/hit_result.h"         // WriteField (the hitResult a drill aims)
@@ -247,6 +248,22 @@ bool ReadMainPlayerGrabState(void* mainPlayer, MainPlayerGrabState& out) {
     if (grabsHeavyOff >= 0) out.grabsHeavy = *reinterpret_cast<bool*>(base + grabsHeavyOff);
     if (heavyOff >= 0)      out.heavy      = *reinterpret_cast<bool*>(base + heavyOff);
     if (grabLenOff >= 0)    out.grabLen    = *reinterpret_cast<float*>(base + grabLenOff);
+    out.physicsActor = ue_wrap::physics_gun::HeldActor(out.holdingActor);
+    // The gravity gun's own hold() writes `obj` and clears it on release or destruction (grabbing_actor names
+    // the player's hand grab, not the gun's). InstanceOffset follows a reloaded class and retries a miss.
+    static R::InstanceOffset gunOffset{L"weaponComp_gravityGun"};
+    static R::InstanceOffset objectOffset{L"obj"};
+    const int32_t gunOff = gunOffset.Of(mainPlayer);
+    if (gunOff >= 0) {
+        void* gun = *reinterpret_cast<void**>(base + gunOff);
+        if (gun && R::IsLive(gun)) {
+            const int32_t objOff = objectOffset.Of(gun);
+            if (objOff >= 0) {
+                void* actor = *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(gun) + objOff);
+                if (actor && R::IsLive(actor)) out.gravityActor = actor;
+            }
+        }
+    }
     return true;
 }
 

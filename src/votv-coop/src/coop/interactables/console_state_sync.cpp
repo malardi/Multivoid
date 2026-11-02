@@ -7,6 +7,7 @@
 #include "coop/net/session.h"
 #include "coop/interactables/signal_catch_sync.h"
 #include "coop/dev/desk_diag.h"  // the join-adopt baseline hook, a no-op unless enabled
+#include "coop/text/utf8_codec.h"  // the line rides as UTF-8: the game writes its own language
 
 #include "ue_wrap/desk/console_desk.h"
 #include "ue_wrap/desk/coords_panel.h"
@@ -304,16 +305,18 @@ bool IsPeerWrittenLogLine(const std::wstring& line) {
     return false;
 }
 
+// The line rides as UTF-8: the game writes its lines in its own language, and a translated one (the owner's
+// Russian) is not ASCII -- one byte per character turned every such line into noise on the other terminals.
 void SendLogLine(coop::net::Session* s, const std::wstring& line) {
     coop::net::DeskLogLinePayload p{};
-    size_t n = 0;
-    for (; n < line.size() && n < sizeof(p.line); ++n)
-        p.line[n] = static_cast<char>(line[n]);  // the BP lines are ASCII
-    if (line.size() > sizeof(p.line))
-        UE_LOGW("console_state: desk log line truncated to %zu chars on the wire",
-                sizeof(p.line));
-    p.len = static_cast<uint8_t>(n);
-    if (n) s->SendReliable(coop::net::ReliableKind::DeskLogLine, &p, sizeof(p));
+    std::string u = coop::text::ToUtf8(line);
+    if (u.size() > sizeof(p.line)) {
+        UE_LOGW("console_state: desk log line of %zu bytes capped to %zu on the wire", u.size(), sizeof(p.line));
+        u = coop::text::CapUtf8Bytes(std::move(u), sizeof(p.line));
+    }
+    std::memcpy(p.line, u.data(), u.size());
+    p.len = static_cast<uint8_t>(u.size());
+    if (p.len) s->SendReliable(coop::net::ReliableKind::DeskLogLine, &p, sizeof(p));
 }
 
 // Poll the terminal and ship the new complete event lines: at 1 Hz from the desk poll, and
@@ -348,7 +351,12 @@ void ProduceLogLines(coop::net::Session* s) {
             const std::wstring line = fresh.substr(pos, eol - pos);
             if (!IsPeerWrittenLogLine(line)) {
                 SendLogLine(s, line);
-                UE_LOGI("console_state: desk log event line shipped (%zu chars)", line.size());
+                static uint32_t s_said = 0;
+                if (s_said++ < 40)
+                    UE_LOGI("console_state: desk log event line shipped (%zu chars): '%s'", line.size(),
+                            coop::text::ToUtf8(line).c_str());
+                else
+                    UE_LOGI("console_state: desk log event line shipped (%zu chars)", line.size());
             }
         }
         pos = (eol == fresh.size()) ? eol : fresh.find_first_not_of(L"\r\n", eol);
@@ -560,7 +568,16 @@ void OnDeskLogLine(const coop::net::DeskLogLinePayload& p, uint8_t senderSlot) {
     // whole terminal, which would otherwise swallow an unshipped local line from the last poll
     // window.
     ProduceLogLines(s);
-    std::wstring line(p.line, p.line + n);
+    std::wstring line;
+    if (!coop::text::FromUtf8Strict(p.line, n, &line)) {
+        static uint32_t s_bad = 0;
+        if (s_bad++ < 5) UE_LOGW("console_state: a desk log line of %zu bytes was not UTF-8 -- dropped", n);
+        return;
+    }
+    static uint32_t s_said = 0;
+    if (s_said++ < 40)
+        UE_LOGI("console_state: desk log line applied (%zu chars): '%s'", line.size(),
+                coop::text::ToUtf8(line).c_str());
     CD::AppendCoordLog(line);  // writeToCoordLog_2: native CRLF + repaint + cap
     // Echo-proof: advance our own diff baseline past the applied text.
     g_logBaseline = CD::ReadCoordLogTail(kLogReadMax);

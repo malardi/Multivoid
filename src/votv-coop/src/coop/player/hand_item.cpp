@@ -1,6 +1,7 @@
 // coop/player/hand_item.cpp -- see coop/player/hand_item.h for the design.
 
 #include "coop/player/hand_item.h"
+#include "coop/props/prop_fire_sync.h"  // a hand item released burning
 
 #include "coop/net/latest_wins.h"
 #include "coop/net/net_clock.h"
@@ -111,7 +112,11 @@ void ExpressReleasedHandActor(coop::net::Session& session, void* prev, int32_t p
         return;
     }
     // The previous actor survived the hand edge: a genuine same-actor release into the world.
+    ue_wrap::CachedObjRef released;
+    released.Set(prev);
     if (coop::trash_collect_sync::EnsureHeldItemBroadcast(prev, &session)) {
+        // A hand item released burning keeps its fire on the host (coop/props/prop_fire_sync).
+        if (released.Get()) coop::prop_fire_sync::OnHandReleased(prev);
         UE_LOGI("hand_item: released ex-hand actor %p expressed as a world prop "
                 "(R-drop/place -- peers see it this tick)", prev);
     } else {

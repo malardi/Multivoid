@@ -25,6 +25,11 @@
 #include "coop/interactables/sat_console_sync.h"  // SatConsole
 #include "coop/interactables/shared_screen_sync.h"  // SharedScreen
 #include "coop/props/plant_sync.h"  // PlantSync
+#include "coop/world/cargo_lift_sync.h"  // CargoLift
+#include "coop/props/safe_sync.h"  // SafeUnlock
+#include "coop/world/media_sync.h"  // MediaState
+#include "coop/props/prop_fire_sync.h"  // PropFire
+#include "coop/world/radio_sync.h"  // RadioState
 #include "coop/interactables/drive_payload_sync.h"  // DrivePayload
 #include "coop/interactables/drive_sync.h"       // DriveSlotState
 #include "coop/interactables/drive_rack_sync.h"  // RackState
@@ -288,6 +293,57 @@ bool HandleSignalEvent(const net::Session::ReliableMessage& msg) {
                 ? static_cast<uint8_t>(msg.senderPeerSlot)
                 : static_cast<uint8_t>(0xFF);
         coop::shared_screen_sync::OnChunk(ss, ssslot);
+        break;
+    }
+    case net::ReliableKind::PropFire: {
+        if (msg.payloadLen != sizeof(net::PropFirePayload) || msg.senderPeerSlot < 0 || msg.senderPeerSlot >= net::kMaxPeers)
+            break;
+        net::PropFirePayload fp{};
+        std::memcpy(&fp, msg.payload, sizeof(fp));
+        coop::prop_fire_sync::Receive(fp, static_cast<uint8_t>(msg.senderPeerSlot));
+        break;
+    }
+    case net::ReliableKind::MediaState: {
+        if (msg.payloadLen < sizeof(net::MediaStatePayload)) break;
+        if (msg.senderPeerSlot != 0) break;  // the host's alone (a Host kind: the receive edge refuses a client's)
+        net::MediaStatePayload mp{};
+        std::memcpy(&mp, msg.payload, sizeof(mp));
+        coop::media_sync::OnReliable(mp);
+        break;
+    }
+    case net::ReliableKind::RadioState: {
+        if (msg.payloadLen != sizeof(net::RadioStatePayload) || msg.senderPeerSlot < 0 ||
+            msg.senderPeerSlot >= net::kMaxPeers)
+            break;
+        net::RadioStatePayload rp{};
+        std::memcpy(&rp, msg.payload, sizeof(rp));
+        coop::radio_sync::Receive(rp, static_cast<uint8_t>(msg.senderPeerSlot));
+        break;
+    }
+    case net::ReliableKind::SafeUnlock: {
+        if (msg.payloadLen < sizeof(net::SafeUnlockPayload)) {
+            UE_LOGW("event_feed: SafeUnlock payload too short (%zu < %zu)", static_cast<size_t>(msg.payloadLen),
+                    sizeof(net::SafeUnlockPayload));
+            break;
+        }
+        net::SafeUnlockPayload sp{};
+        std::memcpy(&sp, msg.payload, sizeof(sp));
+        coop::safe_sync::Receive(
+            sp, (msg.senderPeerSlot >= 0 && msg.senderPeerSlot < net::kMaxPeers) ? static_cast<uint8_t>(msg.senderPeerSlot)
+                                                                                 : static_cast<uint8_t>(0xFF));
+        break;
+    }
+    case net::ReliableKind::CargoLift: {
+        if (msg.payloadLen < sizeof(net::CargoLiftPayload)) {
+            UE_LOGW("event_feed: CargoLift payload too short (%zu < %zu)", static_cast<size_t>(msg.payloadLen),
+                    sizeof(net::CargoLiftPayload));
+            break;
+        }
+        net::CargoLiftPayload cp{};
+        std::memcpy(&cp, msg.payload, sizeof(cp));
+        coop::cargo_lift_sync::Receive(
+            cp, (msg.senderPeerSlot >= 0 && msg.senderPeerSlot < net::kMaxPeers) ? static_cast<uint8_t>(msg.senderPeerSlot)
+                                                                                 : static_cast<uint8_t>(0xFF));
         break;
     }
     case net::ReliableKind::PlantSync: {

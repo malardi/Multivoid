@@ -60,6 +60,10 @@ set(VOTVCOOP_SOURCES
     src/ue_wrap/actors/notebook.cpp
     src/ue_wrap/actors/hook.cpp
     src/ue_wrap/world/keyed_objects.cpp
+    src/ue_wrap/world/media_player.cpp
+    src/ue_wrap/world/radio_player.cpp
+    src/ue_wrap/actors/physics_gun.cpp
+    src/ue_wrap/actors/prop_burn.cpp
     src/coop/items/hook_sync.cpp
     src/coop/items/hook_anchor.cpp
     src/coop/items/hook_prop_claim.cpp
@@ -80,6 +84,9 @@ set(VOTVCOOP_SOURCES
     src/ue_wrap/engine/engine_playerragdoll.cpp
     src/ue_wrap/engine/engine_attach.cpp
     src/ue_wrap/devices/door.cpp
+    src/ue_wrap/devices/cargo_lift.cpp
+    src/ue_wrap/actors/safe.cpp
+    src/ue_wrap/devices/coffee.cpp
     src/ue_wrap/devices/base_window.cpp
     src/ue_wrap/devices/window_canvas.cpp
     src/ue_wrap/devices/grime.cpp
@@ -199,6 +206,14 @@ set(VOTVCOOP_SOURCES
     src/coop/player/skin_registry.cpp
     src/coop/player/local_body.cpp
     src/coop/props/plant_sync.cpp
+    src/coop/world/cargo_lift_sync.cpp
+    src/coop/props/safe_sync.cpp
+    src/coop/world/media_sync.cpp
+    src/coop/world/radio_sync.cpp
+    src/coop/items/gravity_motion.cpp
+    src/coop/props/prop_fire_sync.cpp
+    src/coop/interactables/coffee_intent.cpp
+    src/coop/interactables/coffee_state.cpp
     src/coop/props/prop_act_host.cpp
     src/coop/props/prop_act_request.cpp
     src/coop/props/prop_act_selftest.cpp

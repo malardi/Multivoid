@@ -30,7 +30,7 @@ inline constexpr uint32_t kMagic = 0x564D5450u;
 // This file is past the 1500-line hard cap and stays there: it is the single-feature exception the
 // rule names. One wire format, whose enum, payload structs and static_asserts are read together;
 // splitting it would put a kind's number in one file and its bytes in another.
-inline constexpr uint16_t kProtocolVersion = 287;
+inline constexpr uint16_t kProtocolVersion = 288;
 
 // Default LAN port (overridable via multivoid.ini "net.port=").
 inline constexpr uint16_t kDefaultPort = 47621;
@@ -1196,6 +1196,24 @@ enum class ReliableKind : uint8_t {
     // discard is an intent the host applies and re-publishes. Chunked blob (BlobChunkPayload). Not relayed, not
     // pre-world. Late join: every plant at the joiner's world-ready.
     PlantSync = 211,
+    // The cargo lift (coop/world/cargo_lift_sync): a client's button press as a request, the host's trip as one
+    // canonical per start and per rest, a heartbeat for a late joiner. CargoLiftPayload. Not relayed.
+    CargoLift = 212,
+    // A client's safe opening (coop/props/safe_sync): the host opens its own safe, the contents are born once.
+    // SafeUnlockPayload. Not relayed.
+    SafeUnlock = 213,
+    // A client's press of the coffee vending machine or the coffee maker (coop/interactables/coffee_intent): the
+    // host runs the game's own action with the sender's puppet. CoffeeActionIntentPayload. Not relayed.
+    CoffeeActionIntent = 214,
+    // TVs and file players (coop/world/media_sync): the host's MediaPlayer url and time, which the clients open
+    // and seek to. MediaStatePayload. Not relayed. Ported from the WatchersOfTheVoid fork (MIT).
+    MediaState = 215,
+    // The internet radio (coop/world/radio_sync): the host's track (a hash of the local catalog name), its time
+    // and mode; a client's request to change it. RadioStatePayload. Not relayed.
+    RadioState = 216,
+    // A burning prop (coop/props/prop_fire_sync): a client's ignite or extinguish as a request, the host's fire as
+    // the canonical. PropFirePayload. Not relayed. Ported from the WatchersOfTheVoid fork (MIT).
+    PropFire = 217,
 };
 
 #pragma pack(push, 1)
@@ -2156,11 +2174,12 @@ static_assert(sizeof(DeskStatePayload) == 48, "DeskStatePayload must be 48 bytes
 static_assert(sizeof(DeskStatePayload) <= 256 - 20 - 8,
               "DeskStatePayload must fit in one reliable datagram");
 
-// One coordinates-terminal event line (DeskLogLine), ASCII, without its CRLF.
+// One coordinates-terminal event line (DeskLogLine), UTF-8, without its CRLF: a translated game writes its own
+// language there (the owner's Russian), which an ASCII byte per character would turn into noise.
 struct DeskLogLinePayload {
     uint8_t len;        // 1 -- used bytes in line[]
     uint8_t _pad[3];    // 3
-    char    line[120];  // 120 -- one event line WITHOUT the trailing CRLF
+    char    line[120];  // 120 -- one event line WITHOUT the trailing CRLF, UTF-8, capped on a character boundary
 };
 static_assert(sizeof(DeskLogLinePayload) == 124, "DeskLogLinePayload must be 124 bytes");
 
@@ -4081,6 +4100,70 @@ struct StatQueryReplyPayload {
 static_assert(sizeof(StatQueryReplyPayload) == 205, "StatQueryReplyPayload must be 205 bytes");
 static_assert(sizeof(StatQueryReplyPayload) <= 256 - 20 - 8,
               "StatQueryReplyPayload must fit in one reliable datagram");
+
+// One cargo lift (ReliableKind::CargoLift). op 0: a client's press request (`key`, `button`, `sequence` its
+// request number). op 1: the host's lift at rest, op 2: the host's lift starting a trip -- `sequence` is the
+// host's revision, the same on a heartbeat, and a client replays each revision once. The lift is named by its
+// placed controller (the platform is a child with no eid).
+struct CargoLiftPayload {
+    WireKey  key;
+    float    alpha;
+    float    anchorX, anchorY, anchorZ;
+    float    x, y, z, pitch, yaw, roll;
+    uint32_t sequence;
+    uint8_t  op, moving, direction, button;  // button 0..2
+};
+static_assert(sizeof(CargoLiftPayload) == 80, "CargoLiftPayload must be 80 bytes");
+
+// A client cracked or broke open a safe (ReliableKind::SafeUnlock): `key` is the safe's prop Key, `sequence` the
+// client's request number from 1.
+struct SafeUnlockPayload {
+    WireKey  key;
+    uint32_t sequence;
+};
+static_assert(sizeof(SafeUnlockPayload) == 36, "SafeUnlockPayload must be 36 bytes");
+
+// A client's press of a coffee device (CoffeeActionIntent): the device by its prop key, the same on every peer.
+struct CoffeeActionIntentPayload {
+    WireKey key;  // 32 -- the vending machine's or the coffee maker's prop key
+};
+static_assert(sizeof(CoffeeActionIntentPayload) == 32, "CoffeeActionIntentPayload must be 32 bytes");
+
+// One MediaPlayer (MediaState). url is what GetUrl returned; ticks are FTimespan (100 ns).
+struct MediaStatePayload {
+    char    url[160];
+    int64_t ticks;
+    uint8_t playing;
+    uint8_t pad[7];
+};
+static_assert(sizeof(MediaStatePayload) == 176, "MediaStatePayload must be 176 bytes");
+
+// One internet radio (RadioState). op 0: the host's canonical; 1: a client's request; 2: the host's ack while it
+// has no track loaded. `track` is a hash of the relative local catalog file name (UTF-16), never a path.
+struct RadioStatePayload {
+    WireKey  key;
+    uint32_t elementId;
+    uint32_t seq;
+    uint32_t ack[4];  // by slot
+    uint64_t track;
+    int64_t  ticks;
+    uint8_t  op;
+    uint8_t  playing;
+    uint8_t  mode;
+    uint8_t  pad[5];
+};
+static_assert(sizeof(RadioStatePayload) <= 228, "RadioStatePayload must fit one reliable datagram");
+
+// One burning prop (PropFire). op 0: a client's ignite request, 1: its extinguish request, 2: the host's state.
+// `playerNo` names the person behind a request; zero on the host's state.
+struct PropFirePayload {
+    WireKey  key;
+    uint32_t sequence;
+    float    fuel, fuelSpeed;
+    uint8_t  op, burning;
+    uint16_t playerNo;
+};
+static_assert(sizeof(PropFirePayload) == 48, "PropFirePayload must be 48 bytes");
 
 #pragma pack(pop)
 

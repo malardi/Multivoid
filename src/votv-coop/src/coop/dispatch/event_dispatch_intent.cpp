@@ -13,6 +13,7 @@
 
 #include "event_dispatch.h"  // co-located private header (src tree, not include/)
 
+#include "coop/interactables/coffee_intent.h"  // CoffeeActionIntent
 #include "coop/creatures/creature_hit_intent.h"  // CLIENT->HOST a swing that hit a creature's mirror
 #include "coop/creatures/kerfur_command.h"
 #include "coop/creatures/kerfur_convert_host.h"
@@ -349,6 +350,18 @@ bool HandleIntentEvent(net::Session& session,
                 static_cast<unsigned>(p.targetKind), static_cast<unsigned>(p.toolKind));
         coop::pack_trash_intent::OnPackTrashIntent(session, p,
                                                    static_cast<uint8_t>(msg.senderPeerSlot));
+        break;
+    }
+    case net::ReliableKind::CoffeeActionIntent: {
+        if (session.role() != net::Role::Host || msg.senderPeerSlot < 1 || msg.senderPeerSlot >= net::kMaxPeers) {
+            UE_LOGW("event_feed: CoffeeActionIntent dropped (role or sender slot %d)", msg.senderPeerSlot);
+            break;
+        }
+        net::CoffeeActionIntentPayload p{};
+        if (msg.payloadLen != sizeof(p)) { coop::coffee_intent::CountDropped(coop::coffee_intent::Drop::Size); break; }
+        std::memcpy(&p, msg.payload, sizeof(p));
+        if (p.key.len > sizeof(p.key.data)) { coop::coffee_intent::CountDropped(coop::coffee_intent::Drop::Key); break; }
+        coop::coffee_intent::OnAction(session, p, static_cast<uint8_t>(msg.senderPeerSlot));
         break;
     }
     case net::ReliableKind::RemoverRequest: {
