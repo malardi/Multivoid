@@ -1,6 +1,7 @@
 // coop/dev/mv_drill.cpp -- see coop/dev/mv_drill.h.
 
 #include "coop/dev/mv_drill.h"
+#include "coop/dev/rearm.h"
 
 #include "coop/commands/command_sync.h"
 #include "coop/config/config.h"
@@ -22,6 +23,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -39,10 +41,12 @@ namespace LG = coop::session::local_grants;
 enum class Arm : uint8_t { Off, On, Red };
 
 Arm ArmNow() {
-    static const Arm arm = [] {
+    static Arm arm{};
+    static uint32_t armSeen = ~0u;  // re-read after the lab re-arms the drills
+    coop::dev::rearm::Latched(arm, armSeen, [] {
         const std::string v = coop::config::ResolveEnum(::coop::config_registry::rows::mv_drill);
         return v == "on" ? Arm::On : v == "red" ? Arm::Red : Arm::Off;
-    }();
+    });
     return arm;
 }
 
@@ -54,6 +58,37 @@ Arm ArmNow() {
 #define MVD_ABSENT "ffffffffffffffffffffffffffffffff"
 constexpr const char* kHostId = MVD_HOST;
 constexpr const char* kClientId = MVD_CLIENT;
+
+bool IsId(std::string_view s) {
+    return s.size() == 32 && std::all_of(s.begin(), s.end(), [](char c) {
+               return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+           });
+}
+
+// The installs this run is against: the rig's, or the two mv_drill_ids names ("<host>,<client>": the lab's copies,
+// whose store the lab seeds under their own ids). Read once.
+struct Ids {
+    std::string host = kHostId;
+    std::string client = kClientId;
+};
+const Ids& RunIds() {
+    static Ids ids{};
+    static uint32_t idsSeen = ~0u;  // re-read after the lab re-arms the drills
+    coop::dev::rearm::Latched(ids, idsSeen, [] {
+        Ids r;
+        const std::string v = coop::config::ResolveString(::coop::config_registry::rows::mv_drill_ids);
+        const size_t comma = v.find(',');
+        if (comma != std::string::npos && IsId(std::string_view(v).substr(0, comma)) &&
+            IsId(std::string_view(v).substr(comma + 1))) {
+            r.host = v.substr(0, comma);
+            r.client = v.substr(comma + 1);
+        } else if (!v.empty()) {
+            UE_LOGW("[MV-DRILL] mv_drill_ids '%s' is not '<host id>,<client id>' -- the rig's ids stand", v.c_str());
+        }
+        return r;
+    });
+    return ids;
+}
 
 // Budgets: a hang guard that fails the drill, never a pacing. A Send waits for this peer's own
 // answer; a WaitNotice or WaitBit for the other peer's action.
@@ -160,6 +195,47 @@ bool g_begun = false;  // the step has started (a Send is submitted)
 size_t g_mark = 0;     // the replies list's size when the Send was submitted
 std::chrono::steady_clock::time_point g_stepStart{};
 std::filesystem::path g_dir;  // the host's permissions folder
+
+// The script as this run sends it: each text naming the rig's host or client id names RunIds' instead. The texts
+// live in a deque (their c_str stays put) and each item's steps in a vector reserved up front.
+std::deque<std::string> g_localTexts;
+std::vector<std::vector<Step>> g_localSteps;
+std::vector<Item> g_localItems;
+
+const char* Localized(const char* s) {
+    if (!s) return s;
+    std::string t = s;
+    bool changed = false;
+    for (const auto& [from, to] : {std::pair<std::string_view, const std::string*>{kHostId, &RunIds().host},
+                                   std::pair<std::string_view, const std::string*>{kClientId, &RunIds().client}}) {
+        if (from == *to) continue;
+        for (size_t at = t.find(from); at != std::string::npos; at = t.find(from, at + to->size())) {
+            t.replace(at, from.size(), *to);
+            changed = true;
+        }
+    }
+    if (!changed) return s;
+    g_localTexts.push_back(std::move(t));
+    return g_localTexts.back().c_str();
+}
+
+void Localize() {
+    g_localTexts.clear();
+    g_localSteps.clear();
+    g_localItems.clear();
+    g_localSteps.reserve(g_itemCount);
+    for (size_t i = 0; i < g_itemCount; ++i) {
+        std::vector<Step>& steps = g_localSteps.emplace_back();
+        for (size_t k = 0; k < g_items[i].count; ++k) {
+            Step st = g_items[i].steps[k];
+            st.a = Localized(st.a);
+            st.b = Localized(st.b);
+            steps.push_back(st);
+        }
+        g_localItems.push_back(Item{steps.data(), steps.size()});
+    }
+    g_items = g_localItems.data();
+}
 
 bool StartsWith(std::string_view s, std::string_view prefix) {
     return s.substr(0, prefix.size()) == prefix;
@@ -307,12 +383,13 @@ void StartScript() {
         g_items = kClientItems;
         g_itemCount = std::size(kClientItems);
     }
+    Localize();
     g_phase = Phase::Running;
     UE_LOGI("[MV-DRILL] %s script start", g_role);
 }
 
-// The host starts when a client is seated, proved and world-ready, and the rig's ids are the ones
-// the seeded store names.
+// The host starts when a client is seated, proved and world-ready, and the run's ids (the rig's, or
+// mv_drill_ids') are the ones the seeded store names.
 void WaitHost(coop::net::Session* s) {
     coop::roster::Snapshot r;
     coop::roster::GetSnapshot(r);
@@ -322,12 +399,13 @@ void WaitHost(coop::net::Session* s) {
     if (slot < 0) return;
     const std::string id = s->ProvedGuidForSlotWithToken(slot, coop::roster_ledger::Get(slot).bornGeneration);
     if (id.empty()) return;
-    if (coop::net::peer_identity::LocalGuid() != kHostId) {
-        FailPlain("the host's id is not the rig's");
+    const std::string own = coop::net::peer_identity::LocalGuid();
+    if (own != RunIds().host) {
+        FailPlain("the host's id is " + own + ", not the store's " + RunIds().host + " (mv_drill_ids)");
         return;
     }
-    if (id != kClientId) {
-        FailPlain("the client's id is " + id + ", not the rig's");
+    if (id != RunIds().client) {
+        FailPlain("the client's id is " + id + ", not the store's " + RunIds().client + " (mv_drill_ids)");
         return;
     }
     if (!s->IsSlotWorldReady(slot)) return;

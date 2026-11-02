@@ -187,6 +187,10 @@ CFG_ENUM(command_drill, "command_drill", "dev", "off", "off|on|red|grant|grantre
     "the host runs a command its own permission file denies it and reports the refusal.")
 CFG_ENUM(mv_drill, "mv_drill", "dev", "off", "off|on|red", "VOTVCOOP_MV_DRILL",
     "Drill (BOTH peers): /mv end to end -- on runs the script, red expects a wrong reply at step 5.1.")
+CFG_STRING(mv_drill_ids, "mv_drill_ids", "dev", "", "VOTVCOOP_MV_DRILL_IDS", false,
+    "The mv drill's two player ids, '<host id>,<client id>' (32 hex each), set the same on BOTH peers: the "
+    "installs whose seeded permission store the drill runs against. Empty: the rig's own two ids. The lab "
+    "passes its own copies' ids and seeds the store under them.")
 CFG_ENUM(stats_probe, "stats_probe", "dev", "off", "off|on|red", "VOTVCOOP_STATS_PROBE",
     "Probe (BOTH peers): every player stat read, written and restored inside one frame, and the game's "
     "status effects added, listed and removed -- red expects a wrong Health read-back and two bloodLoss entries.")
@@ -266,6 +270,12 @@ CFG_ENUM(hookdrag_role, "hookdrag_role", "dev", "host", "host|client|both", "VOT
     "the client (the host ties the client's hook on its mirror), or both (each into the nearest "
     "prop to itself: two host constraints on one body when they stand together). Set the same "
     "value on BOTH peers.")
+CFG_FLAG(director_glide, "director_glide", "dev", false, "VOTVCOOP_DIRECTOR_GLIDE",
+    "Lab aid (each peer its own): a plain walk of the bot director that ends without arriving (a NavMesh "
+    "that does not reach its point, a route that sticks) ends in one teleport to a stand beside the point "
+    "that has a floor and a clear line to it, instead of failing the drill. The walk is always walked first, "
+    "and a carrying walk (a hook or the hand dragging something) never teleports: that walk is what its drill "
+    "measures. For a drill whose approach is set-up, not the thing measured. Set by the lab's drill runner.")
 CFG_FLAG(inventory_selftest, "inventory_selftest", "dev", false, nullptr,
     "Autonomous selftest: player inventory sync.")
 CFG_FLAG(starterkit_test, "starterkit_test", "dev", false, nullptr,

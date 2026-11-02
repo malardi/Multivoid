@@ -161,6 +161,12 @@ std::shared_ptr<BackgroundWalk> StartBackgroundWalk(const ue_wrap::FVector& to, 
 // For a drill that failed while its walker was still walking. Any thread.
 void CancelBackgroundWalk(BackgroundWalk& walk);
 
+// The lab's fallback (director_glide / VOTVCOOP_DIRECTOR_GLIDE): a plain background walk that ended without
+// arriving ends in one teleport to a stand beside its point (a floor under it, a clear line from its eye to
+// the point) instead of failing. A carrying walk never: what it drags is what its drill measures. The walk
+// itself is always walked first. In background_walk.cpp.
+bool GlideOn();
+
 // The scenario entry (director_run.cpp): resolve the player, pick an OPEN chipPile via the
 // NavMesh, run the brain to grab it. Env-gated (VOTVCOOP_RUN_DIRECTOR_WALKGRAB=1).
 void RunWalkGrabDirector();
