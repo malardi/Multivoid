@@ -127,6 +127,16 @@ rate refusal, which answers with nothing, because a limit on how fast someone ma
 work must not make it work harder. Whatever the host publishes becomes the truth the next write is
 judged against, including a client's slice it has just accepted and passed on.
 
+The truth alone is not the whole answer to a refused take. Taking an item out of a container is two
+moves on the taker's machine: the record leaves the container, and a record of the same item joins
+the player's own inventory, which goes to the host only with the player's profile. Put back on the
+container alone, a refused take left the item in both places -- and the loser of two players taking
+the same thing kept a copy. So the answer names the slice it refuses, and the author keeps a ledger
+of what each of its slices took into the inventory (`coop/props/container_take_ledger`): the named
+slice's takes leave the inventory again. Acceptance says nothing back, so a take is settled by a
+later answer about the same container, or by age. An answer the transport does not take is retried
+until it is, for thirty seconds.
+
 Two things can arrive before they can be judged, and neither is refused for it. A slice whose
 container has not spawned on this machine yet waits in a holding pen -- one entry per container,
 replayed until it lands, and dropped after thirty seconds; while a join is streaming in, that

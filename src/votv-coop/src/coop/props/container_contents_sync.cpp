@@ -9,6 +9,7 @@
 #include "coop/props/container_birth.h"
 #include "coop/props/container_park.h"
 #include "coop/props/container_slice_wire.h"
+#include "coop/props/container_take_ledger.h"
 #include "coop/props/container_write_policy.h"
 
 #include "coop/element/registry.h"
@@ -28,6 +29,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <map>
 #include <set>
 #include <string>
@@ -45,6 +47,7 @@ namespace pk = coop::props::container_park;
 namespace cw = coop::props::container_slice_wire;
 namespace ci = ue_wrap::container_inventory;
 namespace cb = coop::props::container_birth;
+namespace tl = coop::props::container_take_ledger;
 
 using coop::element::LivePropActor;
 
@@ -93,6 +96,21 @@ std::map<uint32_t, uint64_t> g_baseHash;
 // Containers whose broadcast the transport refused; retried by the sweep.
 std::set<uint32_t> g_retry;
 
+// Host: refusal answers the transport did not take, retried by the sweep. The answer is the only
+// thing that puts the author's container back and takes back what the refused slice carried into the
+// author's inventory, and nothing else re-sends it: measured in the lab, a refusal made in the frame
+// the joiner's puppet spawned was never answered, and the author kept both the container's old state
+// and the item. One per refused slice -- each names its own takes. Bounded by age and count.
+struct OwedAnswer {
+    uint32_t eid;
+    uint8_t  slot;
+    uint64_t slice;
+    uint64_t sinceMs;
+};
+std::vector<OwedAnswer> g_owedAnswers;
+constexpr uint64_t kAnswerTtlMs = 30000;
+constexpr size_t   kMaxOwedAnswers = 64;
+
 // The takeObj-in-flight latch: armed at the verb's entry, consumed by prop_drop_intent at the
 // extracted item's FinishSpawn enqueue (the item spawns inside the takeObj call, so the latch is
 // live exactly then). Atomic exchange, so the consume is one-shot. A personal-inventory take arms
@@ -133,8 +151,11 @@ bool ReadContents(void* inv, std::vector<SR::SaveRecord>& out, bool neuterNested
 
 // False if the send was refused (the caller arms the retry). Run by both peers: on the host toSlot
 // < 0 fans out; on a client the same call reaches the host alone, the author-to-arbiter edge.
+// `refusal` is the host's answer to a refused author, targeted, naming the slice it refused
+// (container_slice_wire::PackRefusal): the author takes back what that slice carried away.
 
-bool BroadcastContainer(coop::net::Session* s, uint32_t eid, void* inv, int toSlot, bool force) {
+bool BroadcastContainer(coop::net::Session* s, uint32_t eid, void* inv, int toSlot, bool force,
+                        bool refusal = false, uint64_t refusedSlice = 0) {
     std::vector<SR::SaveRecord> recs;
     if (!ReadContents(inv, recs)) {
         // Nothing resolvable is not a transport failure -- unless a first publication is owed for this
@@ -158,7 +179,8 @@ bool BroadcastContainer(coop::net::Session* s, uint32_t eid, void* inv, int toSl
         auto it = g_baseHash.find(eid);
         if (it != g_baseHash.end()) baseHash = it->second;
     }
-    const std::vector<uint8_t> blob = cw::Pack(eid, baseHash, recs);
+    const std::vector<uint8_t> blob = refusal ? cw::PackRefusal(eid, refusedSlice, recs)
+                                              : cw::Pack(eid, baseHash, recs);
     const uint64_t h = cw::ContentHash(eid, recs);
     if (!force && !birth) {
         auto it = g_sentHash.find(eid);
@@ -182,6 +204,8 @@ bool BroadcastContainer(coop::net::Session* s, uint32_t eid, void* inv, int toSl
         // Optimistic and self-correcting: a refusal is answered by the host re-publishing its
         // truth to this peer, which lands in this same map.
         if (!IsHost()) g_baseHash[eid] = h;
+        // The takes this edit carried away ride in this slice; a refusal will name it.
+        if (!IsHost()) tl::NoteShipped(eid, cw::SliceId(blob));
         // Any publication, fan-out or a targeted seed, establishes what the receiver was told, the
         // baseline a later client write is judged against. With the two maps fused the host refused
         // every client write after a join: the seed is targeted, g_sentHash stayed empty, and the
@@ -194,11 +218,12 @@ bool BroadcastContainer(coop::net::Session* s, uint32_t eid, void* inv, int toSl
         // author -- changed nothing on this peer, so it re-derives nothing; the seed sends every
         // container in the world in one frame.
         if (toSlot < 0) ci::RederiveShownState(ci::OwnerOf(inv), inv);
-        UE_LOGI("container_contents: eid=%u shipped %zu records (%zu B)%s%s%s",
+        UE_LOGI("container_contents: eid=%u shipped %zu records (%zu B)%s%s%s%s",
                 eid, recs.size(), blob.size(),
                 toSlot < 0 ? "" : " [targeted]",
                 IsHost() ? "" : " [client-authored]",
-                birth ? " [birth]" : "");
+                birth ? " [birth]" : "",
+                refusal ? " [refusal answer]" : "");
     }
     return ok;
 }
@@ -262,6 +287,29 @@ void DrainDirty(coop::net::Session* s) {
         if (IsHost() && cb::Awaited(actor, 0)) { g_retry.insert(eid); continue; }
         if (!BroadcastContainer(s, eid, inv, -1, /*force=*/false)) g_retry.insert(eid);
     }
+}
+
+// Host: the owed refusal answers, again. An author gone, or an answer past its age, is dropped and
+// said: past the age the author's own ledger has settled the take as accepted.
+void RetryAnswers(coop::net::Session* s, uint64_t nowMs) {
+    if (g_owedAnswers.empty()) return;
+    std::vector<OwedAnswer> keep;
+    for (const OwedAnswer& a : g_owedAnswers) {
+        if (!s->IsSlotConnected(a.slot)) continue;
+        if (nowMs - a.sinceMs > kAnswerTtlMs) {
+            UE_LOGW("container_contents: eid=%u -- the refusal answer to slot %u was never taken by the "
+                    "transport in %llu ms; given up", a.eid, static_cast<unsigned>(a.slot),
+                    static_cast<unsigned long long>(kAnswerTtlMs));
+            continue;
+        }
+        void* actor = LivePropActor(a.eid);
+        void* inv = actor && ci::IsContainer(actor) ? ci::InventoryOf(actor) : nullptr;
+        if (!inv || !ci::IsWorldInventory(inv)) continue;   // gone: nothing left to put back
+        if (!BroadcastContainer(s, a.eid, inv, static_cast<int>(a.slot), /*force=*/true,
+                                /*refusal=*/true, a.slice))
+            keep.push_back(a);
+    }
+    g_owedAnswers.swap(keep);
 }
 
 // The apply.
@@ -351,7 +399,14 @@ Ingest ParseAndApply(const std::vector<uint8_t>& blob, uint32_t& outEid, uint8_t
                      wp::Source src) {
     size_t o = 0;
     uint64_t baseHash = 0;
-    if (!cw::ParseHeader(blob, o, outEid, baseHash)) return Ingest::Handled;
+    bool refusal = false;
+    if (!cw::ParseHeader(blob, o, outEid, baseHash, refusal)) return Ingest::Handled;
+    // A refusal answer is the host's word to one author; a client never sends one.
+    if (refusal && IsHost()) {
+        UE_LOGW("container_contents: eid=%u -- a refusal answer from slot %u; only the host answers "
+                "refusals -- dropped", outEid, static_cast<unsigned>(senderSlot));
+        return Ingest::Handled;
+    }
     // A container a client threw: the host built its copy empty from the intent and has published
     // nothing for it, so any slice of that author is the newest version of the transfer, whatever
     // base it names -- an edit made while the first slice waited in the pen included. There is no
@@ -386,10 +441,23 @@ Ingest ParseAndApply(const std::vector<uint8_t>& blob, uint32_t& outEid, uint8_t
             // rate one, because a bound on how fast an author may spend the host must not make
             // the host spend more the faster it is pushed. No peer of this build can reach that
             // bound (one slice per container per 250 ms sweep, and only when it changed).
+            //
+            // The answer names the refused slice. The truth alone put the container back and left
+            // what the author's edit had taken in the author's own inventory -- a refused take was
+            // an item in two places, and the author's profile carried the second copy into the
+            // host's store at the next world save. Named, the author takes back what that slice
+            // took (coop/props/container_take_ledger).
             void* actor = LivePropActor(outEid);
             void* inv = actor && ci::IsContainer(actor) ? ci::InventoryOf(actor) : nullptr;
             if (s && inv && d != wp::Decision::TooFast && ci::IsWorldInventory(inv)) {
-                BroadcastContainer(s, outEid, inv, static_cast<int>(senderSlot), /*force=*/true);
+                const uint64_t slice = cw::SliceId(blob);
+                if (!BroadcastContainer(s, outEid, inv, static_cast<int>(senderSlot), /*force=*/true,
+                                        /*refusal=*/true, slice)) {
+                    if (g_owedAnswers.size() >= kMaxOwedAnswers) g_owedAnswers.erase(g_owedAnswers.begin());
+                    g_owedAnswers.push_back(OwedAnswer{outEid, senderSlot, slice, NowMs()});
+                    UE_LOGW("container_contents: eid=%u -- the refusal answer to slot %u was not taken by "
+                            "the transport; retried by the sweep", outEid, static_cast<unsigned>(senderSlot));
+                }
             }
             // Handled, not Applied: never relayed; third peers run no arbitration.
             return Ingest::Handled;
@@ -442,6 +510,16 @@ Ingest ParseAndApply(const std::vector<uint8_t>& blob, uint32_t& outEid, uint8_t
     }
     const uint64_t contentHash = cw::ContentHash(outEid, recs);
     const Ingest outcome = ApplyContents(outEid, recs, contentHash);
+    // Client, the host refused one of this player's slices: the container is the host's truth again
+    // (or already was, when an identical truth had landed first -- a Handled duplicate), and what the
+    // refused slice carried away leaves the inventory. Not on Park: the replay comes back here.
+    if (refusal && !IsHost() && outcome != Ingest::Park) {
+        tl::OnRefused(outEid, baseHash);
+        // The take-back runs takeObj on the player's own inventory, whose verb edge arms the
+        // extraction latch with no extraction behind it: left armed, the next birth on this peer
+        // would be admitted as a container extraction.
+        g_takeObjInFlight.store(false, std::memory_order_relaxed);
+    }
     // Host, client-authored and accepted. Two records, and the second one was missing: g_sentHash
     // keeps the host's own drain from re-broadcasting the identical slice back the long way round,
     // while NotePublished moves the compare-and-swap baseline onto what the relay is about to hand
@@ -518,6 +596,25 @@ sg::Verdict OnVerbEntry(const sg::Call& br) {
     const uint32_t eid =
         static_cast<uint32_t>(coop::element::Registry::Get().EidForActor(owner));
     if (eid == static_cast<uint32_t>(coop::element::kInvalidId)) return sg::Verdict::Run;
+    // A client's take from a world container goes on the ledger, before the body runs: the record is
+    // still in the container to be named, and the carried store does not hold it yet. If the host
+    // refuses the slice this take ships in, the ledger takes the item back out of the inventory.
+    if (!IsHost() && br.tag == kVerbTakeObj && br.locals && ci::IsWorldInventory(br.object)) {
+        static R::ParamOffset s_index{L"Index"};
+        const int32_t off = s_index.Of(br.function);
+        if (off >= 0) {
+            int32_t index = -1;
+            std::memcpy(&index, br.locals + off, sizeof(index));
+            tl::NoteTake(eid, br.object, index, NowMs());
+        } else {
+            static bool s_said = false;
+            if (!s_said) {
+                s_said = true;
+                UE_LOGW("container_contents: takeObj's Index parameter does not resolve -- a refused "
+                        "take cannot be taken back");
+            }
+        }
+    }
     g_dirty.insert(eid);   // resolve identity AT THE EDGE; deref nothing later
     // The local change is stamped, so the host can tell a stale client write from a clean one.
     // Host-only: nothing on a client ever reads it, and an ungated stamp grows a row per container
@@ -585,7 +682,10 @@ void Tick() {
     // were never swept at all, so a client write it could not resolve on arrival was neither
     // retried nor evicted for the life of the session.
     cb::Sweep(now, g_dirty);
+    // Ahead of the drain: a take the ledger names before its slice ships is one a refusal can undo.
+    if (!IsHost()) tl::Tick(now);
     DrainDirty(s);
+    if (IsHost()) RetryAnswers(s, now);
     pk::Sweep(&ReplayParked, NowMs());
 }
 
@@ -672,12 +772,14 @@ bool ContentsDigest(uint32_t eid, int32_t& outCount, float& outVol) {
 void OnDisconnect() {
     g_dirty.clear();
     g_retry.clear();
+    g_owedAnswers.clear();
     wp::Reset();
     pk::Reset();
     g_sentHash.clear();
     g_baseHash.clear();
     g_appliedHash.clear();
     cb::Reset();
+    tl::Reset();
     g_asm.Clear();
     g_nextSweep = 0;
     g_announced = false;

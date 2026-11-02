@@ -6,7 +6,9 @@
 
 #include "ue_wrap/actors/inventory.h"
 
+#include "ue_wrap/actors/container_inventory.h"  // RederiveShownState, after a record is taken back
 #include "ue_wrap/actors/save_record.h"
+#include "ue_wrap/core/call.h"
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/world/world_singleton.h"
@@ -129,8 +131,10 @@ void BuildAndSwapArray(void* base, int32_t off, int32_t stride,
 // Both readers go through it. The count reader used to address GObjStack[0] directly, which is
 // the same slot on every build measured -- but "the same slot in practice" is what an address
 // assertion exists to stop a reader from relying on, and the count is what the quick-slot edge
-// makes its decision on.
-int32_t ValidatedPersonalSlot(SR::Arr& contents) {
+// makes its decision on. The remover asks for the container and its component as well, which are
+// what it calls the game's own verbs on.
+int32_t ValidatedPersonalSlot(SR::Arr& contents, void** outContainer = nullptr,
+                              void** outInventory = nullptr) {
     void* save = ResolveSaveSlot();
     void* gm = world_singleton::Gamemode();
     if (!save || !gm) return -1;
@@ -177,6 +181,8 @@ int32_t ValidatedPersonalSlot(SR::Arr& contents) {
 
     // The struct_mObject element's single field is the contents TArray<Fstruct_save> at +0.
     contents = SR::ReadArr(stack.data + static_cast<size_t>(idx) * SR::kMxStride, 0);
+    if (outContainer) *outContainer = pc;
+    if (outInventory) *outInventory = inv;
     return idx;
 }
 
@@ -268,6 +274,39 @@ bool ReadLivePersonalStore(LivePersonalStore& out) {
         SR::ReadSaveRecord(contents.data + static_cast<size_t>(i) * SR::kSaveStride, r);
         out.records.push_back(std::move(r));
     }
+    return true;
+}
+
+bool RemoveCarriedByKey(const std::wstring& key) {
+    if (key.empty() || key == L"None") return false;
+    SR::Arr contents{};
+    void* pc = nullptr;
+    void* inv = nullptr;
+    if (ValidatedPersonalSlot(contents, &pc, &inv) < 0 || !pc || !inv) return false;
+    int32_t at = -1;
+    for (int32_t i = 0; i < contents.num && at < 0; ++i) {
+        SR::SaveRecord r;
+        SR::ReadSaveRecord(contents.data + static_cast<size_t>(i) * SR::kSaveStride, r);
+        if (r.key == key) at = i;
+    }
+    if (at < 0) return false;
+    // takeObj with removeVol off is the half of a take that moves no actor: the record, its volume
+    // row and its name row leave the arrays together, which a raw shift of the records alone would
+    // not do. The volume is re-derived after it, as the game's own callers do with removeVol.
+    void* const takeObj = R::FindDispatchFunctionCached(R::ClassOf(inv), L"takeObj");
+    if (!takeObj) {
+        static bool s_said = false;
+        if (!s_said) {
+            s_said = true;
+            UE_LOGW("inventory: propInventory.takeObj does not resolve -- a carried record cannot be "
+                    "taken back");
+        }
+        return false;
+    }
+    ue_wrap::ParamFrame f(takeObj);
+    if (!f.valid() || !f.Set<int32_t>(L"Index", at) || !f.Set<bool>(L"removeVol", false)) return false;
+    if (!ue_wrap::Call(inv, f) || !f.Get<bool>(L"Return")) return false;
+    ue_wrap::container_inventory::RederiveShownState(pc, inv);
     return true;
 }
 

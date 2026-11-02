@@ -1,6 +1,7 @@
 // coop/props/container_slice_wire.h -- the BYTES of one world container's contents slice, and
 // nothing else: `[u8 op=0][u32 eid][u64 baseHash][u16 n]` then n records in the
-// coop/items/save_record_wire grammar. Pure byte work, no engine access -- what a record MEANS
+// coop/items/save_record_wire grammar (op=1, the refusal answer, names a slice in place of the
+// base; see PackRefusal). Pure byte work, no engine access -- what a record MEANS
 // (is it a nested container, may this author write it) belongs to the lane that owns the
 // container, coop/props/container_contents_sync.
 //
@@ -35,13 +36,27 @@ inline constexpr uint64_t kBirthBase = ~0ull;
 std::vector<uint8_t> Pack(uint32_t eid, uint64_t baseHash,
                           const std::vector<ue_wrap::save_record::SaveRecord>& recs);
 
+// The host's truth sent back to an author whose slice it refused: the same records, op 1, and in
+// place of the base the id of the refused slice (SliceId of the blob the author sent). A contents
+// slice cannot say it: a host fan-out carries base 0 and a relayed slice its author's base, so the
+// author could not tell "your edit was refused" from "the world moved on" -- and only the first may
+// take back what that edit put in the author's own inventory (coop/props/container_take_ledger).
+std::vector<uint8_t> PackRefusal(uint32_t eid, uint64_t refusedSlice,
+                                 const std::vector<ue_wrap::save_record::SaveRecord>& recs);
+
+// The id of one slice as it travelled: the hash of its bytes, which the reliable transport delivers
+// unchanged, so the author and the host compute the same value from their own copies.
+uint64_t SliceId(const std::vector<uint8_t>& blob);
+
 // The hash every gate and compare-and-swap uses, over a pack with baseHash zeroed, so it names the
 // contents alone: the same records hash the same whichever peer authored them and whatever base
 // they edited from.
 uint64_t ContentHash(uint32_t eid, const std::vector<ue_wrap::save_record::SaveRecord>& recs);
 
-// False on a blob that is not one of ours, or too short. Leaves `o` at the record count.
-bool ParseHeader(const std::vector<uint8_t>& b, size_t& o, uint32_t& outEid, uint64_t& outBaseHash);
+// False on a blob that is not one of ours, or too short. Leaves `o` at the record count. A refusal
+// answer sets `outRefusal`, and `outBaseHash` is then the refused slice's id.
+bool ParseHeader(const std::vector<uint8_t>& b, size_t& o, uint32_t& outEid, uint64_t& outBaseHash,
+                 bool& outRefusal);
 
 // The declared count and the records after it. False on an over-cap count, a count the remaining
 // bytes cannot feed, or a malformed record; `outWhy` then names which for the caller's log line.

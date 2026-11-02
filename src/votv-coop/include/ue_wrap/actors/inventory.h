@@ -92,6 +92,14 @@ bool ReadLivePersonalStore(LivePersonalStore& out);
 // field reads. Game thread.
 int32_t LivePersonalStoreCount();
 
+// Take the carried record keyed `key` out of the live personal store, through the game's own
+// propInventory.takeObj with removeVol off (the record leaves with its volume and name rows, and no
+// actor is spawned), then re-derive the container's volume and names. The quick-slot bar is the
+// caller's to rebuild. False, having changed nothing, when the store does not resolve, no record
+// carries that key, or the verb does not resolve or refuses. Game thread, never from inside a
+// Blueprint body (it dispatches).
+bool RemoveCarriedByKey(const std::wstring& key);
+
 // The WRITE side, the apply on join: overwrite the player's GObjStack slot, equipment and hold
 // on `saveSlot` with `inv`, as engine-OWNED TArrays built through reflection::EngineAlloc (FNames
 // interned, FStrings engine-minted, UClasses FindClass'd). The caller writes the REGISTERED save
