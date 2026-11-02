@@ -61,8 +61,9 @@ bool OwnJoinOver() {
 }
 
 // HandItem's wire layout (hand_item.cpp BuildPayload): slot, has, then a length-prefixed class, name and
-// item, then the six-float hold transform when held. The name and item are empty, so no build writes an
-// item name into the actor it spawns.
+// item, then the six-float hold transform when held, then the generation -- the next of this peer's own
+// count, so the host takes it as newer than the hand it holds for the slot. The name and item are empty, so
+// no build writes an item name into the actor it spawns.
 std::vector<uint8_t> BuildForgedHand(uint8_t slot, const char* cls) {
     std::vector<uint8_t> out;
     const size_t cl = std::strlen(cls);
@@ -75,6 +76,10 @@ std::vector<uint8_t> BuildForgedHand(uint8_t slot, const char* cls) {
     const size_t base = out.size();
     out.resize(base + sizeof(kFallbackRel));
     std::memcpy(out.data() + base, kFallbackRel, sizeof(kFallbackRel));
+    const uint32_t generation = coop::hand_item::ClaimOwnGeneration();
+    const size_t genAt = out.size();
+    out.resize(genAt + sizeof(generation));
+    std::memcpy(out.data() + genAt, &generation, sizeof(generation));
     return out;
 }
 

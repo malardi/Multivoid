@@ -88,13 +88,13 @@ bool MeasureLocalHoldRelative(void* local, void* held, float outPos[3], float ou
 // Re-command the mirror to the puppet's view-space hold point every tick: rebuild the roll-0
 // view basis from the synced aim and re-compose the owner-measured transform onto it. With
 // the fallback this degrades to the camera-front placement, facing along the look.
-void DriveMirror(void* mirrorActor, coop::RemotePlayer* pup, const float relPos[3], const float relRot[3]) {
+bool DriveMirror(void* mirrorActor, coop::RemotePlayer* pup, const float relPos[3], const float relRot[3]) {
     ue_wrap::FVector eye{};
-    if (!pup->TryGetHeadPosition(eye)) return;   // no anchor this tick: the last placement stays
+    if (!pup->TryGetHeadPosition(eye)) return false;   // no anchor this tick: the last placement stays
     const ue_wrap::FVector fwd = pup->GetSyncedAimDirection();
     // A degenerate near-vertical aim keeps the last tick's placement.
     const float rl = std::sqrt(fwd.X * fwd.X + fwd.Y * fwd.Y);
-    if (rl < 1e-3f) return;
+    if (rl < 1e-3f) return false;
     const float yawDeg   = std::atan2(fwd.Y, fwd.X) * kRadToDeg;
     const float pitchDeg = std::atan2(fwd.Z, rl) * kRadToDeg;
     float V[3][3];
@@ -113,6 +113,7 @@ void DriveMirror(void* mirrorActor, coop::RemotePlayer* pup, const float relPos[
             W[i][j] = Q[i][0] * V[0][j] + Q[i][1] * V[1][j] + Q[i][2] * V[2][j];
     E::SetActorLocation(mirrorActor, pos);
     E::SetActorRotation(mirrorActor, RotatorFromRows(W));
+    return true;
 }
 
 }  // namespace coop::hand_item_pose

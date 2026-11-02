@@ -25,7 +25,8 @@ namespace coop::hand_item_pose {
 bool MeasureLocalHoldRelative(void* local, void* held, float outPos[3], float outRot[3]);
 
 // Re-command a mirror to the puppet's view-space hold point: the roll-0 view basis from the synced aim,
-// with the owner-measured transform re-composed onto it. Game thread, per tick.
-void DriveMirror(void* mirrorActor, coop::RemotePlayer* pup, const float relPos[3], const float relRot[3]);
+// with the owner-measured transform re-composed onto it. False when this tick left the last placement (no
+// head anchor, a near-vertical aim), so a mirror never placed is still at its spawn point. Game thread, per tick.
+bool DriveMirror(void* mirrorActor, coop::RemotePlayer* pup, const float relPos[3], const float relRot[3]);
 
 }  // namespace coop::hand_item_pose
