@@ -8,6 +8,7 @@
 
 #include "coop/net/session.h"
 #include "coop/session/session_manager.h"
+#include "coop/player/hand_item.h"      // the state file's hand lines
 #include "coop/player/players_registry.h"
 #include "coop/player/puppet_drive.h"
 #include "coop/player/remote_player.h"
@@ -1312,6 +1313,13 @@ void WriteState() {
         char buf[96];
         std::snprintf(buf, sizeof(buf), "puppet %d %.0f %.0f %.0f\r\n", slot, l.X, l.Y, l.Z);
         o << buf;
+    }
+    // What each body holds: this player's hotbar hand, and each peer's as this peer shows it (a compare pair).
+    if (void* h = coop::hand_item::LocalHandActor()) o << "hand " << Narrow(R::ClassNameOf(h)) << "\r\n";
+    else o << "hand -\r\n";
+    for (int slot = 0; slot < coop::players::kMaxPeers; ++slot) {
+        const std::wstring held = coop::hand_item::HeldItem(static_cast<uint8_t>(slot));
+        if (!held.empty()) o << "handof " << slot << " " << Narrow(held) << "\r\n";
     }
     o << SmoothLines();
     for (Watch& w : g_watches) o << "watch " << w.name << " " << WatchValue(w) << "\r\n";
