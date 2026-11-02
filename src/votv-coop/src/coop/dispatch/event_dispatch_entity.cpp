@@ -33,6 +33,7 @@
 #include "coop/props/prop_stick_sync.h"
 #include "coop/props/prop_drive_stream.h"  // the driven-prop end edge
 #include "coop/player/remote_player.h"
+#include "coop/props/destroy_flood_guard.h"   // Admit: the host meters a client's destroys
 #include "coop/props/prop_element_tracker.h"  // SessionIsHost
 #include "coop/props/prop_drive_host.h"
 #include "coop/props/remote_prop.h"
@@ -454,13 +455,16 @@ bool HandleEntityEvent(net::Session& session,
         // actor before K2_DestroyActor; the handle would otherwise read a dangling component next
         // frame. The keyed echo guard for the dispenser-pile counter channel: a wire destroy must
         // not re-broadcast from our own death watch.
-        if (p.key.len > 0) {
-            std::wstring dkey;
-            dkey.reserve(p.key.len);
-            for (uint8_t i = 0; i < p.key.len && i < 31; ++i)
-                dkey.push_back(static_cast<wchar_t>(static_cast<unsigned char>(p.key.data[i])));
-            coop::trash_pile_sync::NotifyWireDestroy(dkey);
-        }
+        std::wstring dkey;
+        dkey.reserve(p.key.len);
+        for (uint8_t i = 0; i < p.key.len && i < 31; ++i)
+            dkey.push_back(static_cast<wchar_t>(static_cast<unsigned char>(p.key.data[i])));
+        // The host meters each client's destroys: a burst past a player's pace is refused, so no one
+        // client can take the host's world in a second (02.11: a join's load churn, 2434 keyed destroys).
+        if (coop::prop_element_tracker::SessionIsHost() &&
+            !coop::destroy_flood_guard::Admit(msg.senderPeerSlot, dkey.c_str(), p.elementId))
+            break;
+        if (p.key.len > 0) coop::trash_pile_sync::NotifyWireDestroy(dkey);
         remote_prop::OnDestroy(p, localPlayer, msg.senderPeerSlot);
         break;
     }

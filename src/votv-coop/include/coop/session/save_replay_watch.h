@@ -1,5 +1,5 @@
-// coop/session/save_replay_watch.h -- the client's view of its world's save replay: the by-name POST
-// watch on the gamemode's `loadObjects` (the function that respawns the saved objects and places
+// coop/session/save_replay_watch.h -- the client's view of its world's save replay: the by-name PRE and
+// POST watch on the gamemode's `loadObjects` (the function that respawns the saved objects and places
 // the player), the installer that registers it and reads its liveness, and the record of which
 // gamemode ran it and when. world_load_episode owns the request that waits on it and asks here.
 
@@ -20,6 +20,11 @@ void Drive(coop::net::Session& session, bool requestPending);
 // True when the replay ran in the world the player stands in now; the world tested is returned
 // through `world`, read once. Game thread.
 bool ReturnedInThisWorld(void** world);
+
+// True while a gamemode's loadObjects body runs on this client (its PRE fired, its POST not yet): the
+// save's pre-delete and respawn, in whatever world and at whatever point of the session. The destroy
+// seam keeps those destroys local. Game thread.
+bool InReplayBody();
 
 // True when the script gate refused the watch. Game thread.
 bool Refused();

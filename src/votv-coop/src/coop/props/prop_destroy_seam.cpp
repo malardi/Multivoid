@@ -23,6 +23,7 @@
 #include "coop/props/prop_echo_suppress.h"
 #include "coop/props/prop_element_tracker.h"
 #include "coop/session/net_pump.h"  // IsInAnnouncedWorld
+#include "coop/session/save_replay_watch.h"  // InReplayBody: a loadObjects body's churn is never broadcast
 #include "coop/session/world_load_episode.h"
 #include "ue_wrap/engine/engine.h"  // IsChildActor
 #include "ue_wrap/core/game_thread.h"
@@ -151,8 +152,13 @@ void DestroySeamBody(void* self, HandView handView) {
     // A world change of the client's own (back from a dimension, a follow of the host's travel) loads the save
     // again outside any join episode: its churn is a world not yet announced ready. 973 such destroys went out in
     // one return from the labyrinth.
+    // And a save replay's body itself, wherever it runs: on 02.11 a join's episode latched on the preLoad
+    // world's replay, the gameplay world's own loadObjects ran 40 s after the world arrived, past the episode,
+    // the announce and the snapshot, and its pre-delete broadcast 2434 keyed destroys the host applied.
     const bool inLoadEpisode = coop::world_load_episode::InEpisode() ||
-                               (s->role() == coop::net::Role::Client && !coop::net_pump::IsInAnnouncedWorld(self));
+                               (s->role() == coop::net::Role::Client &&
+                                (!coop::net_pump::IsInAnnouncedWorld(self) ||
+                                 coop::save_replay_watch::InReplayBody()));
     if (s->role() == coop::net::Role::Client &&
         (inLoadEpisode || coop::world_load_episode::InReconcileWindow())) {
         const bool newSegment = !inLoadEpisode;
@@ -173,7 +179,10 @@ void DestroySeamBody(void* self, HandView handView) {
                 "-- inside %s (loadObjects/rebuild churn; host-wipe fix, not broadcast)",
                 keyless ? "eid-only" : "KEYED", self, keyless ? L"None" : keyStr.c_str(),
                 (destroyEid == coop::element::kInvalidId) ? 0u : static_cast<unsigned>(destroyEid),
-                newSegment ? "the reconcile window" : "world-load episode");
+                newSegment ? "the reconcile window"
+                : coop::world_load_episode::InEpisode() ? "world-load episode"
+                : coop::save_replay_watch::InReplayBody() ? "the save replay's body"
+                                                          : "a world not announced ready");
         return;
     }
     // The kerfur conversion's hold at the destroy chokepoint: the turn-on verb destroys its prop

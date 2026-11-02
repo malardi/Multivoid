@@ -17,6 +17,7 @@
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/actors/prop.h"
 #include "ue_wrap/core/reflection.h"
+#include "ue_wrap/engine/world_identity.h"  // the world a request's session opened in
 
 #include <atomic>
 #include <chrono>
@@ -69,6 +70,13 @@ std::chrono::steady_clock::time_point g_quiescedAt{};        // valid while g_qu
 int  g_lastUnsettledCount = -1;
 int  g_stableScans        = 0;
 std::string g_probeReason;     // logged at arm + latch
+// The request a session was opened for (None for the sweep gate), and the world its replay was judged
+// in. A world change under such a session hands the request back: the replay it counted was another
+// world's. On 02.11 a join counted the preLoad world's replay, `open untitled_1` swapped the world under
+// the open session, the population held still for 2 s before the gameplay world's own loadObjects began,
+// and the episode closed 40 s before that replay's pre-delete -- which went out as 2434 keyed destroys.
+Request g_probeRequest = Request::None;
+ue_wrap::CachedObjRef g_probeWorld;
 
 // The probe cadence, stability window and ceiling: the same constants the divergence sweep has
 // trusted for its destructive adjudication gate. The announce may not use a looser gate than that
@@ -150,6 +158,10 @@ int CountLoadTailUnsettled_() {
 }
 
 void OpenProbeSession_(const char* reason, bool forRequest) {
+    if (!forRequest) {
+        g_probeRequest = Request::None;
+        g_probeWorld.Reset();
+    }
     g_probeOpen = true;
     g_everOpened = true;
     g_quiesced = false;
@@ -173,6 +185,8 @@ void OpenProbeSession_(const char* reason, bool forRequest) {
 
 void Latch_(const char* how) {
     g_probeOpen = false;
+    g_probeRequest = Request::None;
+    g_probeWorld.Reset();
     g_quiesced = true;
     g_quiescedAt = std::chrono::steady_clock::now();
     const bool closesEpisode = g_inEpisode.load(std::memory_order_relaxed);
@@ -286,8 +300,13 @@ bool TickQuiesceProbe() {
                     save_replay_watch::Refused() ? "the script gate refused it"
                                                  : "its function does not exist in this game build");
         } else if (g_failure.failure == Failure::None &&
-                   (save_replay_watch::ReturnedInThisWorld(&cw) || save_replay_watch::GateBreak() ||
+                   ((save_replay_watch::ReturnedInThisWorld(&cw) &&
+                     (req != Request::Join ||
+                      ue_wrap::world_identity::CurrentWorldKind() != ue_wrap::world_identity::WorldKind::Other)) ||
+                    save_replay_watch::GateBreak() ||
                     (req == Request::WorldChange && coop::dimension_travel::InDimension()))) {
+            // A join's replay counts only in a world that may be the gameplay map: the boot's preLoad
+            // world runs a gamemode loadObjects of its own before `open untitled_1` replaces it.
             // A dimension's level loads no save, so its replay never returns: its world counts as replayed.
             // (3) the replay returned: the request is consumed and its session opens. An Arm that
             // replaced the request this tick, off the game thread, fails the exchange; the next tick
@@ -296,6 +315,9 @@ bool TickQuiesceProbe() {
             if (g_request.compare_exchange_strong(expect, 0, std::memory_order_acq_rel)) {
                 SetBaselineWorld(cw);
                 g_sweepSkipSaid = false;
+                g_probeRequest = static_cast<Request>(expect);
+                if (cw) g_probeWorld.Set(cw);
+                else g_probeWorld.Reset();
                 OpenProbeSession_(static_cast<Request>(expect) == Request::Join ? "join world-load"
                                                                                 : "world-change re-announce",
                                   /*forRequest*/ true);
@@ -306,6 +328,26 @@ bool TickQuiesceProbe() {
             g_failure = {Failure::ReplayTimeout, "the new world's save replay never returned"};
             UE_LOGE("world_load_episode: the new world's save replay never returned in %lld s (or this "
                     "machine cannot name its world)", static_cast<long long>(kWorldChangeReplayBoundMs / 1000));
+        }
+    }
+    // A request's session whose world was replaced before it latched: the replay it counted was the
+    // old world's, so the request goes back to waiting for the new world's own replay. The episode is
+    // untouched, so the destroy seam stays shut through that replay.
+    if (g_probeOpen && g_probeRequest != Request::None && g_probeWorld.Raw()) {
+        void* const cw = ue_wrap::world_identity::CurrentWorld();
+        if (cw && !g_probeWorld.Is(cw)) {
+            const Request back = g_probeRequest;
+            g_probeOpen = false;
+            g_probeRequest = Request::None;
+            g_probeWorld.Reset();
+            if (back == Request::WorldChange)
+                g_requestRaisedAtMs.store(coop::net::NowMs(), std::memory_order_relaxed);
+            uint8_t expect = 0;
+            g_request.compare_exchange_strong(expect, static_cast<uint8_t>(back), std::memory_order_acq_rel);
+            UE_LOGW("world_load_episode: the world changed under the '%s' probe session (now %p) before it "
+                    "latched -- the replay it counted was another world's; waiting for this world's own "
+                    "save replay", g_probeReason.c_str(), cw);
+            return false;
         }
     }
     if (!g_probeOpen) return HasQuiesced();  // steady, latched or vacuous: bool reads only
@@ -371,6 +413,8 @@ void Reset() {
     g_quiesced = false;
     g_lastUnsettledCount = -1;
     g_stableScans = 0;
+    g_probeRequest = Request::None;
+    g_probeWorld.Reset();
     // Session teardown lowers the reconcile window and clears its classifier.
     g_reconRaiseRequested.store(false, std::memory_order_relaxed);
     ReconLowerGT_("Reset");

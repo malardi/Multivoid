@@ -1,5 +1,6 @@
 // coop/session/save_replay_watch.cpp -- see coop/session/save_replay_watch.h.
-// The by-name POST watch on the gamemode's loadObjects, its installer, and the replay record.
+// The by-name watch on the gamemode's loadObjects (PRE and POST), its installer, the replay record,
+// and the in-body mark the destroy seam reads.
 
 #include "coop/session/save_replay_watch.h"
 
@@ -45,9 +46,27 @@ bool g_postDrop = false;
 bool g_gateBreak = false;
 std::atomic<bool> g_watchRefused{false};
 
+// The replay body in progress: the PRE raises it, the POST lowers it. Game thread; the stamp bounds a
+// body whose POST never came (a mark stuck up would mute every destroy this client authors).
+int g_bodyDepth = 0;
+std::chrono::steady_clock::time_point g_bodyEnteredAt{};
+constexpr long long kBodyMarkBoundMs = 180000;  // a 19 MB save's replay held one frame for 28 s in the lab
+
+// The save replay's PRE: the gamemode's loadObjects body starts. Its pre-delete destroys every save
+// object this world holds and respawns them from the save; none of that is the player's.
+SG::Verdict OnLoadObjectsPre(const SG::Call& c) {
+    if (g_bodyDepth++ == 0) {
+        g_bodyEnteredAt = std::chrono::steady_clock::now();
+        UE_LOGI("save_replay_watch: save replay entered (gamemode %p) -- this client's destroys stay local "
+                "until it returns", c.object);
+    }
+    return SG::Verdict::Run;
+}
+
 // The save replay's POST: the gamemode's loadObjects body returned. Records which gamemode and when;
 // the consume reads it on a later tick.
 void OnLoadObjectsPost(const SG::Call& c) {
+    if (g_bodyDepth > 0) --g_bodyDepth;
     if (g_postDrop) return;
     const bool fresh = !g_replayGm.Is(c.object);
     g_replayGm.Set(c.object);
@@ -70,7 +89,7 @@ void Drive(coop::net::Session& session, bool requestPending) {
         g_gateBreak = coop::config::ResolveFlag(::coop::config_registry::rows::replay_gate_break);
     }
     if (!g_watchRegistered && !g_watchRefused.load(std::memory_order_relaxed)) {
-        g_watchRegistered = SG::WatchName(*g_watchRow, kTagReplay, nullptr, &OnLoadObjectsPost);
+        g_watchRegistered = SG::WatchName(*g_watchRow, kTagReplay, &OnLoadObjectsPre, &OnLoadObjectsPost);
         if (!g_watchRegistered) g_watchRefused.store(true, std::memory_order_relaxed);  // the consume owns the ERROR
     }
     if (!g_watchRegistered) return;
@@ -95,6 +114,17 @@ bool ReturnedInThisWorld(void** world) {
     return gm && cw && WI::WorldOf(gm) == cw;
 }
 
+bool InReplayBody() {
+    if (g_bodyDepth <= 0) return false;
+    if (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
+                                                              g_bodyEnteredAt).count() < kBodyMarkBoundMs)
+        return true;
+    UE_LOGW("save_replay_watch: the save replay's body mark is %lld s old with no return -- dropped",
+            kBodyMarkBoundMs / 1000);
+    g_bodyDepth = 0;
+    return false;
+}
+
 bool Refused() { return g_watchRefused.load(std::memory_order_relaxed); }
 
 bool Dead() { return g_watchDead; }
@@ -116,6 +146,7 @@ std::string RowText() {
 void Reset() {
     g_replayGm.Reset();
     g_replayPostAt = {};
+    g_bodyDepth = 0;
     // The watch registration and a refusal last for the process; its liveness is read again.
     g_watchSettled = false;
     g_watchDead = false;
