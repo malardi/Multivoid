@@ -11,7 +11,7 @@
 // that has left the hand matches no mirror.
 //
 // A torch burns with a flame of its own (ue_wrap/actors/torch): its sample says so (kind 1) and carries the
-// torch's fuel, and a mirror of it is lit and put out with the torch's own ignite and extinguishFire.
+// torch's fuel, and a mirror of it shows the flame as the torch shows its own: its members written and its upd().
 //
 // On a mirror the fire's own verbs stay the display's: the game's ignite and extinguishFire run there only
 // while this lane applies a sample, and fireDamage and ignited do not run (the owner's item does the damage

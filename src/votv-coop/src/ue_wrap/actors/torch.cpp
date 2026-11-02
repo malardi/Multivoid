@@ -56,18 +56,13 @@ bool Read(void* actor, bool& burning, float& fuel) {
     return std::isfinite(fuel);
 }
 
-bool Ignite(void* actor, float fuel) {
-    return std::isfinite(fuel) && fuel > 0.f && IsTorch(actor) && Verb(actor, L"ignite", &fuel);
-}
-
-bool Extinguish(void* actor) {
-    return IsTorch(actor) && Verb(actor, L"extinguishFire", nullptr);
-}
-
-bool WriteFuel(void* actor, float fuel) {
+bool Show(void* actor, bool burning, float fuel) {
     if (!std::isfinite(fuel) || fuel < 0.f || !Fields(actor)) return false;
-    std::memcpy(static_cast<uint8_t*>(actor) + g_fuel, &fuel, sizeof(fuel));
-    return true;
+    uint8_t* self = static_cast<uint8_t*>(actor);
+    if (burning) std::memcpy(self + g_fuel, &fuel, sizeof(fuel));
+    self[g_burning] = burning ? static_cast<uint8_t>(self[g_burning] | g_burningMask)
+                              : static_cast<uint8_t>(self[g_burning] & ~g_burningMask);
+    return Verb(actor, L"upd", nullptr);
 }
 
 }  // namespace ue_wrap::torch

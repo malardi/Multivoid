@@ -118,20 +118,14 @@ bool ReadFlame(void* a, uint16_t& kind, F::State& value) {
     return F::Read(a, value);
 }
 
-// A torch mirror's flame to the sample's: lit or put out with the torch's own verbs, the fuel written. The fuel goes
-// in first: a torch is lit on the fuel it holds, and a mirror is spawned at the class default.
+// A torch mirror's flame to the sample's, shown as the torch shows its own (ue_wrap/actors/torch): the fuel and the
+// flag written, then its upd(). Not its ignite: that passes through a prop flame and puts it out with an
+// extinguishFire a tick later, which the mirror guard would refuse outside this apply, leaving the prop flame lit.
 bool ApplyTorch(void* a, const F::State& want, const std::function<bool()>& valid) {
+    if (!Torch::Show(a, want.burning, want.fuel) || !valid()) return false;
     bool burning = false;
     float fuel = 0.f;
-    if (!Torch::Read(a, burning, fuel)) return false;
-    if (want.burning && !Torch::WriteFuel(a, want.fuel)) return false;
-    if (want.burning && !burning) {
-        if (!Torch::Ignite(a, want.fuel > 0.f ? want.fuel : 1.f) || !valid()) return false;
-    } else if (!want.burning && burning) {
-        if (!Torch::Extinguish(a) || !valid()) return false;
-    }
-    if (want.burning && !Torch::WriteFuel(a, want.fuel)) return false;
-    return valid() && Torch::Read(a, burning, fuel) && burning == want.burning;
+    return Torch::Read(a, burning, fuel) && burning == want.burning;
 }
 
 // The owner: sample the hand's flame and queue it when it changed beyond what the receivers predict.
