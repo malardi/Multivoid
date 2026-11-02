@@ -3,6 +3,8 @@
 #include "coop/props/container_take_ledger.h"
 
 #include "coop/props/container_slice_wire.h"  // kMaxRecords
+#include "coop/props/prop_element_tracker.h"  // a put prop the peers share: its element here
+#include "coop/props/remote_prop.h"  // or the host's mirror
 #include "ue_wrap/actors/container_inventory.h"
 #include "ue_wrap/actors/inventory.h"
 #include "ue_wrap/actors/prop.h"  // GetInteractableKeyString: the key the put actor carries
@@ -107,6 +109,13 @@ void NotePut(uint32_t eid, void* actor, uint64_t nowMs) {
         // where it went in are kept, and a refusal gives it back as a world birth: a copy born here from the
         // record carries the parked key, and the drop-intent lane turns that into the host's authoritative
         // prop -- exactly the path a client's own place takes.
+        // Only a prop the peers share: one with an element here, the host's mirror or a prop this client
+        // expressed. A prop no peer ever had -- the contents a container's own copy makes as it begins (a gift
+        // box's note and sauce, born and put in on the client's mirror) -- is the host's slice to decide, and
+        // giving it back on a refusal would bear a stray copy, at wherever it was made, on every peer.
+        if (coop::prop_element_tracker::GetPropElementIdForActor(actor) == coop::element::kInvalidId &&
+            coop::remote_prop::ResolveMirrorEidByActor(actor) == coop::element::kInvalidId)
+            return;
         // The whole record, through the class's own getData: the key and the names ride it, which the
         // leaf capture (CaptureRecord) leaves to the spawn row -- and a birth here has no row to take them from.
         Take w;
