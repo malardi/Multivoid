@@ -1,6 +1,7 @@
 // coop/dev/calib_drill.cpp -- see coop/dev/calib_drill.h.
 
 #include "coop/dev/calib_drill.h"
+#include "coop/dev/rearm.h"
 
 #include "coop/config/config.h"
 #include "coop/interactables/dish_calib_sync.h"
@@ -58,7 +59,9 @@ bool     g_hostHeld = false;
 bool     g_hostDone = false;
 
 const std::string& Mode() {
-    static const std::string s = coop::config::ResolveString(::coop::config_registry::rows::calib_drill);
+    static std::string s{};
+    static uint32_t sSeen = ~0u;  // re-read after the lab re-arms the drills
+    coop::dev::rearm::Latched(s, sSeen, [] { return coop::config::ResolveString(::coop::config_registry::rows::calib_drill); });
     return s;
 }
 bool Join() { return Mode() == "join"; }

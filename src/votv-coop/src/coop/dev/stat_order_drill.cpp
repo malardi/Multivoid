@@ -1,6 +1,7 @@
 // coop/dev/stat_order_drill.cpp -- see coop/dev/stat_order_drill.h.
 
 #include "coop/dev/stat_order_drill.h"
+#include "coop/dev/rearm.h"
 
 #include "coop/config/config.h"
 #include "coop/config/config_registry.h"
@@ -27,10 +28,12 @@ using coop::net::Session;
 enum class Arm : uint8_t { Off, On, Red, RedJoin };
 
 Arm ArmNow() {
-    static const Arm arm = [] {
+    static Arm arm{};
+    static uint32_t armSeen = ~0u;  // re-read after the lab re-arms the drills
+    coop::dev::rearm::Latched(arm, armSeen, [] {
         const std::string v = coop::config::ResolveEnum(::coop::config_registry::rows::stat_order_drill);
         return v == "on" ? Arm::On : v == "red" ? Arm::Red : v == "redjoin" ? Arm::RedJoin : Arm::Off;
-    }();
+    });
     return arm;
 }
 

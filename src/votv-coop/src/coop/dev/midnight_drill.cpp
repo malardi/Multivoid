@@ -1,6 +1,7 @@
 // coop/dev/midnight_drill.cpp -- see coop/dev/midnight_drill.h.
 
 #include "coop/dev/midnight_drill.h"
+#include "coop/dev/rearm.h"
 
 #include "coop/config/config.h"
 #include "coop/dev/rollover_watch.h"
@@ -117,7 +118,9 @@ std::chrono::steady_clock::time_point g_nextLiveCheck{};
 int      g_wakeLines = 0;
 
 Arm ArmOf() {
-    static const Arm a = [] {
+    static Arm a{};
+    static uint32_t aSeen = ~0u;  // re-read after the lab re-arms the drills
+    coop::dev::rearm::Latched(a, aSeen, [] {
         const std::string v = coop::config::ResolveEnum(::coop::config_registry::rows::midnight_drill);
         return v == "awake"  ? Arm::Awake
              : v == "asleep" ? Arm::Asleep
@@ -126,7 +129,7 @@ Arm ArmOf() {
              : v == "malformed" ? Arm::Malformed
              : v == "joinwindow" ? Arm::JoinWindow
                              : Arm::Off;
-    }();
+    });
     return a;
 }
 

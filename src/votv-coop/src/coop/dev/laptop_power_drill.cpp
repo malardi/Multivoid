@@ -1,6 +1,7 @@
 // coop/dev/laptop_power_drill.cpp -- see coop/dev/laptop_power_drill.h.
 
 #include "coop/dev/laptop_power_drill.h"
+#include "coop/dev/rearm.h"
 
 #include "coop/config/config.h"
 #include "coop/interactables/laptop_sync.h"
@@ -36,7 +37,9 @@ uint32_t          g_appliedBase = 0;  // host: the client's edges it had applied
 int               g_slot = -1;      // host: the client it watches
 
 bool Enabled() {
-    static const bool s = coop::config::ResolveFlag(::coop::config_registry::rows::laptop_power_drill);
+    static bool s{};
+    static uint32_t sSeen = ~0u;  // re-read after the lab re-arms the drills
+    coop::dev::rearm::Latched(s, sSeen, [] { return coop::config::ResolveFlag(::coop::config_registry::rows::laptop_power_drill); });
     return s;
 }
 

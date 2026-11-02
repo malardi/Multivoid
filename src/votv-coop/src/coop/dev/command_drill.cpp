@@ -1,6 +1,7 @@
 // coop/dev/command_drill.cpp -- see coop/dev/command_drill.h.
 
 #include "coop/dev/command_drill.h"
+#include "coop/dev/rearm.h"
 
 #include "coop/commands/command_sync.h"
 #include "coop/config/config.h"
@@ -25,7 +26,9 @@ namespace CS = coop::command_sync;
 enum class Mode : uint8_t { Off, On, Red, Grant, GrantRed, HostDeny };
 
 Mode ModeNow() {
-    static const Mode mode = [] {
+    static Mode mode{};
+    static uint32_t modeSeen = ~0u;  // re-read after the lab re-arms the drills
+    coop::dev::rearm::Latched(mode, modeSeen, [] {
         const std::string v = coop::config::ResolveEnum(::coop::config_registry::rows::command_drill);
         return v == "on"         ? Mode::On
                : v == "red"      ? Mode::Red
@@ -33,7 +36,7 @@ Mode ModeNow() {
                : v == "grantred" ? Mode::GrantRed
                : v == "hostdeny" ? Mode::HostDeny
                                  : Mode::Off;
-    }();
+    });
     return mode;
 }
 

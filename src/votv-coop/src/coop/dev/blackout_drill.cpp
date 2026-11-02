@@ -1,6 +1,7 @@
 // coop/dev/blackout_drill.cpp -- see coop/dev/blackout_drill.h.
 
 #include "coop/dev/blackout_drill.h"
+#include "coop/dev/rearm.h"
 
 #include "coop/config/config.h"
 #include "coop/dev/director/director.h"
@@ -162,7 +163,9 @@ Reach Read() {
 
 // The door blackout_drill_door names, or null: none named, or none of that name in this world (said once).
 void* NamedDoor() {
-    static const std::string name = coop::config::ResolveString(::coop::config_registry::rows::blackout_drill_door);
+    static std::string name{};
+    static uint32_t nameSeen = ~0u;  // re-read after the lab re-arms the drills
+    coop::dev::rearm::Latched(name, nameSeen, [] { return coop::config::ResolveString(::coop::config_registry::rows::blackout_drill_door); });
     if (name.empty() || !DR::EnsureResolved()) return nullptr;
     if (void* d = g_door.Get()) return d;
     if (g_doorSought) return nullptr;
@@ -207,7 +210,9 @@ void LogGrid(const char* when) {
 
 // The control arm: no fire, and the named door, inactive with the power on, must stay shut to the press.
 bool Control() {
-    static const bool s = coop::config::ResolveFlag(::coop::config_registry::rows::blackout_drill_control);
+    static bool s{};
+    static uint32_t sSeen = ~0u;  // re-read after the lab re-arms the drills
+    coop::dev::rearm::Latched(s, sSeen, [] { return coop::config::ResolveFlag(::coop::config_registry::rows::blackout_drill_control); });
     return s;
 }
 
@@ -390,7 +395,9 @@ bool DoorLeg(void* door) {
 }  // namespace
 
 bool IsEnabled() {
-    static const bool s = coop::config::ResolveFlag(::coop::config_registry::rows::blackout_drill);
+    static bool s{};
+    static uint32_t sSeen = ~0u;  // re-read after the lab re-arms the drills
+    coop::dev::rearm::Latched(s, sSeen, [] { return coop::config::ResolveFlag(::coop::config_registry::rows::blackout_drill); });
     return s;
 }
 

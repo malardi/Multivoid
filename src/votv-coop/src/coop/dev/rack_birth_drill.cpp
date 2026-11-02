@@ -1,6 +1,7 @@
 // coop/dev/rack_birth_drill.cpp -- see coop/dev/rack_birth_drill.h.
 
 #include "coop/dev/rack_birth_drill.h"
+#include "coop/dev/rearm.h"
 
 #include "coop/config/config.h"
 #include "coop/element/registry.h"
@@ -41,7 +42,9 @@ uint64_t g_canonAtHold = 0;      // HOST: the canonicals the rack lane had sent 
 bool     g_done = false;         // CLIENT: the rows arrived
 
 bool Enabled() {
-    static const bool s = coop::config::ResolveFlag(::coop::config_registry::rows::rack_birth_drill);
+    static bool s{};
+    static uint32_t sSeen = ~0u;  // re-read after the lab re-arms the drills
+    coop::dev::rearm::Latched(s, sSeen, [] { return coop::config::ResolveFlag(::coop::config_registry::rows::rack_birth_drill); });
     return s;
 }
 

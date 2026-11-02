@@ -2,6 +2,13 @@
 
 #include "coop/dev/lab_cmd.h"
 
+#include "coop/config/config_registry.h"   // drill: a row by its key
+#include "coop/dev/dev_lanes.h"   // drill: every drill back to its first phase
+#include "coop/dev/director/aimed_grab.h"   // grab, apply
+#include "coop/dev/rearm.h"   // drill: the knobs read again
+#include "../config/config_internal.h"   // drill: the runtime layer alone, never the ini
+#include "coop/dev/director/routes.h"   // route, ring
+#include "coop/dev/drill_props.h"   // tp near: the floor under the stand
 #include "coop/dev/lab_window.h"   // window show|hide, type (the parked window's own messages)
 
 #include "coop/element/portable_identity.h"
@@ -13,6 +20,7 @@
 #include "coop/player/puppet_drive.h"
 #include "coop/player/remote_player.h"
 #include "coop/session/teleport_client.h"
+#include "coop/props/prop_key_index.h"  // key:<Key> targets
 #include "coop/props/remote_prop.h"     // ResolveMirrorEidByActor (grabintent)
 #include "coop/props/trash_channel.h"   // SendGrabIntent / SendThrowIntent / ClientCarryEid
 #include "coop/world/dimension_travel.h"
@@ -26,11 +34,15 @@
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/core/reflection_props.h"
 #include "ue_wrap/core/script_fingerprint.h"
+#include "ue_wrap/actors/sleep.h"   // dilation
 #include "ue_wrap/actors/vitals.h"
 #include "ue_wrap/core/types.h"
 #include "ue_wrap/core/fname_utils.h"
 #include "ue_wrap/core/gc_pin.h"       // ReportWorldScopedPins (pins)
 #include "ue_wrap/engine/engine.h"
+#include "ue_wrap/engine/engine_attach.h"     // use: the root a hit lands on
+#include "ue_wrap/engine/engine_component.h"  // use: a component's place
+#include "ue_wrap/engine/hit_result.h"        // use, apply: the hit the E press carries
 #include "ue_wrap/engine/engine_pawn.h"
 #include "ue_wrap/engine/world_identity.h"
 #include "ue_wrap/world/world_singleton.h"
@@ -40,6 +52,7 @@
 
 #include <cctype>
 #include <deque>
+#include <memory>
 #include <algorithm>
 #include <cmath>
 #include <vector>
@@ -156,6 +169,8 @@ void* Target(const std::string& t) {
         auto& p = coop::puppet_drive::Puppet(std::atoi(t.substr(7).c_str()));
         return p.valid() ? p.GetActor() : nullptr;
     }
+    if (t.rfind("key:", 0) == 0) return coop::prop_key_index::Find(Wide(t.substr(4)));  // a keyed prop by its key
+    if (t.rfind("key:", 0) == 0) return coop::prop_key_index::Find(Wide(t.substr(4)));  // a keyed prop by its key
     if (t.rfind("near:", 0) == 0) {  // the nearest live actor whose class name holds the text
         const auto v = ActorsAround(Lower(t.substr(5)), 1e9f);
         return v.empty() ? nullptr : v.front().obj;
@@ -621,7 +636,7 @@ std::string WatchValue(Watch& w) {
     if (w.prop == "@loc" || w.prop == "@rot") {
         if (w.prop == "@loc") {
             ue_wrap::FVector l{};
-            if (!ue_wrap::engine::TryGetActorLocation(w.obj, l)) return "?";
+            if (!ue_wrap::engine::TryGetActorLocation(w.obj, l) && !ue_wrap::engine::TryGetComponentLocation(w.obj, l)) return "?";  // an actor, or a component
             std::snprintf(b, sizeof(b), "%.0f %.0f %.0f", l.X, l.Y, l.Z);
         } else {
             ue_wrap::FRotator r{};
@@ -699,12 +714,110 @@ std::string SmoothLines() {
     return o.str();
 }
 
+// ---- a player's own verbs on a thing: use, grab, apply -----------------------------------------------
+// The component of `actor` named `name` (an object of that name whose outer chain holds the actor), or null.
+void* ComponentNamed(void* actor, const std::string& name) {
+    const std::wstring w = Wide(name);
+    const int32_t n = R::NumObjects();
+    for (int32_t i = 0; i < n; ++i) {
+        void* obj = R::ObjectAt(i);
+        if (!obj || !R::IsLive(obj) || R::ToString(R::NameOf(obj)) != w) continue;
+        for (void* o = R::OuterOf(obj); o; o = R::OuterOf(o))
+            if (o == actor) return obj;
+    }
+    return nullptr;
+}
+
+// The verb `fnName` of `obj` with whichever of the E press's parameters it declares: this player, the hit on `comp`
+// (the actor's root when null) at its place, the looked-at component, the action byte, and the hand's held actor.
+// Attributed to the game, so the lanes read it as a player's press. False when the function does not resolve or
+// the call did not run; `out` names what was filled.
+bool PlayerVerb(void* obj, void* comp, const wchar_t* fnName, void* player, int action, void* held, std::string& out) {
+    void* fn = R::FindDispatchFunction(R::ClassOf(obj), fnName, nullptr);
+    if (!fn) { out = " no " + Narrow(fnName); return false; }
+    ue_wrap::ParamFrame f(fn);
+    if (!f.valid()) { out = " bad frame"; return false; }
+    void* at = comp ? comp : ue_wrap::engine::RootComponentOf(obj);
+    ue_wrap::FVector loc{};
+    if (comp) loc = ue_wrap::engine::GetComponentLocation(comp);
+    else ue_wrap::engine::TryGetActorLocation(obj, loc);
+    out.clear();
+    if (f.Set<void*>(L"player", player) || f.Set<void*>(L"Player", player)) out += " player";
+    if (at && (ue_wrap::hit_result::Write(f, L"hit", obj, at, loc) || ue_wrap::hit_result::Write(f, L"Hit", obj, at, loc)))
+        out += " hit";
+    if (at && f.Set<void*>(L"lookAtComponent", at)) out += " lookAt";
+    if (action >= 0 && (f.Set<uint8_t>(L"action", static_cast<uint8_t>(action)) || f.Set<uint8_t>(L"Action", static_cast<uint8_t>(action)))) out += " action=" + std::to_string(action);
+    if (held && f.Set<void*>(L"holdObject", held)) out += " held";
+    R::SetGameAttributedDepth(1);
+    const bool ok = ue_wrap::Call(obj, f);
+    R::SetGameAttributedDepth(0);
+    return ok;
+}
+
+// The one grab in flight: the director's aimed grab, ticked every frame, answered when it ends.
+struct PendingGrab {
+    long long id = 0;
+    std::unique_ptr<coop::director::AimedGrab> grab;
+    std::chrono::steady_clock::time_point until{};
+};
+PendingGrab g_grab;
+
+void TickGrab(std::chrono::steady_clock::time_point now) {
+    if (!g_grab.grab) return;
+    const coop::director::GrabState st = g_grab.grab->Tick();
+    if (st == coop::director::GrabState::Working && now < g_grab.until) return;
+    const bool ok = st == coop::director::GrabState::Grabbed;
+    Answer(g_grab.id, ok, ok ? "grab: held after " + std::to_string(g_grab.grab->AimPoses()) + " aim pose(s)"
+                             : std::string("grab: ") + (st == coop::director::GrabState::Failed ? g_grab.grab->Why()
+                                                                                                    : "timed out"));
+    g_grab.grab.reset();
+}
+
+// A stand `dist` cm from `obj` (an actor or a component), facing it: tried round it every 30 degrees from the side this
+// player is on, the first whose floor (found within 3 m under the target's height) lies no more than 2.5 m under the
+// target -- a lift button's near side is its shaft, and a stand over a pit drops the player down it. False when the
+// target or the player does not read, or no side has such a floor.
+bool StandNear(void* local, void* obj, float dist, ue_wrap::FVector& stand, float& yaw) {
+    ue_wrap::FVector at{}, me{};
+    if (!ue_wrap::engine::TryGetActorLocation(obj, at) && !ue_wrap::engine::TryGetComponentLocation(obj, at)) return false;
+    if (!ue_wrap::engine::TryGetActorLocation(local, me)) return false;
+    const float base = std::atan2(me.Y - at.Y, me.X - at.X);
+    for (int i = 0; i < 12; ++i) {
+        const int k = (i + 1) / 2 * ((i % 2) ? 1 : -1);   // 0, +1, -1, +2, -2, ... steps of 30 degrees
+        const float a = base + static_cast<float>(k) * 3.14159265f / 6.f;
+        const float x = at.X + std::cos(a) * dist, y = at.Y + std::sin(a) * dist;
+        float floorZ = 0.f;
+        if (!coop::dev::drill_props::FloorAt(local, x, y, at.Z + 150.f, 450.f, 20.f, &floorZ) || floorZ < at.Z - 250.f)
+            continue;
+        stand = {x, y, floorZ + 95.f};
+        yaw = static_cast<float>(std::atan2(at.Y - y, at.X - x) * 180.0 / 3.14159265358979);
+        return true;
+    }
+    return false;
+}
+
 void Run(long long id, const std::string& verb, const std::string& rest) {
     std::istringstream in(rest);
     void* local = coop::players::Registry::Get().Local();
     if (verb == "tp") {
+        // tp <x> <y> <z> [yaw] | tp near <target> [dist]: there, or `dist` cm (120) from the target on this player's
+        // side, on the floor found there, facing it.
         float x = 0, y = 0, z = 0, yaw = 0;
-        in >> x >> y >> z >> yaw;
+        std::string first;
+        in >> first;
+        if (first == "near") {
+            std::string t;
+            float dist = 120.f;
+            in >> t;
+            if (!(in >> dist)) dist = 120.f;
+            void* obj = Target(t);
+            ue_wrap::FVector st{};
+            if (!obj || !local || !StandNear(local, obj, dist, st, yaw)) { Answer(id, false, "tp: no target " + t + ", or no floor beside it"); return; }
+            x = st.X; y = st.Y; z = st.Z;
+        } else {
+            x = static_cast<float>(std::atof(first.c_str()));
+            in >> y >> z >> yaw;
+        }
         const bool ok = coop::teleport_client::ApplyLocally({x, y, z, 0.f, yaw, 0.f});
         Answer(id, ok, "tp " + rest);
     } else if (verb == "travel") {
@@ -743,6 +856,20 @@ void Run(long long id, const std::string& verb, const std::string& rest) {
         void* obj = Target(t);
         if (!obj) { Answer(id, false, verb + ": no target " + t); return; }
         if (verb == "fields") { Answer(id, true, Fields(obj, Lower(prop))); return; }
+        if (verb == "get" && !prop.empty() && prop[0] == '@') {   // @loc @rot @class @live, as a watch reads them
+            Watch w;
+            w.target = t;
+            w.prop = prop;
+            Answer(id, true, t + "." + prop + " = " + WatchValue(w));
+            return;
+        }
+        if (verb == "get" && !prop.empty() && prop[0] == '@') {   // @loc @rot @class @live, as a watch reads them
+            Watch w;
+            w.target = t;
+            w.prop = prop;
+            Answer(id, true, t + "." + prop + " = " + WatchValue(w));
+            return;
+        }
         if (verb == "set" && !WriteValue(R::ClassOf(obj), obj, Wide(prop), val)) { Answer(id, false, "set failed " + prop); return; }
         Answer(id, true, t + "." + prop + " = " + ReadValue(R::ClassOf(obj), obj, Wide(prop)));
     } else if (verb == "move") {
@@ -898,9 +1025,23 @@ void Run(long long id, const std::string& verb, const std::string& rest) {
     } else if (verb == "spawn") {
         // spawn <Class> <x> <y> <z>: the class's actor at that place (the game's own spawn; a host's is broadcast
         // as any runtime birth is).
-        std::string cls;
+        // spawn <Class> near <target> [dist]: beside the target, on this player's side, 50 cm up.
+        std::string cls, word;
         float x = 0, y = 0, z = 0;
-        in >> cls >> x >> y >> z;
+        in >> cls >> word;
+        if (word == "near") {
+            std::string t;
+            float dist = 100.f, yaw = 0.f;
+            in >> t;
+            if (!(in >> dist)) dist = 100.f;
+            void* obj = Target(t);
+            ue_wrap::FVector st{};
+            if (!obj || !local || !StandNear(local, obj, dist, st, yaw)) { Answer(id, false, "spawn: no target " + t + ", or no floor beside it"); return; }
+            x = st.X; y = st.Y; z = st.Z - 45.f;
+        } else {
+            x = static_cast<float>(std::atof(word.c_str()));
+            in >> y >> z;
+        }
         void* c = R::FindClass(Wide(cls).c_str());
         if (!c) { Answer(id, false, "spawn: no class " + cls); return; }
         void* a = ue_wrap::engine::SpawnActor(c, ue_wrap::FVector{x, y, z});
@@ -1053,6 +1194,120 @@ void Run(long long id, const std::string& verb, const std::string& rest) {
         char b[160];
         std::snprintf(b, sizeof(b), "goto %s: stand (%.0f,%.0f,%.0f) facing %.0f", t.c_str(), x, y, z, faceYaw);
         Answer(id, ok, b);
+    } else if (verb == "drill") {
+        // drill <row|VOTVCOOP_ROW> <value> [<row> <value> ...] | drill <row> off | drill reset: a drill switched on or off
+        // inside the running session, without a relaunch. The value is held in the config's runtime layer only (never
+        // multivoid.ini, so nothing outlives this copy), the drills' knobs are read again (rearm), and every drill goes back
+        // to its first phase, as a session's end sends it. A drill that needs a fresh join still needs a relaunch.
+        std::vector<std::pair<std::string, std::string>> sets;
+        std::string k, v;
+        while (in >> k) {
+            if (k == "reset") continue;
+            if (!(in >> v)) { Answer(id, false, "drill: " + k + " has no value"); return; }
+            sets.emplace_back(k, v);
+        }
+        std::string said;
+        for (auto& [key, val] : sets) {
+            std::string row = key;
+            if (row.rfind("VOTVCOOP_", 0) == 0) row = Lower(row.substr(9));   // the environment twin's name
+            const coop::config_registry::Row* r = coop::config_registry::FindRow(row.c_str());
+            if (!r) { Answer(id, false, "drill: no row " + key); return; }
+            if (val == "off" || val == "-") coop::config::internal::RuntimeLayerDrop(r);
+            else coop::config::internal::RuntimeLayerPut(r, val);
+            said += " " + row + "=" + val;
+        }
+        coop::dev::rearm::Bump();
+        coop::dev::dev_lanes::EndSession();
+        coop::dev::dev_lanes::RearmSelftests();
+        Answer(id, true, "drill:" + (said.empty() ? std::string(" reset") : said) + " -- every drill at its first phase");
+    } else if (verb == "dilation") {
+        // dilation [x]: the world's global time dilation (the engine's own, as the game's sleep sets 20), for a drill that
+        // waits on game time -- growth, drying, a day's turn. 1 is normal; without x, the current value. Each peer has its
+        // own world: set it on the host for the host's clock and growth (the clients follow the host's clock samples).
+        float x = 0.f;
+        if (in >> x) {
+            if (x <= 0.f || x > 50.f) { Answer(id, false, "dilation: 0 < x <= 50"); return; }
+            if (!ue_wrap::sleep::SetGlobalTimeDilation(x)) { Answer(id, false, "dilation: the call did not run"); return; }
+        }
+        Answer(id, true, "dilation = " + std::to_string(ue_wrap::sleep::GetGlobalTimeDilation()));
+    } else if (verb == "count") {
+        // count <class text>: how many live actors of a class holding the text this world has (what near: and
+        // around read), for a scenario's "both peers have as many".
+        std::string sub;
+        in >> sub;
+        Answer(id, true, "count " + sub + " = " + std::to_string(ActorsAround(Lower(sub), 1e9f).size()));
+    } else if (verb == "use" || verb == "apply") {
+        // use <target> [component|-] [action]: the use key's verb on it as the E press makes it -- the target's own
+        // actionOptionIndex with this player, a hit on the named component (the root when none) and the action (0).
+        // apply <target> [component|-]: the held thing used on it -- the target's playerUsedOn with the hand's actor.
+        std::string t, comp;
+        int action = 0;
+        in >> t >> comp;
+        if (!(in >> action)) action = 0;
+        void* obj = Target(t);
+        if (!obj || !local) { Answer(id, false, verb + ": no target " + t); return; }
+        void* c = nullptr;
+        if (!comp.empty() && comp != "-") {
+            c = ComponentNamed(obj, comp);
+            if (!c) { Answer(id, false, verb + ": no component " + comp + " in " + t); return; }
+        }
+        std::string out;
+        const bool ok = verb == "use"
+            ? PlayerVerb(obj, c, L"actionOptionIndex", local, action, nullptr, out)
+            : PlayerVerb(obj, c, L"playerUsedOn", local, -1, coop::director::Grabbing(local), out);
+        Answer(id, ok, verb + " " + t + (c ? "/" + comp : std::string()) + ":" + out);
+    } else if (verb == "grab") {
+        // grab <target>: the director's aimed grab -- the camera turned until this player's own trace takes it, then
+        // the use key's grab chain. The player must stand within reach (tp near first). Answered when it ends.
+        std::string t;
+        in >> t;
+        void* obj = Target(t);
+        if (!obj || !local) { Answer(id, false, "grab: no target " + t); return; }
+        if (g_grab.grab) { Answer(id, false, "grab: another grab is in flight"); return; }
+        g_grab.id = id;
+        g_grab.grab = std::make_unique<coop::director::AimedGrab>(local, obj);
+        g_grab.until = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+    } else if (verb == "drop") {
+        // drop: the hand lets go of what it holds, by the player's own dropGrabObject.
+        const bool ok = local && coop::director::CallOnPlayer(local, L"dropGrabObject");
+        Answer(id, ok, "drop");
+    } else if (verb == "route" || verb == "ring") {
+        // route <x> <y> <z>: the director's NavMesh route from this player to the point -- its points, its flat
+        // length and how far its end stops short of the point (a partial route ends short of it).
+        // ring <radius cm> [count] [x y]: which of `count` points of a ring about (x, y) -- this player when not
+        // given -- a route reaches, by the drills' own rule (ReachableStandpoints, reach 100 cm). Both for finding a
+        // lab spot where a walking drill's NavMesh holds.
+        ue_wrap::FVector me{};
+        if (!local || !ue_wrap::engine::TryGetActorLocation(local, me)) { Answer(id, false, verb + ": no player"); return; }
+        auto flat = [](const ue_wrap::FVector& a, const ue_wrap::FVector& b) { return std::hypot(a.X - b.X, a.Y - b.Y); };
+        std::ostringstream o;
+        if (verb == "route") {
+            ue_wrap::FVector to{};
+            in >> to.X >> to.Y >> to.Z;
+            std::vector<ue_wrap::FVector> r;
+            if (!coop::director::RouteFrom(local, me, to, &r) || r.empty()) { Answer(id, false, "route: none"); return; }
+            float len = 0.f;
+            for (size_t k = 1; k < r.size(); ++k) len += flat(r[k - 1], r[k]);
+            char b[160];
+            std::snprintf(b, sizeof(b), "route: %zu points, %.0f cm, ends %.0f cm from the point at (%.0f %.0f %.0f)",
+                          r.size(), len, flat(r.back(), to), r.back().X, r.back().Y, r.back().Z);
+            o << b;
+        } else {
+            float radius = 1000.f, x = me.X, y = me.Y;
+            int count = 16;
+            in >> radius;
+            if (!(in >> count)) count = 16;
+            if (in >> x) in >> y;
+            const auto pts = coop::director::ReachableStandpoints(local, {x, y, me.Z}, radius, count, 100.f);
+            char b[120];
+            std::snprintf(b, sizeof(b), "ring %.0f about (%.0f %.0f): %zu of %d reached", radius, x, y, pts.size(), count);
+            o << b;
+            for (const auto& q : pts) {
+                std::snprintf(b, sizeof(b), " (%.0f %.0f %.0f)", q.X, q.Y, q.Z);
+                o << b;
+            }
+        }
+        Answer(id, true, o.str());
     } else if (verb == "funcs") {
         // funcs <target|Class> [text]: the functions (and their parameters) into <tag>_funcs.txt.
         std::string t, filter;
@@ -1364,6 +1619,7 @@ void Tick() {
     if (now >= g_nextPoll) { g_nextPoll = now + std::chrono::milliseconds(200); Poll(); }
     RunQueue(now);
     TickTimed(now);
+    TickGrab(now);
     SamplePuppets(now);
     if (g_keepFed && now >= g_nextFeed) { g_nextFeed = now + std::chrono::seconds(5); Feed(); }
     if (now >= g_nextState) { g_nextState = now + std::chrono::seconds(1); WriteState(); }

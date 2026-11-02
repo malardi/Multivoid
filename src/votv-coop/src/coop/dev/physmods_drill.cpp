@@ -1,6 +1,7 @@
 // coop/dev/physmods_drill.cpp -- see coop/dev/physmods_drill.h.
 
 #include "coop/dev/physmods_drill.h"
+#include "coop/dev/rearm.h"
 
 #include "coop/config/config.h"
 #include "coop/interactables/physmods_sync.h"  // CanonicalsAdopted
@@ -301,7 +302,9 @@ void ClientTick(void* desk, void* pawn, const uint8_t arr[PM::kSlots]) {
 }  // namespace
 
 bool IsEnabled() {
-    static const bool s = coop::config::ResolveFlag(::coop::config_registry::rows::physmods_drill);
+    static bool s{};
+    static uint32_t sSeen = ~0u;  // re-read after the lab re-arms the drills
+    coop::dev::rearm::Latched(s, sSeen, [] { return coop::config::ResolveFlag(::coop::config_registry::rows::physmods_drill); });
     return s;
 }
 

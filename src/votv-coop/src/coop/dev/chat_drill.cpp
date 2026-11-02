@@ -1,6 +1,7 @@
 // coop/dev/chat_drill.cpp -- see coop/dev/chat_drill.h.
 
 #include "coop/dev/chat_drill.h"
+#include "coop/dev/rearm.h"
 
 #include "coop/comms/chat_feed.h"
 #include "coop/comms/chat_sync.h"
@@ -36,17 +37,21 @@ namespace CF = coop::chat_feed;
 enum class Arm : uint8_t { Off, History, Seed, I18n, Span };
 
 Arm ArmNow() {
-    static const Arm arm = [] {
+    static Arm arm{};
+    static uint32_t armSeen = ~0u;  // re-read after the lab re-arms the drills
+    coop::dev::rearm::Latched(arm, armSeen, [] {
         const std::string v = coop::config::ResolveEnum(::coop::config_registry::rows::chat_drill);
         return v == "history" ? Arm::History : v == "seed" ? Arm::Seed : v == "i18n" ? Arm::I18n
              : v == "span" ? Arm::Span : Arm::Off;
-    }();
+    });
     return arm;
 }
 
 // The i18n red: this peer announces its nickname with a character it does not have.
 bool BadNick() {
-    static const bool v = coop::config::ResolveFlag(::coop::config_registry::rows::chat_drill_bad_nick);
+    static bool v{};
+    static uint32_t vSeen = ~0u;  // re-read after the lab re-arms the drills
+    coop::dev::rearm::Latched(v, vSeen, [] { return coop::config::ResolveFlag(::coop::config_registry::rows::chat_drill_bad_nick); });
     return v;
 }
 

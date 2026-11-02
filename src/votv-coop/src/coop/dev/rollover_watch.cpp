@@ -1,6 +1,7 @@
 // coop/dev/rollover_watch.cpp -- see coop/dev/rollover_watch.h.
 
 #include "coop/dev/rollover_watch.h"
+#include "coop/dev/rearm.h"
 
 #include "coop/config/config.h"
 #include "coop/net/session.h"
@@ -433,7 +434,9 @@ void CheckSettled() {
 }  // namespace
 
 bool IsEnabled() {
-    static const bool s = coop::config::ResolveFlag(::coop::config_registry::rows::rollover_watch);
+    static bool s{};
+    static uint32_t sSeen = ~0u;  // re-read after the lab re-arms the drills
+    coop::dev::rearm::Latched(s, sSeen, [] { return coop::config::ResolveFlag(::coop::config_registry::rows::rollover_watch); });
     return s;
 }
 
