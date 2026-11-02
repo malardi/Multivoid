@@ -169,6 +169,12 @@ void* Target(const std::string& t) {
         auto& p = coop::puppet_drive::Puppet(std::atoi(t.substr(7).c_str()));
         return p.valid() ? p.GetActor() : nullptr;
     }
+    if (t.rfind("hand:", 0) == 0) {  // the item in a slot's hand: this peer's own hand actor, or its display mirror
+        const int slot = std::atoi(t.substr(5).c_str());
+        if (slot < 0 || slot >= static_cast<int>(coop::players::kMaxPeers)) return nullptr;
+        if (slot == coop::players::Registry::Get().LocalPeerId()) return coop::hand_item::LocalHandActor();
+        return coop::hand_item::MirrorActorForSlot(static_cast<uint8_t>(slot));
+    }
     if (t.rfind("key:", 0) == 0) return coop::prop_key_index::Find(Wide(t.substr(4)));  // a keyed prop by its key
     if (t.rfind("key:", 0) == 0) return coop::prop_key_index::Find(Wide(t.substr(4)));  // a keyed prop by its key
     if (t.rfind("near:", 0) == 0) {  // the nearest live actor whose class name holds the text
@@ -1574,7 +1580,10 @@ void WriteState() {
     else o << "hand -\r\n";
     for (int slot = 0; slot < coop::players::kMaxPeers; ++slot) {
         const std::wstring held = coop::hand_item::HeldItem(static_cast<uint8_t>(slot));
-        if (!held.empty()) o << "handof " << slot << " " << Narrow(held) << "\r\n";
+        // The hand generation, and on a remote slot the generation of its placed mirror (0: none matches yet).
+        if (!held.empty())
+            o << "handof " << slot << " " << Narrow(held) << " gen=" << coop::hand_item::Generation(static_cast<uint8_t>(slot))
+              << " mirror=" << coop::hand_item::MirrorGeneration(static_cast<uint8_t>(slot)) << "\r\n";
     }
     o << SmoothLines();
     for (Watch& w : g_watches) o << "watch " << w.name << " " << WatchValue(w) << "\r\n";
