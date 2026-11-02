@@ -10,10 +10,12 @@
 // that exact generation, aged by the time since it arrived, and to no other: a sample for an item
 // that has left the hand matches no mirror.
 //
-// On a mirror the fire's own verbs stay the display's: the game's ignite runs there only while this
-// lane applies a sample, and extinguishFire, fireDamage and ignited do not run (the owner's item does
-// the damage and its class's own effects). prop_fire_sync's name watches ask MirrorVerbRuns, one watch
-// per function. A burning item released from the hand is a world prop's fire from then on
+// A torch burns with a flame of its own (ue_wrap/actors/torch): its sample says so (kind 1) and carries the
+// torch's fuel, and a mirror of it is lit and put out with the torch's own ignite and extinguishFire.
+//
+// On a mirror the fire's own verbs stay the display's: the game's ignite and extinguishFire run there only
+// while this lane applies a sample, and fireDamage and ignited do not run (the owner's item does the damage
+// and its class's own effects). prop_fire_sync's name watches ask MirrorVerbRuns, one watch per function. A burning item released from the hand is a world prop's fire from then on
 // (prop_fire_sync::OnHandReleased). Game thread.
 
 #pragma once
@@ -32,8 +34,8 @@ void QueueConnect(int slot);
 void OnPeerLeft(int slot);
 void OnDisconnect();
 
-// Whether a fire verb on `mirror`, a hand display mirror, may run: the game's ignite while this lane
-// applies a sample to that mirror, nothing else. `ignite` names the verb. Game thread.
-bool MirrorVerbRuns(void* mirror, bool ignite);
+// Whether a fire verb on `mirror`, a hand display mirror, may run: ignite or extinguishFire (`applyVerb`) while
+// this lane applies a sample to that mirror, nothing else. Game thread.
+bool MirrorVerbRuns(void* mirror, bool applyVerb);
 
 }  // namespace coop::hand_fire_sync

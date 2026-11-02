@@ -10,6 +10,7 @@
 #include "coop/player/players_registry.h"
 #include "coop/props/prop_fire_sync.h"  // WatchesLive: the mirror guard's watches
 #include "ue_wrap/actors/prop_burn.h"
+#include "ue_wrap/actors/torch.h"
 #include "ue_wrap/core/cached_obj_ref.h"
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/engine/world_identity.h"
@@ -19,12 +20,19 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <functional>
 
 namespace coop::hand_fire_sync {
 namespace {
 
 namespace F = ue_wrap::prop_fire;
+namespace Torch = ue_wrap::torch;
 using net::HandFirePayload;
+
+// What burns (HandFirePayload::kind): a burning prop's flame, or a torch's own.
+constexpr uint16_t kFlameProp = 0;
+constexpr uint16_t kFlameTorch = 1;
+constexpr float kTorchFuelMax = 10000.f;  // a bound on a torch's fuel off the wire, far past a full one
 using ue_wrap::CachedObjRef;
 
 // One slot's hand flame: the newest sample, when it arrived (the fuel is aged from there), the mirror it
@@ -89,13 +97,49 @@ uint32_t Destinations(net::Session& s, uint8_t owner) {
     return mask;
 }
 
+// A sample's fire is one its kind can hold.
+bool ValidFlame(uint16_t kind, const F::State& v) {
+    if (kind == kFlameTorch)
+        return std::isfinite(v.fuel) && v.fuel >= 0.f && v.fuel <= kTorchFuelMax && v.fuelSpeed == 0.f;
+    return kind == kFlameProp && F::Valid(v);
+}
+
+// The hand actor's flame: a torch's own (its fuel, not aged by the receivers), or a burning prop's.
+bool ReadFlame(void* a, uint16_t& kind, F::State& value) {
+    if (Torch::IsTorch(a)) {
+        bool burning = false;
+        float fuel = 0.f;
+        if (!Torch::Read(a, burning, fuel)) return false;
+        kind = kFlameTorch;
+        value = {burning, (std::max)(0.f, fuel), 0.f};
+        return ValidFlame(kind, value);
+    }
+    kind = kFlameProp;
+    return F::Read(a, value);
+}
+
+// A torch mirror's flame to the sample's: lit or put out with the torch's own verbs, the fuel written.
+bool ApplyTorch(void* a, const F::State& want, const std::function<bool()>& valid) {
+    bool burning = false;
+    float fuel = 0.f;
+    if (!Torch::Read(a, burning, fuel)) return false;
+    if (want.burning && !burning) {
+        if (!Torch::Ignite(a, want.fuel > 0.f ? want.fuel : 1.f) || !valid()) return false;
+    } else if (!want.burning && burning) {
+        if (!Torch::Extinguish(a) || !valid()) return false;
+    }
+    if (want.burning && !Torch::WriteFuel(a, want.fuel)) return false;
+    return valid() && Torch::Read(a, burning, fuel) && burning == want.burning;
+}
+
 // The owner: sample the hand's flame and queue it when it changed beyond what the receivers predict.
 void SampleOwn(net::Session& s, uint8_t self, uint64_t epoch, uint64_t now) {
     Row& own = g_rows[self];
     void* a = hand_item::LocalHandActor();
     const uint32_t generation = hand_item::Generation(self);
     F::State value{};
-    if (!a || !generation || !F::Read(a, value)) {
+    uint16_t kind = kFlameProp;
+    if (!a || !generation || !ReadFlame(a, kind, value)) {
         if (!generation) own = {};
         return;
     }
@@ -104,15 +148,19 @@ void SampleOwn(net::Session& s, uint8_t self, uint64_t epoch, uint64_t now) {
     // A hand that never burned is not news on a new generation: the receivers' mirror starts unlit.
     if (own.state.generation != generation && !value.burning && !own.state.burning) {
         own.state.generation = generation;
+        own.state.kind = kind;
         return;
     }
-    const bool changed = own.state.generation != generation || value.burning != (own.state.burning != 0) ||
-                         std::fabs(value.fuelSpeed - own.state.fuelSpeed) > .01f ||
-                         std::fabs(value.fuel - predicted.fuel) > 1.f ||
-                         (value.burning && now - g_lastSample >= 2000);
+    // While nothing burns only the lighting is news; while it burns, the fuel drifting from what the receivers age it
+    // to, and a refresh every 2 s.
+    const bool changed = own.state.generation != generation || own.state.kind != kind ||
+                         value.burning != (own.state.burning != 0) ||
+                         (value.burning && (std::fabs(value.fuelSpeed - own.state.fuelSpeed) > .01f ||
+                                            std::fabs(value.fuel - predicted.fuel) > 1.f ||
+                                            now - g_lastSample >= 2000));
     if (!changed) return;
     if (!++g_sequence) ++g_sequence;
-    own.state = {generation, g_sequence, value.fuel, value.fuelSpeed, self, uint8_t(value.burning), 0};
+    own.state = {generation, g_sequence, value.fuel, value.fuelSpeed, self, uint8_t(value.burning), kind};
     own.received = now;
     own.pending = Destinations(s, self);
     g_lastSample = now;
@@ -157,7 +205,7 @@ void ApplyToMirrors(uint8_t self, uint64_t epoch, uint64_t now) {
             ~ApplyGuard() { g_applying = previous; }
         } apply(a);
         const F::State value = Aged(r, now);
-        const bool ok = F::Apply(a, value, valid);
+        const bool ok = p.kind == kFlameTorch ? ApplyTorch(a, value, valid) : F::Apply(a, value, valid);
         if (!Current(epoch)) return;
         if (ok && valid()) {
             r.applied = true;
@@ -180,14 +228,14 @@ void Install(net::Session* s) {
     World();
 }
 
-bool MirrorVerbRuns(void* mirror, bool ignite) {
-    return ignite && mirror && g_applying.Is(mirror);
+bool MirrorVerbRuns(void* mirror, bool applyVerb) {
+    return applyVerb && mirror && g_applying.Is(mirror);
 }
 
 void Receive(const HandFirePayload& p, uint8_t sender) {
     net::Session* s = Session();
-    if (!s || p.slot >= net::kMaxPeers || !p.generation || !p.sequence || p.burning > 1 || p.reserved ||
-        !F::Valid(Decode(p)) || p.slot == Self())
+    if (!s || p.slot >= net::kMaxPeers || !p.generation || !p.sequence || p.burning > 1 ||
+        !ValidFlame(p.kind, Decode(p)) || p.slot == Self())
         return;
     if (s->role() == net::Role::Host) {
         // A client speaks for its own hand alone, at the owner's pace.

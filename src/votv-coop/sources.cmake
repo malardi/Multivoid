@@ -147,6 +147,7 @@ set(VOTVCOOP_SOURCES
     src/ue_wrap/actors/broom.cpp
     src/ue_wrap/actors/fire_extinguisher.cpp
     src/ue_wrap/actors/pressure_washer.cpp
+    src/ue_wrap/actors/torch.cpp
     src/ue_wrap/actors/chip_pile.cpp
     src/ue_wrap/engine/engine_pawn.cpp
     src/ue_wrap/engine/engine_physics.cpp

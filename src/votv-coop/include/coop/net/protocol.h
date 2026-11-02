@@ -4173,12 +4173,13 @@ struct PropFirePayload {
 static_assert(sizeof(PropFirePayload) == 48, "PropFirePayload must be 48 bytes");
 
 // The flame of the item in `slot`'s hand (HandFire): the owner's hand generation it belongs to, the owner's
-// sample count, and the fire as sampled (fuel burns down at fuelSpeed a second; receivers age it).
+// sample count, and the fire as sampled (fuel burns down at fuelSpeed a second; receivers age it). kind 0: a burning
+// prop's flame (comp_flammable_C); 1: a torch's own flame (fuel as the torch keeps it, fuelSpeed 0).
 struct HandFirePayload {
     uint32_t generation, sequence;
     float    fuel, fuelSpeed;
     uint8_t  slot, burning;
-    uint16_t reserved;  // zero
+    uint16_t kind;
 };
 static_assert(sizeof(HandFirePayload) == 20, "HandFirePayload must be 20 bytes");
 

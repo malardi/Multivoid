@@ -120,7 +120,7 @@ sg::Verdict MirrorVerdict(const sg::Call& c,bool ignite) {
 }
 sg::Verdict OnVerb(const sg::Call& c) {
     World();
-    if(Session()&&hand_item::IsMirrorActor(c.object))return MirrorVerdict(c,c.tag==0x46490001);
+    if(Session()&&hand_item::IsMirrorActor(c.object))return MirrorVerdict(c,true);
     if(!Client()||g_applying||!Eligible(c.object))return sg::Verdict::Run;
     const auto key=Key(c.object);if(key.empty())return F::IsGasoline(c.object)?sg::Verdict::Cancel:sg::Verdict::Run;
     // Spread between world items is rolled by the host. Each peer still runs the
