@@ -398,8 +398,13 @@ static void RunDivergenceSweep_(void* localPlayer) {
     // re-seeded mid-connect and sent a tiny first bracket, racing the chunked drain), and
     // destroying on it wipes the just-loaded world. Abort instead: the claimed stay converged, the
     // unclaimed survive until a fuller bracket re-expresses them, and the host's PropDestroy stream
-    // still removes real deletions.
-    if (inClass > 0 && static_cast<int>(doomed.size()) * 2 > inClass) {
+    // still removes real deletions. The universe is what the bracket left unclaimed, so on a whole
+    // bracket it is a handful and any real divergence is most of it: six mushrooms the host had lost
+    // since the save were kept on a joiner as "6 of 7". An incomplete bracket leaves hundreds of a
+    // loaded world unclaimed, so the valve also wants a count no save-to-join drift reaches.
+    constexpr int kValveMin = 64;
+    if (inClass > 0 && static_cast<int>(doomed.size()) * 2 > inClass &&
+        static_cast<int>(doomed.size()) >= kValveMin) {
         UE_LOGW("join_membership_sweep: claim sweep ABORTED -- would destroy %zu of %d in-universe "
                 "actor(s) (>50%%); the host snapshot is INCOMPLETE (partial/racing bracket), not a "
                 "divergence. Keeping the loaded world (%d claimed stay converged).",
