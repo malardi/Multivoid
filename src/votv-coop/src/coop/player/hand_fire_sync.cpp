@@ -118,11 +118,13 @@ bool ReadFlame(void* a, uint16_t& kind, F::State& value) {
     return F::Read(a, value);
 }
 
-// A torch mirror's flame to the sample's: lit or put out with the torch's own verbs, the fuel written.
+// A torch mirror's flame to the sample's: lit or put out with the torch's own verbs, the fuel written. The fuel goes
+// in first: a torch is lit on the fuel it holds, and a mirror is spawned at the class default.
 bool ApplyTorch(void* a, const F::State& want, const std::function<bool()>& valid) {
     bool burning = false;
     float fuel = 0.f;
     if (!Torch::Read(a, burning, fuel)) return false;
+    if (want.burning && !Torch::WriteFuel(a, want.fuel)) return false;
     if (want.burning && !burning) {
         if (!Torch::Ignite(a, want.fuel > 0.f ? want.fuel : 1.f) || !valid()) return false;
     } else if (!want.burning && burning) {
