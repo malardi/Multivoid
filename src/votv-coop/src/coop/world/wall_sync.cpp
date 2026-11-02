@@ -81,6 +81,7 @@ struct Row {
     bool remove = false;    // a client's own unaccepted placement went away: tell the host
     bool dirty = false;     // host: the record (or the retirement) is owed to the clients
     bool told = false;      // its first send or arrival is logged
+    bool toldFail = false;  // a record that could not be made here is logged once
     uint8_t  owner = 0;     // host: the slot whose placement this is
     uint16_t playerNo = 0;
     uint64_t next = 0, pollAt = 0;
@@ -683,10 +684,11 @@ void TickRows(uint64_t now) {
             if (epoch != g_epoch) return;
             it = g_rows.find(key);
             if (it == g_rows.end()) continue;
-            if (!it->second.told) {
+            if (!it->second.told && (target || !it->second.toldFail)) {
                 UE_LOGI("[WALL] %s: %ls key='%ls' %s", Host() ? "host" : "client", record.className.c_str(), key.c_str(),
                         target ? (a ? "applied" : "made") : "could not be made here (retrying)");
                 it->second.told = target != nullptr;
+                it->second.toldFail = true;
             }
             if (!target) continue;
             it->second.record = std::move(record);
