@@ -34,6 +34,7 @@
 #include "coop/interactables/laptop_sync.h"  // the stationary PC lane
 #include "coop/interactables/laptop_tab.h"  // the tab the PC's user is on
 #include "coop/interactables/shared_screen_sync.h"  // the PC operator's screen on every peer
+#include "coop/props/destroy_flood_guard.h"  // the refused destroys given back
 #include "coop/props/plant_sync.h"  // the growing plants: the host's garden on every peer
 #include "coop/interactables/laptop_buffer_sync.h"  // the PC buffer quad lane
 #include "coop/interactables/portable_pc_lid.h"  // the portable PC's lid lane
@@ -604,6 +605,7 @@ DisconnectStats DisconnectAll() {
     coop::laptop_tab::OnDisconnect();
     coop::shared_screen_sync::OnDisconnect();
     coop::plant_sync::OnDisconnect();
+    coop::destroy_flood_guard::Reset();
     coop::portable_pc_lid::OnDisconnect();
     coop::laptop_buffer_sync::OnDisconnect();  // quad shadow + assembler
     coop::floppybox_sync::OnDisconnect();  // box shadows + taken-ring + pendings
@@ -732,6 +734,7 @@ void TickGameplay(coop::net::Session& session, bool isConnected, bool isHost,
     { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:laptop_tab"}; coop::laptop_tab::Tick(session); }  // the tab watches until live, the refusal window, and a tab report owed by its pace; BEFORE the occupancy poll, so a leaving user's last tab goes ahead of the claim's release
     { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:shared_screen"}; coop::shared_screen_sync::Tick(); }  // the PC operator's screen: lease, inherited repaint, capture, the host's sends; BEFORE the occupancy poll, whose release hold flushes the final screen
     { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:plant"}; coop::plant_sync::Tick(); }  // the growing plants: the host's beat, a client's intents and refusals
+    coop::destroy_flood_guard::Tick();  // HOST: the props whose destroy was refused, given back to the peers
     { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:device_occupancy"}; coop::device_occupancy::Tick(); }  // device occupancy: activeInterface edge poll + pending claim retry
     { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:console_state"}; coop::console_state_sync::Tick(); }  // signal-catcher: host sky poll / client mirror sweep / desk + dish owner streams
     { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:signal_catch"}; coop::signal_catch_sync::Tick(); }  // the catch and cleared detectors, 1 Hz
