@@ -8,6 +8,8 @@
 #include "ue_wrap/actors/prop.h"  // GetInteractableKeyString: the key the put actor carries
 #include "ue_wrap/actors/save_record.h"
 #include "ue_wrap/core/log.h"
+#include "ue_wrap/core/reflection.h"
+#include "ue_wrap/engine/engine.h"  // SpawnActor, TryGetActorLocation: a refused world put born again
 #include "ue_wrap/hotbar/icons.h"  // Rebuild: the quick-slot bar after a record is taken back
 
 #include <algorithm>
@@ -26,6 +28,8 @@ namespace SR  = ue_wrap::save_record;
 struct Take {
     uint32_t eid = 0;
     bool put = false;                         // a put: putRecord goes back to the store on a refusal
+    bool worldPut = false;                    // a put of a held or thrown world prop: born again where it went in
+    float putAt[3] = {0, 0, 0};               // where a world put went in
     SR::SaveRecord putRecord;
     std::wstring takenClass;                  // the container record's class
     std::vector<std::wstring> carriedBefore;  // the keys the carried store held at the take
@@ -93,12 +97,39 @@ void NotePersonalTake(void* inv, int32_t index, uint64_t nowMs) {
 }
 
 void NotePut(uint32_t eid, void* actor, uint64_t nowMs) {
-    if (!actor || g_lastPersonalMs == 0 || nowMs - g_lastPersonalMs > kPutPairMs) return;
+    if (!actor) return;
     const std::wstring key = ue_wrap::prop::GetInteractableKeyString(actor);
-    if (key.empty() || key == L"None" || key != g_lastPersonal.key) return;
-    // A held or thrown world prop put in is not held here: its actor's end crossed to the host as a
-    // destroy of its own, and what giving it back would take -- a world birth -- is the drop-intent
-    // lane's, not this one's.
+    if (key.empty() || key == L"None") return;
+    if (g_lastPersonalMs == 0 || nowMs - g_lastPersonalMs > kPutPairMs || key != g_lastPersonal.key) {
+        // A held or thrown world prop going in (holdObject, putObjectIn_overlap): its actor ends here and
+        // its end parks its key with the drop-intent lane (prop_drop_intent::NoteClientKeyedDestroy). A
+        // refusal put the container back and the prop was in neither place, on any peer. So its record and
+        // where it went in are kept, and a refusal gives it back as a world birth: a copy born here from the
+        // record carries the parked key, and the drop-intent lane turns that into the host's authoritative
+        // prop -- exactly the path a client's own place takes.
+        // The whole record, through the class's own getData: the key and the names ride it, which the
+        // leaf capture (CaptureRecord) leaves to the spawn row -- and a birth here has no row to take them from.
+        Take w;
+        void* getData = ue_wrap::reflection::FindDispatchFunctionCached(ue_wrap::reflection::ClassOf(actor), L"getData");
+        if (!getData || !SR::CaptureRecordVia(actor, getData, w.putRecord)) {
+            UE_LOGW("container_take_ledger: a put of key '%ls' into eid=%u could not be recorded -- a refusal "
+                    "would lose it", key.c_str(), eid);
+            return;
+        }
+        ue_wrap::FVector at{};
+        ue_wrap::engine::TryGetActorLocation(actor, at);
+        w.eid = eid;
+        w.put = true;
+        w.worldPut = true;
+        w.putAt[0] = at.X; w.putAt[1] = at.Y; w.putAt[2] = at.Z;
+        w.takenClass = w.putRecord.className;
+        w.resolved = true;
+        w.atMs = nowMs;
+        UE_LOGI("container_take_ledger: a put of the world prop '%ls' (key '%ls') into eid=%u -- held until "
+                "the host answers its slice", w.takenClass.c_str(), key.c_str(), eid);
+        Push(std::move(w));
+        return;
+    }
     Take t;
     t.eid = eid;
     t.put = true;
@@ -176,6 +207,19 @@ size_t OnRefused(uint32_t eid, uint64_t sliceId) {
                   g_takes.end());
     size_t back = 0;
     for (const Take& t : refused) {
+        if (t.worldPut) {
+            void* cls = ue_wrap::reflection::FindClass(t.putRecord.className.c_str());
+            void* born = cls ? ue_wrap::engine::SpawnActor(cls, ue_wrap::FVector{t.putAt[0], t.putAt[1], t.putAt[2] + 20.f})
+                             : nullptr;
+            void* loadData = born ? ue_wrap::reflection::FindDispatchFunctionCached(cls, L"loadData") : nullptr;
+            const bool loaded = loadData && SR::ApplyRecordVia(born, loadData, t.putRecord);
+            if (loaded) ++back;
+            UE_LOGI("container_take_ledger: refused put of the world prop '%ls' into eid=%u %hs (key '%ls')",
+                    t.takenClass.c_str(), eid,
+                    loaded ? "BORN AGAIN where it went in -- the drop-intent lane gives it to the host"
+                           : "could NOT be born again", t.putRecord.key.c_str());
+            continue;
+        }
         if (t.put) {
             if (INV::AddCarriedRecord(t.putRecord)) {
                 ++back;
