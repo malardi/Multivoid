@@ -121,9 +121,10 @@ NativeSeam g_gpp{&kRowGetPlayerPawn, kPlayerPawn, &OnPawnPost};
 // so this seam answers the update instead: a post-hook on the AnimBP's BlueprintUpdateAnimation, on the
 // class the served Omega's body runs, re-aims `lookAt` at the served player's eye once the update wrote
 // it, before the graph copies it into the LookAt nodes (ue_wrap::puppet::AimKerfurAnimLookAt). A custom
-// look the robot's own graph set (the spooky stare, the punch) keeps its target. Where the head turns at
-// all stays each peer's own: `lookingAtPlayer`, the state gate the update recomputes from the local
-// camera's angle, is left alone, so a client sees its Omega's head follow it whenever it stands in front.
+// look the robot's own graph set (the spooky stare, the punch) keeps its target. Whether the head turns at
+// all is `lookingAtPlayer`, the state gate the update recomputes from the local camera's angle; on the host
+// it is recomputed from the served player's eye too (GateKerfurAnimLookingAt), so the host sees the head
+// follow the client while the client stands before it, as the client sees on its own mirror.
 //
 // Cosmetic: it gates no record. A robot is served through its reads whether or not the gaze hooks, and
 // a class whose update cannot be hooked is said once and leaves that head looking at the host. The hook
@@ -153,12 +154,17 @@ void OnGazePost(void* /*context*/, void* anim, void* /*result*/) {
     ue_wrap::FVector eye{};
     if (!rp->TryGetEyePosition(eye)) return;
     if (!UP::AimKerfurAnimLookAt(anim, eye)) return;
+    // Whether the head turns at all, by the same player: the update gated it on the host's camera, so on the
+    // host's screen an Omega serving a client turned its head to the client only while the host stood
+    // before it.
+    const bool gated = UP::GateKerfurAnimLookingAt(anim, eye);
     ++g_gazed;
     if (!it->second.gazeSaid) {
         it->second.gazeSaid = true;
         UE_LOGI("served_player: Omega %p's head looks at slot %u's eye (%.0f,%.0f,%.0f) -- the gaze seam answered "
-                "its AnimBP's aim at the host's camera", robot, static_cast<unsigned>(it->second.slot), eye.X,
-                eye.Y, eye.Z);
+                "its AnimBP's aim at the host's camera; its turn gate %s", robot,
+                static_cast<unsigned>(it->second.slot), eye.X, eye.Y, eye.Z,
+                gated ? "follows that player too" : "could NOT be re-derived (the host's camera decides it)");
     }
 }
 

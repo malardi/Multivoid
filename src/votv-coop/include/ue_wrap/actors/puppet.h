@@ -145,9 +145,17 @@ void* KerfurAnimActor(void* anim);
 // `customLookAt` is clear -- the AnimBP's own aim at the local camera, which this replaces. A custom look
 // the robot's own graph set (the spooky stare, the punch's) keeps its target, and a mirror's driven look
 // (customLookAt set by DriveKerfurLookAt) is never touched. `lookingAtPlayer`, the state gate the update
-// recomputes from the local camera's angle, is left as the update wrote it: each peer's own view decides
-// whether the head turns at all. False when nothing was written.
+// recomputes from the local camera's angle, is left as the update wrote it (GateKerfurAnimLookingAt, below,
+// re-derives it for another observer). False when nothing was written.
 bool AimKerfurAnimLookAt(void* anim, const FVector& worldTarget);
+
+// The same AnimInstance's `lookingAtPlayer` gate, recomputed as its update computes it but from `observer`
+// instead of the local camera: the horizontal direction from the observer to the robot against the mesh's
+// facing (minus its right vector), true from a dot of -0.6 up (BlueprintUpdateAnimation @24-@35). For a robot
+// whose player is not this peer's camera -- an Omega the host runs for a client -- the head then turns when
+// THAT player stands before it, not when the host does. Call after the update (a post-hook). False when
+// nothing was written.
+bool GateKerfurAnimLookingAt(void* anim, const FVector& observer);
 
 // Park an ACharacter-derived puppet so the network SetActorLocation drive is authoritative: the
 // CharacterMovement tick off (no gravity or velocity integration fighting the drive) and the

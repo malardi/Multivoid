@@ -12,6 +12,7 @@
 
 #include <windows.h>
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -370,6 +371,42 @@ bool AimKerfurAnimLookAt(void* anim, const FVector& worldTarget) {
     if (lookOff < 0 || customOff < 0) return false;
     if (ReadAt<bool>(anim, customOff)) return false;  // a custom look: the graph's own target, or a mirror's drive
     WriteAt<FVector>(anim, lookOff, worldTarget);
+    return true;
+}
+
+bool GateKerfurAnimLookingAt(void* anim, const FVector& observer) {
+    if (!IsKerfurAnimBP(anim)) return false;
+    const int32_t gateOff = ue_wrap::reflected_offset::AnimBP_kerfur_lookingAtPlayer();
+    void* mesh = R::OuterOf(anim);
+    void* robot = mesh ? R::OuterOf(mesh) : nullptr;
+    static bool sSaid = false;
+    if (gateOff < 0 || !mesh || !robot) {
+        if (!sSaid) { sSaid = true; UE_LOGW("puppet: the kerfur turn gate is not re-derived (gate offset %d, mesh %p, robot %p)", gateOff, mesh, robot); }
+        return false;
+    }
+    FRotator rot{};
+    FVector at{};
+    const bool haveRot = ue_wrap::engine::TryGetComponentWorldRotation(mesh, rot);
+    const bool haveAt = ue_wrap::engine::TryGetActorLocation(robot, at);
+    if (!haveRot || !haveAt) {
+        if (!sSaid) {
+            sSaid = true;
+            UE_LOGW("puppet: the kerfur turn gate is not re-derived (rotation read %d, location read %d, game thread %d)",
+                    haveRot ? 1 : 0, haveAt ? 1 : 0, ue_wrap::game_thread::IsGameThread() ? 1 : 0);
+        }
+        return false;
+    }
+    // The rotation's Y axis (FRotationMatrix), negated and flattened: the graph's facing.
+    constexpr double kDeg = 3.14159265358979323846 / 180.0;
+    const double sp = std::sin(rot.Pitch * kDeg);
+    const double sy = std::sin(rot.Yaw * kDeg), cy = std::cos(rot.Yaw * kDeg);
+    const double sr = std::sin(rot.Roll * kDeg), cr = std::cos(rot.Roll * kDeg);
+    double fx = -(sr * sp * cy - cr * sy), fy = -(sr * sp * sy + cr * cy);
+    double dx = at.X - observer.X, dy = at.Y - observer.Y;
+    const double fl = std::sqrt(fx * fx + fy * fy), dl = std::sqrt(dx * dx + dy * dy);
+    if (fl < 1e-4 || dl < 1e-4) return false;   // the graph's Normal() of a zero vector is zero: the dot reads 0
+    fx /= fl; fy /= fl; dx /= dl; dy /= dl;
+    WriteAt<bool>(anim, gateOff, fx * dx + fy * dy >= -0.6);
     return true;
 }
 
