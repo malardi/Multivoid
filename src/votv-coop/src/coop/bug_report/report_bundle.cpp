@@ -412,6 +412,8 @@ Status Build(const Form& form, const Capture& cap) {
         if (addText(kMadeEntries[1], iniText) != AddResult::Ok) return Fail(kWriteFailed, cause);
     }
     if (const char* why = addEntry(3)) return Fail(why, cause);
+    for (size_t i = 4; i < entries.size(); ++i)  // the clients' mirrored logs, on a host
+        if (const char* why = addEntry(i)) return Fail(why, cause);
 
     Json meta;
     meta["format"] = 1;

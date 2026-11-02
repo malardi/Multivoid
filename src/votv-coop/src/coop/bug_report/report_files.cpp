@@ -148,6 +148,21 @@ std::vector<Entry> ListEntries() {
                             false));
     out.push_back(MakeEntry("UE4SS.log", ue4ssDir.empty() ? std::wstring() : ue4ssDir + L"\\UE4SS.log",
                             true));
+    // On a host, the clients' logs its session mirrored (coop/comms/log_mirror): a report then holds both sides
+    // of what went wrong. Only the ones present: a client's own report, or a host whose clients never streamed,
+    // lists none.
+    static const char* const kPeerNames[][2] = {
+        {"peer1_multivoid.log", "peer1_UE4SS.log"}, {"peer2_multivoid.log", "peer2_UE4SS.log"},
+        {"peer3_multivoid.log", "peer3_UE4SS.log"}};
+    if (!exeDir.empty()) {
+        for (int slot = 1; slot <= 3; ++slot) {
+            const std::wstring base = exeDir + L"\\coop_logs\\peer" + std::to_wstring(slot);
+            Entry log = MakeEntry(kPeerNames[slot - 1][0], base + L"_multivoid.log", false);
+            if (log.leftOut.empty()) out.push_back(std::move(log));
+            Entry ue4ss = MakeEntry(kPeerNames[slot - 1][1], base + L"_UE4SS.log", true);
+            if (ue4ss.leftOut.empty()) out.push_back(std::move(ue4ss));
+        }
+    }
     return out;
 }
 
