@@ -30,6 +30,7 @@
 #include "coop/world/media_sync.h"  // MediaState
 #include "coop/props/prop_fire_sync.h"  // PropFire
 #include "coop/interactables/kitchen_sync.h"  // KitchenState, KitchenIntent
+#include "coop/interactables/cord_sync.h"  // CordState, CordIntent
 #include "coop/world/radio_sync.h"  // RadioState
 #include "coop/interactables/drive_payload_sync.h"  // DrivePayload
 #include "coop/interactables/drive_sync.h"       // DriveSlotState
@@ -302,6 +303,24 @@ bool HandleSignalEvent(const net::Session::ReliableMessage& msg) {
         net::PropFirePayload fp{};
         std::memcpy(&fp, msg.payload, sizeof(fp));
         coop::prop_fire_sync::Receive(fp, static_cast<uint8_t>(msg.senderPeerSlot));
+        break;
+    }
+    case net::ReliableKind::CordState: {
+        // The host's link of one cord (a Host kind: the receive edge refuses a client's).
+        if (msg.payloadLen != sizeof(net::CordStatePayload) || msg.senderPeerSlot != 0) break;
+        net::CordStatePayload cs{};
+        std::memcpy(&cs, msg.payload, sizeof(cs));
+        coop::cord_sync::Apply(cs);
+        break;
+    }
+    case net::ReliableKind::CordIntent: {
+        // A client's plug or unplug, done by the host on its own copy.
+        if (msg.payloadLen != sizeof(net::CordStatePayload) || msg.senderPeerSlot < 1 ||
+            msg.senderPeerSlot >= net::kMaxPeers)
+            break;
+        net::CordStatePayload ci{};
+        std::memcpy(&ci, msg.payload, sizeof(ci));
+        coop::cord_sync::OnIntent(ci, static_cast<uint8_t>(msg.senderPeerSlot));
         break;
     }
     case net::ReliableKind::KitchenState: {

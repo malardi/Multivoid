@@ -1222,6 +1222,12 @@ enum class ReliableKind : uint8_t {
     // extinguish, a coal or the lid it just put in or took off; the host runs or writes it on its own copy.
     // KitchenIntentPayload. Not relayed.
     KitchenIntent = 221,
+    // The power cords (coop/interactables/cord_sync): the host's link of one cord, its socket (none when unplugged) and
+    // the socket's power, on change, as a refresh and to a joiner. CordStatePayload. Not relayed.
+    CordState = 222,
+    // A client's plug into a socket or out of it (cord_sync): the host checks reach and the cable's length and does it
+    // on its own copy. CordStatePayload, `powered` ignored. Not relayed.
+    CordIntent = 223,
 };
 
 #pragma pack(push, 1)
@@ -4207,6 +4213,26 @@ struct KitchenIntentPayload {
     int32_t  value;     // 4
 };
 static_assert(sizeof(KitchenIntentPayload) == 44, "KitchenIntentPayload must be 44 bytes");
+
+// One end of a cord link (CordState, CordIntent). kind 0: none; 1: an actor by its key or eid; 2: a level-placed
+// socket by its object name; 3: a child actor (a socket on an appliance) of a keyed or eid parent, by its component
+// name. `name` is ASCII, zero-terminated.
+struct CordEndpoint {
+    WireKey  key;        // 32
+    uint32_t elementId;  // 4
+    char     name[64];   // 64
+    uint8_t  kind;       // 1
+};
+static_assert(sizeof(CordEndpoint) == 101, "CordEndpoint must be 101 bytes");
+
+// One cord's link: its plug's socket (kind 0 = unplugged) and, from the host, whether that socket carries power.
+struct CordStatePayload {
+    CordEndpoint cord;    // 101
+    CordEndpoint socket;  // 101
+    uint8_t      powered; // 1 -- the host's; ignored in an intent
+};
+static_assert(sizeof(CordStatePayload) == 203, "CordStatePayload must be 203 bytes");
+static_assert(sizeof(CordStatePayload) <= 256 - 20 - 8, "CordStatePayload must fit in one reliable datagram");
 
 #pragma pack(pop)
 

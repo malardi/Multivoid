@@ -4,6 +4,7 @@
 // remote_prop_convert.cpp; the physics calls are ue_wrap/engine/engine_physics.
 
 #include "coop/props/remote_prop.h"
+#include "coop/interactables/cord_sync.h"  // IsDragPose: a cord plug's drag rides this stream
 #include "remote_prop_internal.h"  // impl-private (src-local), NOT under include/
 
 #include "coop/props/active_drive.h"   // the fixed-delay snapshot interp, shared with the trash carry stream
@@ -322,7 +323,13 @@ void Tick(coop::net::Session& session) {
         ActiveDrive& drive = g_drives[slot];
         coop::net::PropPoseSnapshot pose{};
         bool isNew = false;
-        const bool have = session.TryGetRemotePropPose(slot, pose, &isNew);
+        bool have = session.TryGetRemotePropPose(slot, pose, &isNew);
+        // A cord plug's drag (cord_sync's reserved key) moves the cord's head and is no prop's hold: it never opens or
+        // closes one here, and this slot's prop drive still advances and times out below.
+        if (have && coop::cord_sync::IsDragPose(pose)) {
+            if (isNew) coop::cord_sync::ApplyDragPose(pose, static_cast<uint8_t>(slot));
+            have = false;
+        }
         HoldGate& hold = g_holds[slot];
         if (have && isNew && IsHoldClosed(hold, pose.holdGen)) {
             // Poses the holder sent before its release or stick, arriving after it: the ended hold
