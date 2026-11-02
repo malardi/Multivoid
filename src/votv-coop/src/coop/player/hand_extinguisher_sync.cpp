@@ -13,6 +13,7 @@
 #include "ue_wrap/actors/fire_extinguisher.h"
 #include "ue_wrap/actors/pressure_washer.h"
 #include "ue_wrap/core/cached_obj_ref.h"
+#include "ue_wrap/core/log.h"
 #include "ue_wrap/engine/engine.h"
 #include "ue_wrap/engine/world_identity.h"
 
@@ -208,6 +209,8 @@ void ApplyToMirrors(net::Session& s, uint64_t epoch, uint64_t now) {
         }
         if (!actor) continue;  // HandItem and this lane cross at a switch or a join: wait for the mirror
         if (!row.applied) {
+            const bool newActor = !row.appliedActor.Is(actor);
+            const bool wasVisible = row.sprayVisible;
             bool ok;
             if (state.tool == kToolWasher) {
                 ok = Water::SetRemoteLevel(actor, state.charge);
@@ -225,6 +228,11 @@ void ApplyToMirrors(net::Session& s, uint64_t epoch, uint64_t now) {
             row.appliedActor.Set(actor);
             row.appliedTool = state.tool;
             if (state.tool == kToolWasher) row.sprayVisible = spraying;
+            // One line per new mirror and per change of its spray, for the lab's log checks.
+            if (newActor || wasVisible != row.sprayVisible)
+                UE_LOGI("hand_extinguisher: slot %u mirror gen %u tool %u spray %s charge %.3f",
+                        static_cast<unsigned>(slot), state.generation, static_cast<unsigned>(state.tool),
+                        row.sprayVisible ? "ON" : "off", state.charge);
         }
         if (!spraying) continue;
         coop::RemotePlayer* puppet = players::Registry::Get().Puppet(slot);

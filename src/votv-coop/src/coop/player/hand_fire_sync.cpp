@@ -36,6 +36,7 @@ struct Row {
     uint64_t retryAt = 0;
     uint32_t pending = 0;
     bool applied = false;
+    bool shownBurning = false, shownOnce = false;  // the flame last logged on the mirror
 };
 std::array<Row, net::kMaxPeers> g_rows;
 std::atomic<net::Session*> g_session{nullptr};
@@ -155,9 +156,19 @@ void ApplyToMirrors(uint8_t self, uint64_t epoch, uint64_t now) {
             explicit ApplyGuard(void* actor) { g_applying.Set(actor); }
             ~ApplyGuard() { g_applying = previous; }
         } apply(a);
-        const bool ok = F::Apply(a, Aged(r, now), valid);
+        const F::State value = Aged(r, now);
+        const bool ok = F::Apply(a, value, valid);
         if (!Current(epoch)) return;
-        if (ok && valid()) r.applied = true;
+        if (ok && valid()) {
+            r.applied = true;
+            // One line per change of the mirror's flame, for the lab's log checks.
+            if (value.burning != r.shownBurning || !r.shownOnce) {
+                r.shownBurning = value.burning;
+                r.shownOnce = true;
+                UE_LOGI("hand_fire: slot %u mirror gen %u %s (fuel %.1f)", static_cast<unsigned>(slot), p.generation,
+                        value.burning ? "BURNING" : "out", value.fuel);
+            }
+        }
     }
 }
 
