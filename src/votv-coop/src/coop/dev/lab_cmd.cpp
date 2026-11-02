@@ -153,7 +153,11 @@ void* Target(const std::string& t) {
         void* base = Target(t.substr(0, slash));
         if (!base) return nullptr;
         const int32_t off = R::FindPropertyOffset(R::ClassOf(base), Wide(t.substr(slash + 1)).c_str());
-        return off < 0 ? nullptr : *reinterpret_cast<void**>(static_cast<char*>(base) + off);
+        if (off < 0) return nullptr;
+        // The member may name an object already gone (a torch's flameBase after its own ignite): a dead one is no
+        // target, never a class read through a stale pointer.
+        void* member = *reinterpret_cast<void**>(static_cast<char*>(base) + off);
+        return R::IsLive(member) ? member : nullptr;
     }
     if (t == "player") return coop::players::Registry::Get().Local();
     if (t == "gm") return ue_wrap::world_singleton::Gamemode();
