@@ -212,6 +212,7 @@ set(VOTVCOOP_SOURCES
     src/coop/world/radio_sync.cpp
     src/coop/items/gravity_motion.cpp
     src/coop/props/prop_fire_sync.cpp
+    src/coop/session/desync_watch.cpp
     src/coop/interactables/coffee_intent.cpp
     src/coop/interactables/coffee_state.cpp
     src/coop/props/prop_act_host.cpp

@@ -821,6 +821,12 @@ msgstr "[[Report a bug]]"
 msgid "Rescan devices"
 msgstr "[[Rescan devices]]"
 
+msgid "Resync"
+msgstr "[[Resync]]"
+
+msgid "Resync with the host"
+msgstr "[[Resync with the host]]"
+
 #, c-format
 msgid ""
 "Rewrites multivoid.ini in the standard layout: [net] first, [dev]\n"
@@ -944,6 +950,9 @@ msgstr "[[Skins come from converter .pak files under Content/Paks/LogicMods (any
 
 msgid "Someone else has that item."
 msgstr "[[Someone else has that item.]]"
+
+msgid "Something looks different from the host's world? Rejoin the same host: your session ends and the host's world is downloaded and loaded again. Clients only; your inventory is kept by the host."
+msgstr "[[Something looks different from the host's world? Rejoin the same host: your session ends and the host's world is downloaded and loaded again. Clients only; your inventory is kept by the host.]]"
 
 msgid "Something was sent before the identity was proved."
 msgstr "[[Something was sent before the identity was proved.]]"
@@ -1332,6 +1341,14 @@ msgstr "[[Whispering]]"
 
 msgid "World"
 msgstr "[[World]]"
+
+#, c-format
+msgid "World out of sync with player %1$d: you have %2$u items, they have %3$u. F1 > Report a bug saves both logs."
+msgstr "[[World out of sync with player %1$d: you have %2$u items, they have %3$u. F1 > Report a bug saves both logs.]]"
+
+#, c-format
+msgid "World out of sync with the host: the host has %1$u items, you have %2$u. Tell the host -- their report holds your log too."
+msgstr "[[World out of sync with the host: the host has %1$u items, you have %2$u. Tell the host -- their report holds your log too.]]"
 
 msgid "World rules unavailable (still loading?)."
 msgstr "[[World rules unavailable (still loading?).]]"

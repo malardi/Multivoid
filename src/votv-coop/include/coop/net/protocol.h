@@ -1214,6 +1214,9 @@ enum class ReliableKind : uint8_t {
     // A burning prop (coop/props/prop_fire_sync): a client's ignite or extinguish as a request, the host's fire as
     // the canonical. PropFirePayload. Not relayed. Ported from the WatchersOfTheVoid fork (MIT).
     PropFire = 217,
+    // The world digest (coop/session/desync_watch): the host's count of keyed props every 5 s, a client's answer;
+    // a parting that lasts is said in the game. WorldDigestPayload. Not relayed.
+    WorldDigest = 240,
 };
 
 #pragma pack(push, 1)
@@ -4164,6 +4167,16 @@ struct PropFirePayload {
     uint16_t playerNo;
 };
 static_assert(sizeof(PropFirePayload) == 48, "PropFirePayload must be 48 bytes");
+
+// One world digest (WorldDigest). op 0: the host's, op 1: a client's answer to the host's `sequence`.
+struct WorldDigestPayload {
+    uint32_t sequence;
+    uint32_t keyedProps;
+    uint32_t reserved[2];
+    uint8_t  op;
+    uint8_t  pad[3];
+};
+static_assert(sizeof(WorldDigestPayload) == 20, "WorldDigestPayload must be 20 bytes");
 
 #pragma pack(pop)
 

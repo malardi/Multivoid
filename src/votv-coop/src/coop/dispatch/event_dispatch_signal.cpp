@@ -29,6 +29,7 @@
 #include "coop/props/safe_sync.h"  // SafeUnlock
 #include "coop/world/media_sync.h"  // MediaState
 #include "coop/props/prop_fire_sync.h"  // PropFire
+#include "coop/session/desync_watch.h"  // WorldDigest
 #include "coop/world/radio_sync.h"  // RadioState
 #include "coop/interactables/drive_payload_sync.h"  // DrivePayload
 #include "coop/interactables/drive_sync.h"       // DriveSlotState
@@ -293,6 +294,15 @@ bool HandleSignalEvent(const net::Session::ReliableMessage& msg) {
                 ? static_cast<uint8_t>(msg.senderPeerSlot)
                 : static_cast<uint8_t>(0xFF);
         coop::shared_screen_sync::OnChunk(ss, ssslot);
+        break;
+    }
+    case net::ReliableKind::WorldDigest: {
+        if (msg.payloadLen != sizeof(net::WorldDigestPayload) || msg.senderPeerSlot < 0 ||
+            msg.senderPeerSlot >= net::kMaxPeers)
+            break;
+        net::WorldDigestPayload wd{};
+        std::memcpy(&wd, msg.payload, sizeof(wd));
+        coop::desync_watch::Receive(wd, static_cast<uint8_t>(msg.senderPeerSlot));
         break;
     }
     case net::ReliableKind::PropFire: {

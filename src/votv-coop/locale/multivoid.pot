@@ -1032,6 +1032,14 @@ msgstr ""
 msgid "Rescan devices"
 msgstr ""
 
+#: src/ui/net_stats_panel.cpp
+msgid "Resync"
+msgstr ""
+
+#: src/ui/net_stats_panel.cpp
+msgid "Resync with the host"
+msgstr ""
+
 #: src/ui/config_review_panel.cpp
 #, c-format
 msgid ""
@@ -1165,6 +1173,10 @@ msgstr ""
 
 #: src/coop/props/prop_act_request.cpp
 msgid "Someone else has that item."
+msgstr ""
+
+#: src/ui/net_stats_panel.cpp
+msgid "Something looks different from the host's world? Rejoin the same host: your session ends and the host's world is downloaded and loaded again. Clients only; your inventory is kept by the host."
 msgstr ""
 
 #: src/coop/net/end_reason.cpp
@@ -1665,6 +1677,16 @@ msgstr ""
 
 #: src/ui/dev_menu.cpp
 msgid "World"
+msgstr ""
+
+#: src/coop/session/desync_watch.cpp
+#, c-format
+msgid "World out of sync with player %1$d: you have %2$u items, they have %3$u. F1 > Report a bug saves both logs."
+msgstr ""
+
+#: src/coop/session/desync_watch.cpp
+#, c-format
+msgid "World out of sync with the host: the host has %1$u items, you have %2$u. Tell the host -- their report holds your log too."
 msgstr ""
 
 #: src/ui/world_rules_panel.cpp
