@@ -148,6 +148,16 @@ std::vector<Near> ActorsAround(const std::string& sub, float radius) {
 // A target by name: player, gm, gi, slot (the save object), C:<Class> (the first live object of that class),
 // near:<class text> (the nearest actor of such a class); <target>/<property> follows an object property of it.
 void* Target(const std::string& t) {
+    // key:<Key>: a keyed prop by its key, or by its whole portable identity ('k:' optional), which may hold a '/'
+    // (a cord's '<parent key>/cord'): read before the property path below would split it.
+    if (t.rfind("key:", 0) == 0) {
+        const std::string k = t.substr(4);
+        if (void* p = coop::prop_key_index::Find(Wide(k))) return p;
+        const std::wstring id = Wide(k.rfind("k:", 0) == 0 ? k : "k:" + k);
+        for (const Near& a : ActorsAround(std::string(), 1e9f))
+            if (coop::element::PortableIdentity(a.obj) == id) return a.obj;
+        return nullptr;
+    }
     const size_t slash = t.rfind('/');  // a/b/c: c is a property of whatever a/b names
     if (slash != std::string::npos) {
         void* base = Target(t.substr(0, slash));
@@ -179,8 +189,6 @@ void* Target(const std::string& t) {
         if (slot == coop::players::Registry::Get().LocalPeerId()) return coop::hand_item::LocalHandActor();
         return coop::hand_item::MirrorActorForSlot(static_cast<uint8_t>(slot));
     }
-    if (t.rfind("key:", 0) == 0) return coop::prop_key_index::Find(Wide(t.substr(4)));  // a keyed prop by its key
-    if (t.rfind("key:", 0) == 0) return coop::prop_key_index::Find(Wide(t.substr(4)));  // a keyed prop by its key
     if (t.rfind("near:", 0) == 0) {  // the nearest live actor whose class name holds the text
         const auto v = ActorsAround(Lower(t.substr(5)), 1e9f);
         return v.empty() ? nullptr : v.front().obj;
