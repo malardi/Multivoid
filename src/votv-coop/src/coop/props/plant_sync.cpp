@@ -18,10 +18,12 @@
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/core/reflection_props.h"
 #include "ue_wrap/core/script_gate.h"
+#include "ue_wrap/engine/actor_end_play.h"
 #include "ue_wrap/engine/engine.h"
 #include "ue_wrap/engine/world_identity.h"
 #include "ue_wrap/facts/function_row.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -409,9 +411,27 @@ bool SendTo(coop::net::Session* s, int slot, const std::vector<uint8_t>& blob) {
     return coop::blob_chunks::SendBlobToSlot(s, slot, coop::net::ReliableKind::PlantSync, Next(g_sequence), blob);
 }
 
+// ---- a plant's end -------------------------------------------------------------------------------------
+// A plant that leaves this world is not always a plant that is gone: the base's garden is a streamed sublevel,
+// and a level streamed out (or a travel) ends its plants' play as surely as a harvest does. Only an end by a
+// destroy is a plant gone -- the engine's own reason, from its EndPlay. A first cut read any disappearance as
+// one, so a garden streamed out on a client would have told the host to destroy it.
+std::unordered_map<void*, Clock::time_point> g_destroyed;   // plant actors whose play ended by a destroy
+
+void OnEndPlay(void* actor, ue_wrap::actor_end_play::Reason reason) {
+    if (reason != ue_wrap::actor_end_play::Reason::Destroyed || !actor) return;
+    if (!g_session.load(std::memory_order_acquire)) return;
+    void* cls = R::ClassOf(actor);
+    const std::vector<void*>& classes = PlantClasses();
+    if (std::find(classes.begin(), classes.end(), cls) == classes.end()) return;
+    g_destroyed[actor] = Clock::now();
+}
+
+bool WasDestroyed(void* actor) { return actor && g_destroyed.count(actor) != 0; }
+
 // ---- HOST ----------------------------------------------------------------------------------------------
 
-struct Sent { Rec rec; Clock::time_point at; };
+struct Sent { Rec rec; Clock::time_point at; void* actor = nullptr; };
 std::unordered_map<std::string, Sent> g_sent;            // what the clients were last told of each plant
 std::array<bool, coop::net::kMaxPeers> g_owed{};          // a whole garden owed to this slot
 Clock::time_point g_nextHostBeat{};
@@ -437,13 +457,17 @@ void HostBeat(coop::net::Session* s, Clock::time_point now) {
         auto it = g_sent.find(r.id);
         if (it == g_sent.end() || Differs(it->second.rec, r) || now - it->second.at >= kHeartbeat) {
             changed.push_back(r);
-            g_sent[r.id] = Sent{r, now};
+            g_sent[r.id] = Sent{r, now, seen.actor};
+        } else {
+            it->second.actor = seen.actor;
         }
     }
     std::vector<std::string> gone;
     for (auto it = g_sent.begin(); it != g_sent.end();) {
         if (live.count(it->first)) { ++it; continue; }
-        gone.push_back(it->first);
+        // Destroyed: gone for everyone. Streamed out with its level: the clients keep theirs, and it is
+        // told again as new when it streams back in.
+        if (WasDestroyed(it->second.actor)) gone.push_back(it->first);
         it = g_sent.erase(it);
     }
     for (int slot = 1; slot < static_cast<int>(coop::net::kMaxPeers); ++slot) {
@@ -528,7 +552,7 @@ std::unordered_map<void*, Clock::time_point> g_touched;  // a plant the player a
 bool g_baselined = false;
 Clock::time_point g_plantVerbUntil{}, g_careVerbUntil{}, g_nextClientBeat{};
 constexpr auto kClientBeat = std::chrono::milliseconds(500);
-constexpr auto kWildGrace = std::chrono::seconds(3);       // a plant born here is waited on this long before it is called wild
+constexpr auto kWildGrace = std::chrono::seconds(3);       // a plant born here without a planting is waited on this long
 constexpr auto kReportGrace = std::chrono::seconds(8);     // a reported planting the host never named is taken back
 
 void Track(const std::string& id, void* a, const Rec& host, bool haveHost) {
@@ -576,6 +600,13 @@ void ClientOnHostBlob(Op op, const std::vector<Rec>& recs, const std::vector<std
                 break;
             }
         }
+        if (!a && g_known.count(r.id)) {
+            // Asleep here (its level streamed out on this peer): it wakes with its own copy, which a spawn
+            // would only double.
+            g_known[r.id].host = r;
+            g_known[r.id].haveHost = true;
+            continue;
+        }
         if (a) {
             Apply(a, r);
             LinkPot(a, r.attach);
@@ -616,9 +647,17 @@ void ClientBeat(coop::net::Session* s, Clock::time_point now) {
         UE_LOGI("plant_sync: %zu plant(s) in the loaded world, the host's", g_known.size());
         return;
     }
-    // Gone here: by the host's word, or by this player's hand (a harvest, a discard, a felled tree).
+    // Gone here: by the host's word, or by this player's hand (a harvest, a discard, a felled tree). A plant
+    // whose level streamed out is not gone: it sleeps under its identity, and the same plant streaming back in
+    // takes it up again (below) instead of reading as a wild one.
     for (auto it = g_known.begin(); it != g_known.end();) {
-        if (R::IsLiveByIndex(it->second.actor, it->second.idx)) { ++it; continue; }
+        if (!it->second.actor || R::IsLiveByIndex(it->second.actor, it->second.idx)) { ++it; continue; }
+        if (!WasDestroyed(it->second.actor)) {
+            it->second.actor = nullptr;
+            it->second.idx = -1;
+            ++it;
+            continue;
+        }
         if (!g_expectGone.erase(it->first)) {
             UE_LOGI("plant_sync: plant '%s' is gone here -- the host is told", it->first.c_str());
             SendIntent(s, kClientGone, nullptr, it->first);
@@ -667,11 +706,20 @@ void ClientBeat(coop::net::Session* s, Clock::time_point now) {
             UE_LOGI("plant_sync: this player planted '%s' key='%s' -- the host is asked", r.plant.c_str(), r.key.c_str());
             continue;
         }
-        const bool wild = !info.reported && now - info.seen > kWildGrace;
-        const bool refused = info.reported && now - info.reportedAt > kReportGrace;
-        if (wild || refused) {
-            UE_LOGI("plant_sync: '%s' key='%s' born here %s -- removed (the host's garden is the one that grows)",
-                    r.plant.c_str(), r.key.c_str(), wild ? "on its own (a wild spawner)" : "and never named by the host");
+        if (!info.reported && now - info.seen > kWildGrace) {
+            // Not this player's planting. Most often a plant of a level that streamed in after the load (the
+            // garden is a sublevel), which the host has too; a wild spawner's own plant otherwise (the client's
+            // spawners are refused, a spore's mushroom is not). Left standing and taken in under its identity:
+            // a removal here would cut down a streamed-in garden.
+            UE_LOGI("plant_sync: '%s' '%s' appeared here without a planting -- kept as it is", r.plant.c_str(), r.id.c_str());
+            g_unconfirmed.erase(u);
+            Track(r.id, a, r, false);
+            continue;
+        }
+        if (info.reported && now - info.reportedAt > kReportGrace) {
+            // A planting the host refused (its pot held a plant there): it stands nowhere else, so not here.
+            UE_LOGI("plant_sync: this player's planting '%s' key='%s' was never named by the host -- removed",
+                    r.plant.c_str(), r.key.c_str());
             g_unconfirmed.erase(u);
             Destroy(a);
         }
@@ -740,6 +788,7 @@ void ArmWatches() {
 // The world changed under the lane: every key it holds named the old one.
 void Clear() {
     g_asm.Clear();
+    g_destroyed.clear();
     g_sent.clear();
     g_owed.fill(false);
     g_known.clear();
@@ -762,6 +811,8 @@ void World(coop::net::Session* s) {
 }  // namespace
 
 void Install(coop::net::Session* session) {
+    static bool sSink = false;
+    if (!sSink) sSink = ue_wrap::actor_end_play::AddSink(&OnEndPlay);
     if (g_session.load(std::memory_order_acquire) != session) {
         g_session.store(session, std::memory_order_release);
         Clear();
@@ -781,6 +832,9 @@ void Tick() {
     }
     if (IsHost(s)) HostBeat(s, now);
     else ClientBeat(s, now);
+    // A destroy is read within a beat; an address the allocator reuses must not inherit an old one.
+    for (auto it = g_destroyed.begin(); it != g_destroyed.end();)
+        it = now - it->second > std::chrono::seconds(10) ? g_destroyed.erase(it) : std::next(it);
 }
 
 void OnChunk(const coop::net::BlobChunkPayload& chunk, uint8_t senderSlot) {

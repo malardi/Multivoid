@@ -17,9 +17,11 @@
 // What a client's player does is an intent the host applies and re-publishes: a planting (a plant born here
 // within a few seconds of the player's pot use or buried item), a watering, fertilizing or growinator shot (the
 // plants near the player, read after the verb), a harvest or a discard (the plant gone, or its amount and
-// fruit taken). A plant born on a client that is none of these is a local wild spawn, and is removed: the
-// host's own spawner seeds the garden. When both peers plant the same spot (a seed both see fall into a dug
-// hole), the client takes the host's plant for its own by place and row instead of keeping two.
+// fruit taken; only a plant whose play ended by a destroy is gone -- a garden whose sublevel streamed out
+// sleeps under its identities and wakes with them). A planting the host refuses (an occupied pot) is taken
+// back. A plant that appears on a client without a planting is kept (most often a streamed-in level's; the
+// wild spawners themselves are refused on a client in spawn_authority). When both peers plant the same spot
+// (a seed both see fall into a dug hole), the client takes the host's plant for its own by place and row.
 //
 // Wire: ReliableKind::PlantSync (BlobChunkPayload), both directions, never relayed. Game thread throughout.
 
