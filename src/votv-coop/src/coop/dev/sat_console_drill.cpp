@@ -136,6 +136,18 @@ bool Type(void* term, const wchar_t* line, Step next) {
     return true;
 }
 
+// Whether the log holds a line after the last echo of `typed`: the host's answer, whatever the game's language says
+// in it (its words are the owner's Russian on a translated game).
+bool AnsweredAfter(const std::wstring& log, const wchar_t* typed) {
+    const size_t echo = log.rfind(typed);
+    if (echo == std::wstring::npos) return false;
+    const size_t eol = log.find(L'\n', echo);
+    return eol != std::wstring::npos && log.find_first_not_of(L"\r\n \t", eol) != std::wstring::npos;
+}
+
+// A progress line of a calibration, "[<g>42.6%</>]": the number and its markup, not the game's word for it.
+constexpr const wchar_t* kProgressMark = L"%</>]";
+
 int GiftBoxes() {
     int n = 0;
     for (void* o : R::FindObjectsByClass(L"prop_container_giftbox_C"))
@@ -217,12 +229,13 @@ void ClientTick() {
         if (SC::ReadProcessing(term, busy) && busy) g_sawBusy = true;
         const std::wstring log = Log(term);
         const size_t echo = log.find(L"sd.cal");
-        const size_t done = log.find(L"Completed");
-        // Read at "Completed": the dish's own precision loss writes it again afterwards.
+        // The run's last progress line, "[<g>100%</>]": its word is the game's language (the owner's Russian), its
+        // number is not. Read there: the dish's own precision loss writes it again afterwards.
+        const size_t done = echo == std::wstring::npos ? std::wstring::npos : log.find(L"100%", echo);
         const float cal = CalibrationOf(g_dish);
         if (echo == std::wstring::npos || done == std::wstring::npos || done < echo || cal < kFull || busy) {
             if (Expired(kCalBoundMs))
-                Fail("within 120 s the host's lines did not show the echo then \"Completed\", the dish did not reach "
+                Fail("within 120 s the host's lines did not show the echo then the 100% line, the dish did not reach "
                      "full precision here, or the terminal stayed busy");
             return;
         }
@@ -230,7 +243,7 @@ void ClientTick() {
             Fail("the terminal never read busy while the host's calibration ran");
             return;
         }
-        UE_LOGI("[SAT-DRILL] client: the host calibrated dish %d -- its echo and \"Completed\" came back, the terminal "
+        UE_LOGI("[SAT-DRILL] client: the host calibrated dish %d -- its echo and the 100%% line came back, the terminal "
                 "busy for the run, %.3f here", g_dish, cal);
         g_boxesBefore = GiftBoxes();
         Type(term, L"sauce.get", Step::SauceWait);
@@ -239,7 +252,7 @@ void ClientTick() {
     case Step::SauceWait: {
         const std::wstring log = Log(term);
         const int boxes = GiftBoxes();
-        if (log.find(L"you got mail") == std::wstring::npos || boxes != g_boxesBefore + 1) {
+        if (!AnsweredAfter(log, L"sauce.get") || boxes != g_boxesBefore + 1) {
             if (Expired(kAnswerBoundMs))
                 Fail("within 30 s sauce.get did not answer from the host, or the gift boxes here did not go up by one");
             return;
@@ -252,8 +265,10 @@ void ClientTick() {
         const std::wstring log = Log(term);
         std::wstring code;
         D::ReadHashcode(g_dish, code);
-        const std::wstring want = code.empty() ? L"No hashcodes found" : code.substr(0, code.find(L'\n'));
-        if (log.find(want) == std::wstring::npos) {
+        // With no code the host's answer is the game's own sentence, in its language: any line after the echo.
+        const bool answered = code.empty() ? AnsweredAfter(log, L"sv.hash")
+                                           : log.find(code.substr(0, code.find(L'\n'))) != std::wstring::npos;
+        if (!answered) {
             if (Expired(kAnswerBoundMs)) Fail("within 30 s sv.hash did not answer with this dish's code from the host");
             return;
         }
@@ -273,7 +288,7 @@ void ClientTick() {
         const std::wstring log = Log(term);
         const size_t told = log.find(L"The terminal is busy");
         if (told != std::wstring::npos) {
-            const size_t more = log.find(L"recision", told);  // a later "Precision" or "Satellite precision" line
+            const size_t more = log.find(kProgressMark, told);  // a later progress line
             if (more == std::wstring::npos || !busy) {
                 if (Expired(kAnswerBoundMs))
                     Fail("back at the terminal, told it is busy, but no line of the running command came, or the "
@@ -285,7 +300,7 @@ void ClientTick() {
             g_step = Step::Done;
             return;
         }
-        if (busy && log.find(L"Precision") != std::wstring::npos) {
+        if (busy && log.find(kProgressMark) != std::wstring::npos) {
             UE_LOGI("[SAT-DRILL] client: leaving mid-command -- the host's sd.calall is busy and printing");
             g_step = Step::Done;
             return;
