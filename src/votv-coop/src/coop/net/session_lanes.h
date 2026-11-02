@@ -81,6 +81,8 @@ inline Lane LaneForKind(ReliableKind k) {
     // The shared screen is presentation, a blob of up to a few dozen chunks, and orders against nothing: the
     // low lane, so it never delays a gameplay message.
     case ReliableKind::SharedScreen:       return Lane::Bulk;
+    // The plants are a slow world state (a few records a second at most) that orders against nothing.
+    case ReliableKind::PlantSync:          return Lane::Bulk;
     // PropConvert destroys the ball and spawns the pile, so it shares the spawn lane; on another
     // lane a convert could overtake the ball's spawn and leave a never-destroyed ball.
     case ReliableKind::PropConvert:    return Lane::Bulk;

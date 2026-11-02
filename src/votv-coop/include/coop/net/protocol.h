@@ -30,7 +30,7 @@ inline constexpr uint32_t kMagic = 0x564D5450u;
 // This file is past the 1500-line hard cap and stays there: it is the single-feature exception the
 // rule names. One wire format, whose enum, payload structs and static_asserts are read together;
 // splitting it would put a kind's number in one file and its bytes in another.
-inline constexpr uint16_t kProtocolVersion = 285;
+inline constexpr uint16_t kProtocolVersion = 286;
 
 // Default LAN port (overridable via multivoid.ini "net.port=").
 inline constexpr uint16_t kDefaultPort = 47621;
@@ -1189,6 +1189,12 @@ enum class ReliableKind : uint8_t {
     // client. Chunked blob (BlobChunkPayload; coop/interactables/shared_screen_wire.h). Not relayed, not
     // pre-world. Late join: the canonical at the joiner's world-ready.
     SharedScreen = 247,
+    // CLIENT->HOST and HOST->CLIENT: the growing plants (growingPlant_C and its trees), by their actor_save key --
+    // each one's class, place, plant row, pot, growth, water, fertilizer, fruit, dryness and harvest amount
+    // (coop/props/plant_sync). The host's copy is the one that grows; a client's planting, watering, harvest or
+    // discard is an intent the host applies and re-publishes. Chunked blob (BlobChunkPayload). Not relayed, not
+    // pre-world. Late join: every plant at the joiner's world-ready.
+    PlantSync = 211,
 };
 
 #pragma pack(push, 1)

@@ -103,6 +103,7 @@ constexpr ClientAuthorship AuthorshipOf(ReliableKind k) {
     case ReliableKind::PropSaveDataIntent:
     case ReliableKind::FloppySlotState:
     case ReliableKind::SharedScreen:
+    case ReliableKind::PlantSync:
     case ReliableKind::HookState:
     case ReliableKind::HookDestroy:
     case ReliableKind::HookAnchorCommit:

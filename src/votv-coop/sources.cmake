@@ -198,6 +198,7 @@ set(VOTVCOOP_SOURCES
     src/coop/player/skin_effects.cpp
     src/coop/player/skin_registry.cpp
     src/coop/player/local_body.cpp
+    src/coop/props/plant_sync.cpp
     src/coop/props/prop_act_host.cpp
     src/coop/props/prop_act_request.cpp
     src/coop/props/prop_act_selftest.cpp

@@ -92,6 +92,12 @@ UE_FACT_FN(kRowTossFloppyKerfurOmega, "spawn_authority", L"kerfurOmega_C",
            L"OnNotifyBegin_7ac3dd824d2a2ebb4e59308080ceab45", Declared);
 UE_FACT_FN(kRowReceiveTickTickerDeerSpawner, "spawn_authority", L"ticker_deerSpawner_C", L"ReceiveTick", Declared);
 UE_FACT_FN(kRowReceiveTickTickerTreeSpawner, "spawn_authority", L"ticker_treeSpawner_C", L"ReceiveTick", Declared);
+// The wild plant spawners: the bushes a ticker seeds, the sugar cane grower, the herb outside the church (a
+// spore's mushroom is plant_sync's to remove). Each births a growingPlant on the peer whose body runs it, and a
+// plant is the host's garden (coop/props/plant_sync): a client's own would be a plant no other peer has.
+UE_FACT_FN(kRowSpawnBushTickerBushSpawning, "spawn_authority", L"ticker_bushSpawning_C", L"spawnBush", Declared);
+UE_FACT_FN(kRowSpawnSugarcaneGrower, "spawn_authority", L"sugarcaneGrower_C", L"spawn", Declared);
+UE_FACT_FN(kRowTrySpawnHerbOutsideChurch, "spawn_authority", L"outsideChurch_C", L"tryspawnherb", Declared);
 UE_FACT_FN(kRowEatOverlapWoodchipper, "spawn_authority", L"woodchipper_C",
            L"BndEvt__eat_K2Node_ComponentBoundEvent_0_ComponentBeginOverlapSignature__DelegateSignature", Declared);
 
@@ -109,6 +115,10 @@ constexpr Row kRows[] = {
     // from its own floppyType and floppyData. A client's Omega is the host's mirror, whose disc fields are empty, so
     // its toss minted a second disc, empty (or from no class at all), beside the host's full one, which crosses.
     {&kRowTossFloppyKerfurOmega,          "kerfurOmega.tossFloppy"},
+    // The wild plant spawners: the host's garden grows them, plant_sync carries them.
+    {&kRowSpawnBushTickerBushSpawning,    "bushSpawning.spawnBush"},
+    {&kRowSpawnSugarcaneGrower,           "sugarcaneGrower.spawn"},
+    {&kRowTrySpawnHerbOutsideChurch,      "outsideChurch.tryspawnherb"},
     // The deer and the walking trees: world-anchored rolls (random absolute map points, a fixed ring), so one
     // herd and one grove for everyone, the host's; the source-gated catch and the npc allowlist mirror them.
     {&kRowReceiveTickTickerDeerSpawner,   "deerSpawner.ReceiveTick"},
