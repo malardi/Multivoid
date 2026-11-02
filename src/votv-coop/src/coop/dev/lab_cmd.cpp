@@ -1273,6 +1273,16 @@ void Run(long long id, const std::string& verb, const std::string& rest) {
         g_grab.id = id;
         g_grab.grab = std::make_unique<coop::director::AimedGrab>(local, obj);
         g_grab.until = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+    } else if (verb == "hold") {
+        // hold <target>: the player's own "Hold Object" with the target -- the hand's pickup (the R key), the world
+        // actor gone and the item in the hotbar hand. On a client a shared prop's pickup is asked of the host, so the
+        // hand fills a round trip later: read hand:<slot> or the state file's hand line after it.
+        std::string t;
+        in >> t;
+        void* obj = Target(t);
+        bool collected = false;
+        const bool ok = obj && local && ue_wrap::engine::CallMainPlayerHoldObject(local, obj, collected);
+        Answer(id, ok, "hold " + t + (collected ? ": collected" : ": not collected (yet)"));
     } else if (verb == "drop") {
         // drop: the hand lets go of what it holds, by the player's own dropGrabObject.
         const bool ok = local && coop::director::CallOnPlayer(local, L"dropGrabObject");
