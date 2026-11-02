@@ -16,6 +16,7 @@
 #include "coop/props/trash_collect_sync.h"  // EnsureHeldItemBroadcast (hand-edge world release)
 #include "ue_wrap/engine/engine.h"
 #include "ue_wrap/actors/prop.h"
+#include "ue_wrap/actors/prop_burn.h"  // a burning mirror is put out before it goes
 #include "ue_wrap/core/fname_utils.h"
 #include "ue_wrap/core/game_thread.h"
 #include "ue_wrap/core/hot_path_guard.h"  // UE_ASSERT_GAME_THREAD
@@ -288,6 +289,11 @@ bool SameHeld(const SlotHand& a, const SlotHand& b) {
 void DestroyMirror(uint8_t slot, const char* why) {
     Mirror& m = g_mirrors[slot];
     if (m.actor && R::IsLiveByIndex(m.actor, m.idx)) {
+        // A mirror the hand flame lane lit (coop/player/hand_fire_sync) is put out first: the game's
+        // OnDestroyed only stops the flame's particle and sound, while the extinguish also clears its
+        // spread timer and the game mode's row of burning objects.
+        ue_wrap::prop_fire::Extinguish(m.actor);
+        if (!R::IsLiveByIndex(m.actor, m.idx)) { m = Mirror{}; return; }
         // Suppress the destroy observer's echo; the host would otherwise broadcast a destroy for a
         // display-only actor.
         coop::prop_echo_suppress::MarkIncomingDestroy(m.actor);

@@ -5,6 +5,7 @@
 #include "coop/net/protocol.h"
 #include "coop/net/session.h"
 #include "coop/net/wire_key_util.h"
+#include "coop/player/hand_fire_sync.h"  // a hand display mirror's fire verbs
 #include "coop/player/hand_item.h"
 #include "coop/player/players_registry.h"
 #include "coop/player/roster_ledger.h"
@@ -112,8 +113,14 @@ void Retry(const Request& req,bool front=false) {
     for(const auto& pending:g_requests)if(net::StringFromWireKey(pending.p.key)==key)return;
     if(front)g_requests.push_front(req);else g_requests.push_back(req);
 }
+// A hand display mirror's fire is the hand flame lane's (coop/player/hand_fire_sync), on both roles: its verbs
+// run only as that lane applies an owner's sample. One watch per function, so the lane asks here.
+sg::Verdict MirrorVerdict(const sg::Call& c,bool ignite) {
+    return hand_fire_sync::MirrorVerbRuns(c.object,ignite)?sg::Verdict::Run:sg::Verdict::Cancel;
+}
 sg::Verdict OnVerb(const sg::Call& c) {
     World();
+    if(Session()&&hand_item::IsMirrorActor(c.object))return MirrorVerdict(c,c.tag==0x46490001);
     if(!Client()||g_applying||!Eligible(c.object))return sg::Verdict::Run;
     const auto key=Key(c.object);if(key.empty())return F::IsGasoline(c.object)?sg::Verdict::Cancel:sg::Verdict::Run;
     // Spread between world items is rolled by the host. Each peer still runs the
@@ -135,6 +142,7 @@ sg::Verdict OnVerb(const sg::Call& c) {
 sg::Verdict OnDamage(const sg::Call& c) {
     // Host burns physical world items down. Client flame traces remain live so
     // touching/holding one still ignites that machine's possessed player.
+    if(Session()&&hand_item::IsMirrorActor(c.object))return MirrorVerdict(c,false);
     return Client()&&Eligible(c.object)&&(F::IsGasoline(c.object)||!Key(c.object).empty())?sg::Verdict::Cancel:sg::Verdict::Run;
 }
 sg::Verdict OnGasExtinguish(const sg::Call& c){
@@ -149,6 +157,7 @@ sg::Verdict OnGasExtinguish(const sg::Call& c){
     return sg::Verdict::Cancel;
 }
 sg::Verdict OnIgnited(const sg::Call& c) {
+    if(Session()&&hand_item::IsMirrorActor(c.object))return MirrorVerdict(c,false);
     return Client()&&g_applying&&Eligible(c.object)?sg::Verdict::Cancel:sg::Verdict::Run;
 }
 void Bind(Row& r,void* a) {
@@ -164,6 +173,10 @@ void Install(net::Session* s) {
     sg::WatchName(kRowDamage,0x46490003,&OnDamage,nullptr);
     sg::WatchName(kRowIgnited,0x46490004,&OnIgnited,nullptr);
     sg::WatchName(kRowGasExtinguish,0x46490005,&OnGasExtinguish,nullptr);
+}
+bool WatchesLive() {
+    return sg::NameWatchLive(kRowIgnite,0x46490001)&&sg::NameWatchLive(kRowExtinguish,0x46490002)&&
+        sg::NameWatchLive(kRowDamage,0x46490003)&&sg::NameWatchLive(kRowIgnited,0x46490004);
 }
 void OnHandReleased(void* a) {
     if(!Client())return;

@@ -1214,6 +1214,9 @@ enum class ReliableKind : uint8_t {
     // A burning prop (coop/props/prop_fire_sync): a client's ignite or extinguish as a request, the host's fire as
     // the canonical. PropFirePayload. Not relayed. Ported from the WatchersOfTheVoid fork (MIT).
     PropFire = 217,
+    // The flame of the item in a player's hand (coop/player/hand_fire_sync): the owner's sample, tied to its hand
+    // generation; the host keeps and relays a client's. HandFirePayload. Ported from the WatchersOfTheVoid fork (MIT).
+    HandFire = 230,
 };
 
 #pragma pack(push, 1)
@@ -4164,6 +4167,16 @@ struct PropFirePayload {
     uint16_t playerNo;
 };
 static_assert(sizeof(PropFirePayload) == 48, "PropFirePayload must be 48 bytes");
+
+// The flame of the item in `slot`'s hand (HandFire): the owner's hand generation it belongs to, the owner's
+// sample count, and the fire as sampled (fuel burns down at fuelSpeed a second; receivers age it).
+struct HandFirePayload {
+    uint32_t generation, sequence;
+    float    fuel, fuelSpeed;
+    uint8_t  slot, burning;
+    uint16_t reserved;  // zero
+};
+static_assert(sizeof(HandFirePayload) == 20, "HandFirePayload must be 20 bytes");
 
 #pragma pack(pop)
 
