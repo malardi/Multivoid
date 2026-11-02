@@ -172,7 +172,9 @@ bool Normalize(const SR::SaveRecord& in, SR::SaveRecord& out) {
     if (outline) {
         if (in.ints[0][0] < 1 || in.ints[0][0] > 1000000 || in.ints[0][1] < 0 || in.ints[0][1] > 1000000) return false;
     } else {
-        if (in.strings[0][0].empty() || in.floats.empty()) return false;
+        // An empty material is what getData answers for a wall no builder finished (a spawned one): it is shared
+        // as it is, since loadData gives it back the same.
+        if (in.floats.empty()) return false;
         if (in.className == kWet) {
             if (!DryValid(in.floats[0])) return false;
         } else if (in.floats[0].size() != 2) {

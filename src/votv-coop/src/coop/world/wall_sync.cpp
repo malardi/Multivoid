@@ -28,10 +28,12 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <deque>
 #include <map>
 #include <random>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -78,6 +80,7 @@ struct Row {
     bool dead = false;      // retired: its actor is destroyed wherever it shows up
     bool remove = false;    // a client's own unaccepted placement went away: tell the host
     bool dirty = false;     // host: the record (or the retirement) is owed to the clients
+    bool told = false;      // its first send or arrival is logged
     uint8_t  owner = 0;     // host: the slot whose placement this is
     uint16_t playerNo = 0;
     uint64_t next = 0, pollAt = 0;
@@ -90,6 +93,17 @@ uint32_t g_world = 0, g_nonce = 0, g_keySeq = 0, g_blobSeq = 0;
 uint64_t g_epoch = 0, g_tickAt = 0, g_scanAt = 0, g_sweepAt = 0;
 int g_applying = 0;
 bool g_busy = false;
+std::set<std::wstring> g_refusedKeys;  // a wall whose record did not read, logged once
+
+// What a record that did not normalize holds, for the log.
+std::string Shape(const Record& r) {
+    char out[192];
+    const auto group = [](const auto& g) { return g.empty() ? -1 : static_cast<int>(g[0].size()); };
+    std::snprintf(out, sizeof(out), "ints[0]=%d strings[0]=%d '%ls' floats[0]=%d scale=%.2f,%.2f,%.2f", group(r.ints),
+                  group(r.strings), r.strings.empty() || r.strings[0].empty() ? L"" : r.strings[0][0].c_str(),
+                  group(r.floats), r.xform[7], r.xform[8], r.xform[9]);
+    return out;
+}
 
 enum class Reg : uint8_t { Pending, Registered, Refused };
 struct Watch {
@@ -149,6 +163,7 @@ bool IsClient() { return Connected() && !Host(); }
 
 void ResetWorld() {
     g_rows.clear();
+    g_refusedKeys.clear();
     g_assembler.Clear();
     g_feeds.clear();
     g_tickAt = g_scanAt = g_sweepAt = 0;
@@ -213,9 +228,17 @@ void Enroll(void* actor) {
     CachedObjRef ref;
     ref.Set(actor);
     Record raw, record;
+    bool captured = false;
     {
         Applying applying;
-        if (!Wl::Capture(actor, raw) || epoch != g_epoch || !ref.Get() || !Wl::Normalize(raw, record)) return;
+        captured = Wl::Capture(actor, raw);
+        if (epoch != g_epoch || !ref.Get()) return;
+    }
+    if (!captured || !Wl::Normalize(raw, record)) {
+        if (g_refusedKeys.size() < 64 && g_refusedKeys.insert(key).second)
+            UE_LOGW("[WALL] host: %ls key='%ls' is not shared -- its record %s", R::ClassNameOf(actor).c_str(),
+                    key.c_str(), captured ? ("does not normalize: " + Shape(raw)).c_str() : "did not capture");
+        return;
     }
     Row row;
     row.ref = ref;
@@ -225,6 +248,13 @@ void Enroll(void* actor) {
 }
 
 void Census() {
+    static size_t s_told = 0;
+    struct Tell {
+        ~Tell() {
+            if (g_rows.size() != s_told) UE_LOGI("[WALL] host: the census holds %zu wall(s)", g_rows.size());
+            s_told = g_rows.size();
+        }
+    } tell;
     for (const wchar_t* name : Wl::kClasses) {
         void* cls = ue_wrap::object_index::ClassByName(name);
         if (!cls) continue;
@@ -651,9 +681,14 @@ void TickRows(uint64_t now) {
                 if (!target) target = Wl::Spawn(record);
             }
             if (epoch != g_epoch) return;
-            if (!target) continue;
             it = g_rows.find(key);
             if (it == g_rows.end()) continue;
+            if (!it->second.told) {
+                UE_LOGI("[WALL] %s: %ls key='%ls' %s", Host() ? "host" : "client", record.className.c_str(), key.c_str(),
+                        target ? (a ? "applied" : "made") : "could not be made here (retrying)");
+                it->second.told = target != nullptr;
+            }
+            if (!target) continue;
             it->second.record = std::move(record);
             it->second.ref.Set(target);
             it->second.incoming = false;
@@ -702,7 +737,12 @@ void TickRows(uint64_t now) {
             it->second.record = std::move(normalized);
             if (Send(kState, it->second.record) && epoch == g_epoch) {
                 it = g_rows.find(key);
-                if (it != g_rows.end()) it->second.dirty = false;
+                if (it != g_rows.end()) {
+                    if (!it->second.told)
+                        UE_LOGI("[WALL] host: sent %ls key='%ls'", it->second.record.className.c_str(), key.c_str());
+                    it->second.dirty = false;
+                    it->second.told = true;
+                }
             }
             continue;
         }

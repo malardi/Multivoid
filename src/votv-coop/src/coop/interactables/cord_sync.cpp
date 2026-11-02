@@ -301,13 +301,22 @@ sg::Verdict OnVerb(const sg::Call& c) {
         if (c.locals[load]) return sg::Verdict::Run; // native save reconstruction, no player intent
         void* socket = nullptr;
         std::memcpy(&socket, c.locals+off, sizeof(socket));
-        if (!C::IsSocket(socket) || !Identity(socket, p.socket)) return sg::Verdict::Cancel;
+        if (!C::IsSocket(socket) || !Identity(socket, p.socket)) {
+            UE_LOGW("cord: a connect to %ls has no network identity -- refused", C::IsSocket(socket)
+                    ? R::ToString(R::NameOf(socket)).c_str() : L"(not a socket)");
+            return sg::Verdict::Cancel;
+        }
     } else {
         const auto entry = c.callerObject == c.object ? GraphEntry(c.callerFunction, c.callerLocals) : -1;
         if (entry == C::blueprint::kDestroyed) return sg::Verdict::Run;
         if (!C::blueprint::UserDisconnect(entry)) return sg::Verdict::Cancel;
     }
-    if (!Identity(c.object, p.cord)) return sg::Verdict::Cancel;
+    if (!Identity(c.object, p.cord)) {
+        UE_LOGW("cord: '%ls' has no network identity -- its %s is refused", R::ToString(R::NameOf(c.object)).c_str(),
+                connect ? "connect" : "unplug");
+        return sg::Verdict::Cancel;
+    }
+    UE_LOGI("cord: client sends %s of '%ls'", connect ? "connect" : "unplug", R::ToString(R::NameOf(c.object)).c_str());
     // An optimistic connect runs power callbacks and can call disconnect internally on an
     // occupied LOCAL socket, overwriting this request. The host alone performs connect.
     // tryToConnect still returns its candidate and used() ends dragging after our cancellation.
@@ -381,7 +390,10 @@ void OnIntent(const net::CordStatePayload& p, uint8_t senderSlot) {
     struct Guard { Guard(){g_applyingIntent=true;} ~Guard(){g_applyingIntent=false;} } guard;
     ResetWorld();
     void* a = Resolve(p.cord, false);
-    if (!a) return;
+    if (!a) {
+        UE_LOGW("cord: peer %u's cord (kind %u) does not resolve here -- refused", senderSlot, p.cord.kind);
+        return;
+    }
     ue_wrap::CachedObjRef cordRef; cordRef.Set(a);
     const auto epoch = g_epoch;
     const auto world = g_world;
@@ -393,7 +405,9 @@ void OnIntent(const net::CordStatePayload& p, uint8_t senderSlot) {
     };
     auto target = element::IntentTarget::ForClientIntent(*s, senderSlot, 500.f);
     bool ok = false;
+    const char* why = "dragged here";
     if (!C::Dragging(a)) {
+        why = "the socket does not resolve here";
         // The player handles the plug at the socket. The appliance may be at the
         // other end of a long cable, beyond the player's ordinary interaction reach.
         void* socket = p.socket.kind ? Resolve(p.socket, true) : C::Socket(a);
@@ -409,7 +423,9 @@ void OnIntent(const net::CordStatePayload& p, uint8_t senderSlot) {
             };
             const bool allowed = bool(target.Authorize(socket));
             if (!endpointsCurrent()) return;
+            why = "the socket is out of the peer's reach";
             if (allowed) {
+                why = "the cable does not reach the socket";
                 if (!p.socket.kind) {
                     // A callback must not redirect this unplug to another connection.
                     if (C::Socket(a) == socket) ok = C::Disconnect(a);
@@ -417,6 +433,7 @@ void OnIntent(const net::CordStatePayload& p, uint8_t senderSlot) {
                     const bool inReach = C::InCableReach(a, socket);
                     if (!endpointsCurrent()) return;
                     if (inReach) {
+                        why = "the socket is taken";
                         bool detached = true;
                         if (C::Socket(a) && (C::Socket(a) != socket || C::Occupant(socket) != a)) {
                             // Do not unplug a working appliance for an occupied target.
@@ -434,7 +451,7 @@ void OnIntent(const net::CordStatePayload& p, uint8_t senderSlot) {
         }
     }
     if (!current()) return;
-    UE_LOGI("cord: peer %u connect=%d applied=%d", senderSlot, p.socket.kind != 0, ok);
+    UE_LOGI("cord: peer %u connect=%d applied=%d%s%s", senderSlot, p.socket.kind != 0, ok, ok ? "" : " -- ", ok ? "" : why);
     Publish(a, -1);
     if (current()) Publish(a, senderSlot); // refusal also restores the client's local copy
 }
