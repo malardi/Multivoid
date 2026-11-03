@@ -21,6 +21,11 @@
 #include "ue_wrap/core/sdk_profile.h"
 #include "ue_wrap/core/types.h"
 #include "ue_wrap/core/object_index.h"
+#include "ue_wrap/core/asset_load.h"
+
+#include <cwctype>
+#include <string>
+#include <unordered_set>
 
 namespace coop::prop_fresh_spawn {
 
@@ -67,6 +72,24 @@ bool ResolveSpawnFns() {
     return true;
 }
 
+// A class the sender had loaded and this peer has not yet (one the host bought or spawned, say). The
+// props live at /Game/objects/<stem>.<stem>_C, so the wire's name is loaded from there; a name that is
+// not a plain class name, or one already missed there, is not tried.
+void* LoadPropClass(const std::wstring& classW) {
+    static std::unordered_set<std::wstring> missed;
+    if (classW.size() < 3 || classW.compare(classW.size() - 2, 2, L"_C") != 0 || missed.count(classW)) return nullptr;
+    for (wchar_t c : classW)
+        if (!iswalnum(c) && c != L'_') return nullptr;
+    const std::wstring path = L"/Game/objects/" + classW.substr(0, classW.size() - 2) + L"." + classW;
+    ue_wrap::asset_load::LoadObjectByPath(path.c_str());
+    void* cls = R::FindClass(classW.c_str());
+    if (cls)
+        UE_LOGI("remote_prop::OnSpawn: class '%ls' was not loaded here; loaded it from %ls", classW.c_str(), path.c_str());
+    else
+        missed.insert(classW);
+    return cls;
+}
+
 }  // namespace
 
 void* PropSetKeyFn() {
@@ -85,6 +108,7 @@ void* Materialize(const coop::net::PropSpawnPayload& payload, int senderSlot,
         return nullptr;
     }
     void* actorClass = resolve ? resolve(classW.c_str()) : R::FindClass(classW.c_str());
+    if (!actorClass) actorClass = LoadPropClass(classW);
     if (!actorClass) {
         UE_LOGW("remote_prop::OnSpawn: class '%ls' not found -- dropping (likely cooked-content class not loaded)",
                 classW.c_str());
