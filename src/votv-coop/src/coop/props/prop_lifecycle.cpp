@@ -378,7 +378,10 @@ bool IsPerPlayerPropClass(const std::wstring& cls) {
     // client's own inventory container fataled the client at the next GC purge). The opposite of
     // IsWireSuppressedPropClass, whose client site destroys the local instance. Compared without case,
     // as IsWireSuppressedPropClass is and for its reason.
-    return ::_wcsicmp(cls.c_str(), P::name::PropInventoryContainerPlayerClass) == 0;
+    // A hallucination is the hungry, tired player's own: each peer spawns its own and it vanishes on its
+    // own clock, so the host's, broadcast, reached a client that was not seeing things.
+    return ::_wcsicmp(cls.c_str(), P::name::PropInventoryContainerPlayerClass) == 0 ||
+           ::_wcsicmp(cls.c_str(), P::name::PropBurgerHallucinateClass) == 0;
 }
 
 void Install(coop::net::Session* session) {
