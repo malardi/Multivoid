@@ -21,7 +21,10 @@ namespace {
 
 constexpr uint8_t  kOpDigest = 0, kOpAnswer = 1;
 constexpr uint64_t kEveryMs = 5000;
-constexpr int      kRunToSay = 3;  // digests out of tolerance in a row before an episode is said
+// Digests out of tolerance in a row before an episode is said: 75 s. The key index holds a destroyed prop
+// until the engine purges it, at each peer's own garbage collection, a minute apart at most, so a burst of
+// removals parts the counts for that long (53 after the remover drill's 25) while the worlds agree.
+constexpr int      kRunToSay = 15;
 
 std::atomic<net::Session*> g_session{nullptr};
 uint64_t g_next = 0;
