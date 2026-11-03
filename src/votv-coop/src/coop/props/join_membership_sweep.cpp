@@ -199,7 +199,14 @@ static void RunDivergenceSweep_(void* localPlayer) {
     std::unordered_map<std::wstring, int> claimedByClass;  // Phase 0: claimed count per class (floor numerator)
     std::unordered_map<std::wstring, int> keylessSkippedByClass;
     for (const auto& pr : propPairs) {
-        if (pr.mirror) continue;                                    // host-driven mirror -> not a save divergence (automatic kerfur exemption)
+        if (pr.mirror) {
+            // A host-driven mirror is not a save divergence (the automatic kerfur exemption), but it is
+            // one of the host's instances present here, so it counts toward its class's floor as a claim
+            // does: a clump the host re-piled before the join arrives as a mirror, and without it the
+            // floor read "host 2, claimed 0" and kept the save's stale clump.
+            if (pr.actor && R::IsLiveByIndex(pr.actor, pr.internalIdx)) ++claimedByClass[R::ClassNameOf(pr.actor)];
+            continue;
+        }
         if (!pr.actor) continue;
         if (!R::IsLiveByIndex(pr.actor, pr.internalIdx)) continue;  // dead (no deref) -- the reaper owns it
         ++inClass;
