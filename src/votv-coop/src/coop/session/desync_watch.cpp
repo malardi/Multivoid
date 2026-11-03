@@ -47,10 +47,12 @@ bool ClientSettled() {
            coop::join_progress::CurrentPhase() == coop::join_progress::Phase::Idle;
 }
 
+// A hungry, tired player's hallucinations spawn and vanish on both sides on their own clocks, so two
+// worlds in step wander apart by a dozen or more; a lost or mass-destroyed world differs by hundreds.
 uint32_t Tolerance(uint32_t a, uint32_t b) {
     const uint32_t big = a > b ? a : b;
-    const uint32_t half = big / 200;  // half a percent
-    return half > 5 ? half : 5;
+    const uint32_t pct = big / 100;  // one percent
+    return pct > 25 ? pct : 25;
 }
 
 // `slot`: the run's index (the client's slot on the host, 0 on a client). `host`/`client`: the two counts.
