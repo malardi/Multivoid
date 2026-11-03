@@ -181,6 +181,10 @@ void Sample(bool host) {
     g_drainFails = 0;
     const bool firstSample = !g_counted;
     g_counted = true;
+    // None at all is the save's lack, not a copy lost: a spawned Bad Sun does not outlive a save and load.
+    if (firstSample && n == 0)
+        return Inconclusive(host, "no live Bad Sun copy at the first sample (clock %02d:%02d): the save holds none",
+                            g_lastHour, g_lastMin);
     if (firstSample && n != 1)
         return Fail(host, "%d live Bad Sun copies at the first sample, expected 1 (clock %02d:%02d)", n, g_lastHour,
                     g_lastMin);
