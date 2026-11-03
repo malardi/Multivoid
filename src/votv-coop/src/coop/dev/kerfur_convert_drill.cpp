@@ -59,6 +59,8 @@ uint32_t g_npcEid = 0, g_propEid = 0;
 void*    g_localDisc = nullptr;
 int32_t  g_localDiscIdx = -1;
 Clock::time_point g_offAppliedAt{};
+Clock::time_point g_onAskedAt{};
+constexpr auto kRefusedAfter = std::chrono::seconds(20);
 int  g_carriedArrived = 0;
 // Did the form stand when the client's own verb call returned? A client that converts locally has
 // destroyed it inside the call; one whose gate refused the verb still has it until the host's
@@ -195,7 +197,7 @@ void TickClient() {
     switch (g_client) {
     case ClientStep::WaitQuiet: {
         if (!coop::join_membership_sweep::HasLoadTailQuiesced()) return;
-        UE_LOGI("[KERFUR-DRILL] client: load tail quiet; taking the first kerfur NPC mirror (%zu here now)",
+        UE_LOGI("[KERFUR-DRILL] client: load tail quiet; taking the newest kerfur NPC mirror (%zu here now)",
                 MirrorsOf(kNpcClass).size());
         g_client = ClientStep::WaitKerfur;
         return;
@@ -203,7 +205,11 @@ void TickClient() {
     case ClientStep::WaitKerfur: {
         const auto npcs = MirrorsOf(kNpcClass);
         if (npcs.empty()) return;
-        EL::Element* npc = npcs.front();
+        // The newest: the kerfur the host just spawned for the drill. The save's own may be sentient, and
+        // the game refuses a sentient one's turn-on.
+        EL::Element* npc = *std::max_element(npcs.begin(), npcs.end(), [](EL::Element* a, EL::Element* b) {
+            return static_cast<uint32_t>(a->GetId()) < static_cast<uint32_t>(b->GetId());
+        });
         g_npcEid = static_cast<uint32_t>(npc->GetId());
         g_propBefore = EidsOf(MirrorsOf(kPropClass));
         g_carriedBefore = EidsOf(MirrorsOf(kCarriedDisc));
@@ -252,11 +258,16 @@ void TickClient() {
         const int32_t propIdx = prop->GetInternalIdx();
         if (!CallTurnOn(propActor)) { ClientInvalid("the actionOptionIndex call did not dispatch"); return; }
         g_onStood = R::IsLiveByIndex(propActor, propIdx);
+        g_onAskedAt = now;
         g_client = ClientStep::WaitOnApplied;
         return;
     }
     case ClientStep::WaitOnApplied: {
-        if (ByEid(MirrorsOf(kPropClass), g_propEid)) return;  // the prop mirror still stands
+        if (ByEid(MirrorsOf(kPropClass), g_propEid)) {
+            // A refusal sends nothing back (kerfur_convert_host): the prop standing this long is one.
+            if (now - g_onAskedAt > kRefusedAfter) ClientInvalid("the prop still stands: the host's game refused the turn-on");
+            return;
+        }
         EL::Element* npc = FirstNew(MirrorsOf(kNpcClass), g_npcBefore);
         if (!npc) return;
         const bool discAlive = g_localDisc && R::IsLiveByIndex(g_localDisc, g_localDiscIdx);
